@@ -8,7 +8,7 @@ Add author tag to rendered animated sticker file:
 
 `C:\Program Files (x86)\Common Files\Adobe\CEP\extensions`
 
-`jsx/renderManager.jsx` > Add _author: "@username", to exportData
+`jsx/renderManager.jsx` > Add `_author: "@username",` to exportData
 
 `static/js/main.something.js` >
 
