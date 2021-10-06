@@ -8,7 +8,7 @@ After Effects Scripts: `C:\Program Files\Adobe\Adobe After Effects 2020\Support 
 
 Add author tag to rendered animated sticker file:
 
-`C:\Program Files (x86)\Common Files\Adobe\CEP\extensions`
+`C:\Program Files (x86)\Common Files\Adobe\CEP\extensions\com.bodymovin.bodymovin\jsx`
 
 `jsx/renderManager.jsx` > Add `_author: "@username",` to `exportData`
 
