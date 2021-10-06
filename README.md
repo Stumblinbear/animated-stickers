@@ -8,17 +8,18 @@ Add author tag to rendered animated sticker file:
 
 `C:\Program Files (x86)\Common Files\Adobe\CEP\extensions`
 
-`jsx/renderManager.jsx` > Add _author: "@<your username>", to exportData
+`jsx/renderManager.jsx` > Add _author: "@username", to exportData
 
 `static/js/main.something.js` >
 
-    Edit `{ level: zlib.Z_BEST_COMPRESSION }" to "{ level: zlib.Z_BEST_COMPRESSION, memLevel: 9, strategy: zlib.Z_FILTERED }`
+Edit `{ level: zlib.Z_BEST_COMPRESSION }` to `{ level: zlib.Z_BEST_COMPRESSION, memLevel: 9, strategy: zlib.Z_FILTERED }`
 
-    Edit `return !showOnlySelected || showOnlySelected && item.selected;` to:
+Edit `return !showOnlySelected || showOnlySelected && item.selected;` to:
+	
 ```js
-		if(item.name.indexOf(' Fill') + item.name.indexOf(' Border') + item.name.indexOf(' Main') + item.name.indexOf('Pre-comp') + item.name.indexOf(' Comp') > -1)
-			return false;
-	    return !showOnlySelected || showOnlySelected && item.selected;
+if(item.name.indexOf(' Fill') + item.name.indexOf(' Border') + item.name.indexOf(' Main') + item.name.indexOf('Pre-comp') + item.name.indexOf(' Comp') > -1)
+	return false;
+return !showOnlySelected || showOnlySelected && item.selected;
 ```
 
-regedit > HKEY_CURRENT_USER/Software/Adobe/CSXS.8, then add a new entry PlayerDebugMode of type "string" with the value of "1".
+regedit > `HKEY_CURRENT_USER/Software/Adobe/CSXS.8`, then add a new entry `PlayerDebugMode` of type "string" with the value of "1".
