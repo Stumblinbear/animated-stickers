@@ -1,3 +1,5 @@
+### Note: There is no versioning due to scripting restrictions, so check back occasionally for updates.
+
 Photoshop Scripts: `C:\Program Files\Adobe\Adobe Photoshop 2020\Presets\Scripts`
 
 Illustrator Scripts: `C:\Program Files\Adobe\Adobe Illustrator 2020\Presets\en_US\Scripts`
