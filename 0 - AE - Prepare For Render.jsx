@@ -54,7 +54,7 @@ if(proj) {
                 while(propertyGroups.length > 0) {
                     var group = propertyGroups.pop();
                     
-                    for(var k = 1; k < group.numProperties; k++) {
+                    for(var k = 1; k <= group.numProperties; k++) {
                         var prop = group.property(k);
 
                         if(prop.canSetExpression && prop.expressionEnabled) {
