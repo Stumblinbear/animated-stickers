@@ -231,11 +231,14 @@ if(proj) {
                         time: prop.keyTime(i)
                     });
                 }
-                return keyFrameMap.sort(function (a, b){
+                keyFrameMap.sort(function (a, b){
                     return a.time - b.time;
-                }).map(function (a){
-                    return a.keyIndex;
                 });
+                var sortedKeys = [];
+                for (var i = 0; i < keyFrameMap.length; i++){
+                    sortedKeys.push(keyFrameMap[i].keyIndex);
+                }
+                return sortedKeys;
             }
             /**
              * @param {PropertyGroup} group 
