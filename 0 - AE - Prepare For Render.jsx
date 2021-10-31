@@ -236,7 +236,7 @@ if(proj) {
                 });
                 var sortedKeys = [];
                 for (var i = 0; i < keyFrameMap.length; i++){
-                    sortedKeys.push(a.keyIndex);
+                    sortedKeys.push(keyFrameMap[i].keyIndex);
                 }
                 return sortedKeys;
             }
