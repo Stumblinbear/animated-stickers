@@ -3,14 +3,301 @@
 // app.findMenuCommandId("Create Shapes from Vector Layer");
 // app.executeCommand(0000);
 
+var PROPERTY_TYPE__INDEXED_GROUP = 6215;
+
+function isDuikBone(layer) {
+    return layer.name.indexOf('B < ') !== -1;
+}
+
+function isDuikIK(layer) {
+    return layer.name.indexOf('IK < ') !== -1;
+}
+
+function isDuikLayer(layer) {
+    return isDuikIK(layer) || layer.name.indexOf('C < ') !== -1 || layer.name.indexOf('N < ') !== -1 || isDuikBone(layer);
+}
+
+/**
+ * @param {PropertyGroup} group
+ */
+function selectExpressionProps(layer, group) {
+    var didSelectAtLeastOne = false;
+
+    for(var k = 1; k <= group.numProperties; k++) {
+        var prop = group.property(k);
+
+        if (prop instanceof PropertyGroup || prop instanceof MaskPropertyGroup) {
+            if(selectExpressionProps(layer, prop)) {
+                didSelectAtLeastOne = true;
+            }
+        } else if (prop.canSetExpression && prop.expressionEnabled) {
+            prop.selected = true;
+
+            didSelectAtLeastOne = true;
+        }
+    }
+
+    return didSelectAtLeastOne;
+}
+
+// Copies the significant frames of the expression to the target property. This attempts to create the fewest number of
+// keyframes possible.
+function copyExpression(fromProp, toProp, startFrame, endFrame, step, threshold) {
+    if(startFrame == endFrame || startFrame > endFrame || endFrame - startFrame < step) {
+        return;
+    }
+
+    // Create a keyframe at the startFrame if it doesn't exist
+    if(toProp.numKeys == 0 || toProp.keyTime(toProp.nearestKeyIndex(startFrame)) != startFrame) {
+        toProp.setValueAtTime(startFrame, fromProp.valueAtTime(startFrame, false));
+    }
+
+    // Create a keyframe at the endFrame if it doesn't exist
+    if(toProp.numKeys == 0 || toProp.keyTime(toProp.nearestKeyIndex(endFrame)) != endFrame) {
+        toProp.setValueAtTime(endFrame, fromProp.valueAtTime(endFrame, false));
+    }
+
+    // Check each frame between startFrame and endFrame to see if the value strays from the expression
+    for(var keyTime = startFrame; keyTime <= endFrame; keyTime += step) {
+        var fromValue = fromProp.valueAtTime(keyTime, false);
+        var toValue = toProp.valueAtTime(keyTime, false);
+
+        // If the value is significantly different from the expression, we create a keyframe at the halfway point
+        // and do a copyExpression on both halves.
+        if(Math.abs(fromValue - toValue) > threshold) {
+            var midFrame = startFrame + (endFrame - startFrame) / 2;
+
+            // Make sure the midFrame is on a step boundary
+            midFrame = Math.round(midFrame / step) * step;
+
+            toProp.setValueAtTime(midFrame, fromProp.valueAtTime(midFrame, false));
+
+            copyExpression(fromProp, toProp, startFrame, midFrame, step, threshold);
+            copyExpression(fromProp, toProp, midFrame, endFrame, step, threshold);
+
+            break;
+        }
+    }
+}
+
+function copyKeyframes(comp, fromProp, toProp, threshold) {
+    // If it's set by an expression, sample the value for each frame in the work area
+    if(fromProp.canSetExpression && fromProp.expressionEnabled) {
+        copyExpression(fromProp, toProp, comp.workAreaStart, comp.workAreaStart + comp.workAreaDuration, comp.frameDuration, threshold);
+    }else{
+        // Otherwise, we can copy the keyframes
+        for(var l = 1; l <= fromProp.numKeys; l++) {
+            var keyId = toProp.addKey(fromProp.keyTime(l));
+
+            toProp.setValueAtKey(keyId, fromProp.keyValue(l));
+            toProp.setInterpolationTypeAtKey(keyId, fromProp.keyInInterpolationType(l), fromProp.keyOutInterpolationType(l));
+            toProp.setTemporalEaseAtKey(keyId, fromProp.keyInTemporalEase(l), fromProp.keyOutTemporalEase(l));
+        }
+    }
+}
+
+/**
+ * @param {Property} prop
+ * @returns {[number]}
+ */
+function getSortedKeyframeIndexes(prop){
+    var keyFrameMap = [];
+
+    if (prop.numKeys == 0) {
+        return [];
+    } else if (prop.numKeys == 1) {
+        return [1];
+    }
+
+    // Their array, 1-indexed...
+    for (var i = 1; i <= prop.numKeys; i++) {
+        keyFrameMap.push({
+            keyIndex: i,
+            time: prop.keyTime(i)
+        });
+    }
+
+    keyFrameMap.sort(function (a, b) {
+        return a.time - b.time;
+    });
+
+    var sortedKeys = [];
+
+    for (var i = 0; i < keyFrameMap.length; i++) {
+        sortedKeys.push(keyFrameMap[i].keyIndex);
+    }
+
+    return sortedKeys;
+}
+
+/**
+ * @param {PropertyGroup} group
+ */
+function removeUnnecessaryKeyframes(layer, group) {
+    for(var k = 1; k <= group.numProperties; k++) {
+        var prop = group.property(k);
+
+        if (prop instanceof PropertyGroup || prop instanceof MaskPropertyGroup) {
+            // Duik has some properties we will never care about. Skip them.
+            if(isDuikLayer(layer)) {
+                if(prop.name == 'Contents' || prop.name == 'Effects') {
+                    continue;
+                }
+            }
+
+            removeUnnecessaryKeyframes(layer, prop);
+
+            continue;
+        }
+
+        var sortedKeyIndexes = getSortedKeyframeIndexes(prop);
+        var keyIndexesToDelete = [];
+
+        // If there's only one keyframe, it shouldn't be necessary to keep.
+        if(sortedKeyIndexes.length == 1) {
+            prop.removeKey(sortedKeyIndexes[0]);
+
+            continue;
+        }
+
+        // Find the first frame that is within the work area
+        for (var n = 0; n < sortedKeyIndexes.length; n++) {
+            var keyIndex = sortedKeyIndexes[n];
+
+            var keyTime = prop.keyTime(keyIndex);
+
+            if(keyTime < comp.workAreaStart) {
+                continue;
+            }
+
+            // Remove all frames before this one
+            for(var l = 0; l < n - 1; l++) {
+                keyIndexesToDelete.push(sortedKeyIndexes[l]);
+            }
+
+            break;
+        }
+
+        var workAreaEnd = comp.workAreaStart + comp.workAreaDuration;
+
+        // Find the last frame that is within the work area
+        for (var n = 0; n < sortedKeyIndexes.length; n++) {
+            var keyIndex = sortedKeyIndexes[n];
+
+            var keyTime = prop.keyTime(keyIndex);
+
+            if(keyTime < workAreaEnd) {
+                continue;
+            }
+
+            // Remove all frames after this one
+            for(var l = n + 1; l < sortedKeyIndexes.length; l++) {
+                keyIndexesToDelete.push(sortedKeyIndexes[l]);
+            }
+
+            break;
+        }
+
+        // Have to delete highest index first, because key indexes change
+        // upon deleting.
+        keyIndexesToDelete = keyIndexesToDelete.sort(function(a, b) {
+            return b - a;
+        });
+
+        for (var n = 0; n < keyIndexesToDelete.length; n++) {
+            prop.removeKey(keyIndexesToDelete[n]);
+        }
+    }
+}
+
+/**
+ * @param {PropertyGroup} group
+ */
+function removeDuplicateKeyframes(layer, group) {
+    // Their array, 1-indexed...
+    for(var k = 1; k <= group.numProperties; k++) {
+        var prop = group.property(k);
+
+        if (prop instanceof PropertyGroup || prop instanceof MaskPropertyGroup) {
+            // Duik has some properties we will never care about. Skip them.
+            if(isDuikLayer(layer)) {
+                if(prop.name == 'Contents' || prop.name == 'Effects') {
+                    continue;
+                }
+            }
+
+            removeDuplicateKeyframes(layer, prop);
+
+            continue;
+        }
+
+        // Skip if no or only one keyframe
+        if(prop.numKeys <= 1) {
+            continue;
+        }
+
+        // If these keyframes weren't generated by "Convert Expression to KeyFrame",
+        // skip it.
+        if (!prop.canSetExpression || !prop.expression) {
+            continue;
+        }
+
+        var sortedKeyIndexes = getSortedKeyframeIndexes(prop);
+        var lastKeyFrame = null;
+        var lastKeyIndex = null;
+        var keyIndexesToDelete = [];
+        var keysSinceDeletion = 0;
+
+        // Our own array, 0-indexed...
+        for (var n = 0; n < sortedKeyIndexes.length; n++) {
+            var keyIndex = sortedKeyIndexes[n];
+            var keyFrame = prop.keyValue(keyIndex);
+
+            if (lastKeyFrame == null){
+                lastKeyFrame = keyFrame;
+                lastKeyIndex = keyIndex;
+            // found a duplicate keyframe, delete after this...
+            } else if (lastKeyFrame.toString() == keyFrame.toString()) {
+                keyIndexesToDelete.push(keyIndex);
+                keysSinceDeletion++;
+            // non duplicate keyframe
+            } else {
+                // Setting HOLD prevents interpolation between the deleted frames
+                // Don't do it if these are sequential keyframes.
+                if (keysSinceDeletion > 0) {
+                    // TODO: Should we instead bring back the last deleted key and do it on that?
+                    // Difference would only be noticible on low framerates.
+                    // lastKeyIndex = keyIndexesToDelete.pop();
+                    var lastKeyInType = prop.keyInInterpolationType(lastKeyIndex);
+                    var thisKeyOutType = prop.keyOutInterpolationType(keyIndex);
+
+                    prop.setInterpolationTypeAtKey(lastKeyIndex, lastKeyInType, KeyframeInterpolationType.HOLD);
+                    prop.setInterpolationTypeAtKey(keyIndex, KeyframeInterpolationType.HOLD, thisKeyOutType);
+                }
+                keysSinceDeletion = 0;
+                lastKeyFrame = keyFrame;
+                lastKeyIndex = keyIndex;
+            }
+        }
+
+        // Have to delete highest index first, because key indexes change
+        // upon deleting.
+        keyIndexesToDelete = keyIndexesToDelete.sort(function(a, b){
+            return b - a;
+        });
+
+        for (var n = 0; n < keyIndexesToDelete.length; n++){
+            prop.removeKey(keyIndexesToDelete[n]);
+        }
+    }
+}
+
 var proj = app.project;
 
 if(proj) {
     var DESELECT_ALL = app.findMenuCommandId("Deselect All");
     var CREATE_SHAPES_FROM_VECTOR_LAYER = app.findMenuCommandId("Create Shapes from Vector Layer");
     var CONVERT_EXPRESSION_TO_KEYFRAMES = app.findMenuCommandId("Convert Expression to Keyframes");
-
-    var properties = ["anchorPoint", "position", "rotation", "scale", "opacity"];
 
     /**
      * @type {[CompItem]} */
@@ -22,7 +309,7 @@ if(proj) {
 
         for(var i = 1; i <= app.project.numItems; i++) {
             var comp = app.project.item(i);
-    
+
             if(comp != null && comp instanceof CompItem) {
                 targets.push(comp);
             }
@@ -37,7 +324,7 @@ if(proj) {
 
     if(targets.length > 0) {
         app.beginUndoGroup("Prepare for Render");
-    
+
         for(var d = 0; d < targets.length; d++) {
             var comp = targets[d];
 
@@ -45,284 +332,201 @@ if(proj) {
 
             app.executeCommand(DESELECT_ALL);
 
-            /**
-             * @param {PropertyGroup} group 
-             */
-            function selectExpressionProps(group){
-                for(var k = 1; k <= group.numProperties; k++) {
-                    var prop = group.property(k);
-                    if (prop instanceof PropertyGroup || prop instanceof MaskPropertyGroup){
-                        selectExpressionProps(prop);
-                    } else if (prop.canSetExpression && prop.expressionEnabled) {
-                        prop.selected = true;
-                    }
-                }
-            }
-
-            // Convert all expressions to keyframes
+            // Make sure all Duik layers are unlocked and enabled
             for(var j = 1; j <= comp.numLayers; j++) {
                 var layer = comp.layer(j);
 
-                var isMask = layer.name.indexOf(' Mask') !== -1;
-
-                if(!isMask && !layer.enabled) continue;
-
-                selectExpressionProps(layer);
+                if(isDuikLayer(layer)) {
+                    layer.locked = false;
+                    layer.enabled = true;
+                }
             }
 
-            app.executeCommand(CONVERT_EXPRESSION_TO_KEYFRAMES);
+            {
+                var needsKeyframeCleanup = [];
+
+                // Convert all expressions to keyframes
+                for(var j = 1; j <= comp.numLayers; j++) {
+                    var layer = comp.layer(j);
+
+                    var isMask = layer.name.indexOf(' Mask') !== -1;
+
+                    if(!isMask && !layer.enabled) continue;
+
+                    if(isDuikLayer(layer)) continue;
+
+                    if(selectExpressionProps(layer, layer)) {
+                        needsKeyframeCleanup.push(layer);
+                    }
+                }
+
+                app.executeCommand(CONVERT_EXPRESSION_TO_KEYFRAMES);
+
+                // Go through all properties in all layers to remove frames outside of the work area, as well as duplicate keyframes
+                for(var j = 0; j < needsKeyframeCleanup.length; j++) {
+                    var layer = needsKeyframeCleanup[j];
+
+                    removeDuplicateKeyframes(layer, layer);
+                }
+            }
 
             // Set the correct framerate
             comp.frameRate = (comp.frameRate != 30 && comp.frameRate != 60 ? 30 : comp.frameRate);
 
             app.executeCommand(DESELECT_ALL);
 
-            var layerData = [];
+            /**
+             * Tracks which layers connect to which duik layers. This lets us re-parent our actual layers
+             * back to our other actual layers after converting the Duik transformations to keyframes,
+             * letting us remove all Duik structures.
+             *
+             * @type {{ [key: string]: string }}
+             */
+            var nonDuikToDuik = {};
 
-            // Copy keyframes from parented Duik structure props
+            /**
+             * @type {{ [key: string]: string }}
+             */
+            var duikToNonDuik = {};
+
+            var parentsToAdjust = [];
+
+            // Build up a mapping between Duik and non Duik layers
             for(var j = 1; j <= comp.numLayers; j++) {
                 var layer = comp.layer(j);
 
+                if(isDuikLayer(layer)) continue;
+
                 if(!layer.parent) continue;
 
-                if((layer.name.indexOf('S | ') !== -1 || layer.parent.name.indexOf('S | ') === -1) && layer.parent.name.indexOf('C | ') === -1) continue;
+                var parent = layer.parent;
 
-                var basePosition = layer.transform.position.value; // Dirty hack
-                var baseRotation = layer.transform.rotation.value; // Dirty hack
-                
-                var duikStruct = layer.parent;
+                // If the parent isn't a duik layer, skip it
+                if(!isDuikLayer(parent)) continue;
 
-                var layerDatum = { layer: layer, position: [], rotation: [], scale: [] };
+                nonDuikToDuik[layer.name] = parent.name;
+                duikToNonDuik[parent.name] = layer.name;
+                parentsToAdjust.push(layer.name);
+            }
 
-                var applyPosition = false;
+            {
+                var didChangeAtLeastOne = true;
 
-                if(!!layer.parent.parent) {
-                    if(layer.parent.parent.name.indexOf('S | ') !== -1)
-                        layer.parent = comp.layer(layer.parent.parent.name.split('S | ')[1]);
-                    else if(layer.parent.parent.name.indexOf('C | ') !== -1)
-                        layer.parent = comp.layer(layer.parent.parent.name.split('C | ')[1]);
-                    else{
-                        layer.parent = comp.layer(layer.parent.parent.name);
+                while(didChangeAtLeastOne) {
+                    didChangeAtLeastOne = false;
 
-                        applyPosition = true;
-                    }
-                }else{
-                    layer.parent = null;
+                    for(var j = 0; j < parentsToAdjust.length; j++) {
+                        var nonDuikLayerName = parentsToAdjust[j];
+                        var duikLayerName = nonDuikToDuik[nonDuikLayerName];
 
-                    applyPosition = true;
-                }
+                        var nonDuikLayer = comp.layer(nonDuikLayerName);
+                        var duikLayer = comp.layer(duikLayerName);
 
-                if(applyPosition) {
-                    var prop = layer.transform.position;
-                    var parentProp = duikStruct.transform.position;
+                        var newParentLayer = undefined;
 
-                    for(var l = 1; l <= parentProp.numKeys; l++) {
-                        layerDatum.position.push([ parentProp.keyTime(l), parentProp.keyValue(l) ]);
-                    }
+                        // If the Duik layer is not parented to another Duik layer, we can take the parent directly
+                        if(!isDuikLayer(duikLayer.parent)) {
+                            newParentLayer = duikLayer.parent;
+                        }else{
+                            // // Grab the non-Duik layer mapping and attach to that layer instead, if possible
+                            var nonDuikAttachmentLayerName = duikToNonDuik[duikLayer.parent.name];
 
-                    var flatten = true;
-                    for(var k = 1; k < layerDatum.position.length; k++) {
-                        if(layerDatum.position[k][1][0] != layerDatum.position[k - 1][1][0] || layerDatum.position[k][1][1] != layerDatum.position[k - 1][1][1]) {
-                            flatten = false;
-                            break;
-                        }
-                    }
+                            if(!nonDuikAttachmentLayerName) {
+                                // If there's no valid parent (this can happen in the case of feet where rotation is not inherited), null the parent
 
-                    if(flatten) {
-                        layerDatum.position.splice(1, layerDatum.position.length - 1);
-                    }
-                }
+                                newParentLayer = null;
+                            }else{
+                                var nonDuikAttachmentLayer = comp.layer(nonDuikAttachmentLayerName);
 
-                {
-                    var prop = layer.transform.rotation;
-                    var parentProp = duikStruct.transform.rotation;
-
-                    for(var l = 1; l <= parentProp.numKeys; l++) {
-                        var val = parentProp.keyValue(l);
-
-                        if(layerDatum.rotation.length > 0) {
-                            var val2 = layerDatum.rotation[layerDatum.rotation.length - 1];
-
-                            if(Math.sqrt(Math.pow(val, 2) + Math.pow(val2, 2)) > 180) {
-                                if(val2 > val) {
-                                    val -= 360;
-                                }else{
-                                    val += 360;
+                                // If the layer is not parented to a Duik layer, we can take that
+                                if(!isDuikLayer(nonDuikAttachmentLayer.parent)) {
+                                    newParentLayer = nonDuikAttachmentLayer;
                                 }
                             }
                         }
 
-                        layerDatum.rotation.push([ parentProp.keyTime(l), val ]);
-                    }
+                        if(newParentLayer !== undefined) {
+                            nonDuikLayer.parent = newParentLayer;
 
-                    var flatten = true;
-                    for(var k = 1; k < layerDatum.rotation.length; k++) {
-                        if(layerDatum.rotation[k][1] != layerDatum.rotation[k - 1][1]) {
-                            flatten = false;
-                            break;
+                            parentsToAdjust.splice(j, 1);
+                            j--;
+
+                            didChangeAtLeastOne = true;
                         }
                     }
-
-                    if(flatten) {
-                        layerDatum.rotation.splice(1, layerDatum.rotation.length - 1);
-                    }
                 }
 
-                {
-                    var prop = layer.transform.scale;
-                    var parentProp = duikStruct.transform.scale;
-
-                    for(var l = 1; l <= parentProp.numKeys; l++) {
-                        layerDatum.scale.push([ parentProp.keyTime(l), parentProp.keyValue(l) ]);
-                    }
-
-                    var flatten = true;
-                    for(var k = 1; k < layerDatum.scale.length; k++) {
-                        if(layerDatum.scale[k][1][0] != layerDatum.scale[k - 1][1][0] || layerDatum.scale[k][1][1] != layerDatum.scale[k - 1][1][1]) {
-                            flatten = false;
-                            break;
-                        }
-                    }
-                    
-                    if(flatten) {
-                        layerDatum.scale.splice(1, layerDatum.scale.length - 1);
-                    }
-                }
-
-                layerData.push(layerDatum);
-            }
-
-            for(var j = 0; j < layerData.length; j++) {
-                var layerDatum = layerData[j];
-
-                var layer = layerDatum.layer;
-                var positions = layerDatum.position;
-                var rotations = layerDatum.rotation;
-                var scales = layerDatum.scale;
-
-                for(var l = 0; l < positions.length; l++) {
-                    layer.transform.position.setValueAtTime(positions[l][0], positions[l][1]);
-                }
-
-                for(var l = 0; l < rotations.length; l++) {
-                    layer.transform.rotation.setValueAtTime(rotations[l][0], rotations[l][1]);
-                }
-
-                for(var l = 0; l < scales.length; l++) {
-                    layer.transform.scale.setValueAtTime(scales[l][0], scales[l][1]);
-                }
-            }
-            /**
-             * TODO: Is this actually necessary? Are keyframe indexes already sorted on time?
-             * @param {Property} prop
-             * @returns {[number]}
-             */
-             function getSortedKeyframeIndexes(prop){
-                var keyFrameMap = [];
-                if (prop.numKeys == 0){
-                    return [];
-                } else if (prop.numKeys == 1){
-                    return [1];
-                }
-                // Their array, 1-indexed...
-                for (var i = 1; i <= prop.numKeys; i++){
-                    keyFrameMap.push({
-                        keyIndex: i,
-                        time: prop.keyTime(i)
-                    });
-                }
-                keyFrameMap.sort(function (a, b){
-                    return a.time - b.time;
-                });
-                var sortedKeys = [];
-                for (var i = 0; i < keyFrameMap.length; i++){
-                    sortedKeys.push(keyFrameMap[i].keyIndex);
-                }
-                return sortedKeys;
-            }
-            /**
-             * @param {PropertyGroup} group 
-             */
-            function removeDuplicateKeyframes(group){
-                // Their array, 1-indexed...
-                for(var k = 1; k <= group.numProperties; k++) {
-                    var prop = group.property(k);
-                    if (prop instanceof PropertyGroup || prop instanceof MaskPropertyGroup){
-                        removeDuplicateKeyframes(prop);
-                        continue;
-                    }
-                    // skip if no or only one keyframe 
-                    if(prop.numKeys <= 1) {
-                        continue;
-                    }
-                    // If these keyframes weren't generated by "Convert Expression to KeyFrame",
-                    // skip it.
-                    if (!prop.canSetExpression || !prop.expression){
-                        continue;
-                    }
-                    var sortedKeyIndexes = getSortedKeyframeIndexes(prop);
-                    var lastKeyFrame = null;
-                    var lastKeyIndex = null;
-                    var keyIndexesToDelete = [];
-                    var keysSinceDeletion = 0;
-                    // Our own array, 0-indexed...
-                    for (var n = 0; n < sortedKeyIndexes.length; n++){
-                        var keyIndex = sortedKeyIndexes[n];
-                        var keyFrame = prop.keyValue(keyIndex);
-                        if (lastKeyFrame == null){
-                            lastKeyFrame = keyFrame;
-                            lastKeyIndex = keyIndex;
-                        // found a duplicate keyframe, delete after this...
-                        } else if (lastKeyFrame.toString() == keyFrame.toString()){
-                            keyIndexesToDelete.push(keyIndex);
-                            keysSinceDeletion++;
-                        // non duplicate keyframe
-                        } else {
-                            // Setting HOLD prevents interpolation between the deleted frames
-                            // Don't do it if these are sequential keyframes.
-                            if (keysSinceDeletion > 0){
-                                // TODO: Should we instead bring back the last deleted key and do it on that?
-                                // Difference would only be noticible on low framerates.
-                                // lastKeyIndex = keyIndexesToDelete.pop();
-                                var lastKeyInType = prop.keyInInterpolationType(lastKeyIndex);
-                                var thisKeyOutType = prop.keyOutInterpolationType(keyIndex);
-    
-                                prop.setInterpolationTypeAtKey(lastKeyIndex, lastKeyInType, KeyframeInterpolationType.HOLD);
-                                prop.setInterpolationTypeAtKey(keyIndex, KeyframeInterpolationType.HOLD, thisKeyOutType);
-                            }
-                            keysSinceDeletion = 0;
-                            lastKeyFrame = keyFrame;
-                            lastKeyIndex = keyIndex;
-                        }
-                    }
-                    // Have to delete highest index first, because key indexes change
-                    // upon deleting.
-                    keyIndexesToDelete = keyIndexesToDelete.sort(function(a, b){
-                        return b - a;
-                    });
-                    for (var n = 0; n < keyIndexesToDelete.length; n++){
-                        prop.removeKey(keyIndexesToDelete[n]);
-                    }
+                if(parentsToAdjust.length) {
+                    alert('Unable to adjust parent chain: ' + JSON.stringify(parentsToAdjust));
                 }
             }
 
-            // go through all properties in layer, remove duplicate keyframes
-            for(var j = 1; j <= comp.numLayers; j++) {
-                var layer = comp.layer(j);
-                
-                var isMask = layer.name.indexOf(' Mask') !== -1;
-                if(!isMask && !layer.enabled) continue;
+            // Copy position, rotation, and scale from the original Duik layer
+            for(var nonDuikLayerName in nonDuikToDuik) {
+                var nonDuikLayer = comp.layer(nonDuikLayerName);
+                var duikLayer = comp.layer(nonDuikToDuik[nonDuikLayerName]);
 
-                removeDuplicateKeyframes(layer);
+                var duikPositionLayer = duikLayer;
+                var duikRotationLayer = duikLayer;
+                var duikScaleLayer = duikLayer;
+
+                // If the duik layer is parented to an IK handle, use the IK handle properties instead. This handles the case of feet.
+                if(duikLayer.parent && isDuikIK(duikLayer.parent)) {
+                    duikPositionLayer = duikLayer.parent.parent.parent;
+                    duikRotationLayer = duikLayer.parent;
+                    duikScaleLayer = duikLayer.parent.parent.parent;
+
+                    // Something is up with this, but I'm unsure what. It can place the layer in the wrong place,
+                    // which is (currently) fixed by returning the time to the first frame.
+
+                    var baseNonDuikPosition = nonDuikLayer.transform.position.valueAtTime(0, true);
+                    var baseDuikPosition = duikPositionLayer.transform.position.valueAtTime(0, true);
+
+                    var offset = [
+                        baseNonDuikPosition[0] - baseDuikPosition[0],
+                        baseNonDuikPosition[1] - baseDuikPosition[1],
+                    ];
+
+                    var baseNonDuikAnchorPoint = nonDuikLayer.transform.anchorPoint.valueAtTime(0, true);
+
+                    // Set the anchor point to the duik position
+                    nonDuikLayer.transform.anchorPoint.setValue([
+                        baseNonDuikAnchorPoint[0] - offset[0],
+                        baseNonDuikAnchorPoint[1] - offset[1],
+                    ]);
+
+                    nonDuikLayer.transform.position.setValue([
+                        baseNonDuikPosition[0] - offset[0],
+                        baseNonDuikPosition[1] - offset[1],
+                    ]);
+                }else{
+                    // So, the position applier thing doesn't seem to work for non IK handle parented things (feet). Fix this later if necessary.
+                    duikPositionLayer = null;
+                }
+
+                if(duikPositionLayer) {
+                    copyKeyframes(comp, duikPositionLayer.transform.position, nonDuikLayer.transform.position, 0.25);
+                }
+
+                copyKeyframes(comp, duikRotationLayer.transform.rotation, nonDuikLayer.transform.rotation, 0.25);
+
+                copyKeyframes(comp, duikScaleLayer.transform.scale, nonDuikLayer.transform.scale, 0.25);
             }
 
+            // Remove all Duik layers
             for(var j = 1; j <= comp.numLayers; j++) {
                 var layer = comp.layer(j);
 
-                if(layer.name.indexOf('S | ') !== -1 || layer.name.indexOf('C | ') !== -1) {
+                if(isDuikLayer(layer)) {
                     layer.remove();
                     j--;
                 }
+            }
+
+            for(var j = 1; j <= comp.numLayers; j++) {
+                var layer = comp.layer(j);
+
+                removeUnnecessaryKeyframes(layer, layer);
             }
 
             // If it has a layer called "full mask" then we need to do some fancy shit to make the border hella swick
@@ -383,23 +587,23 @@ if(proj) {
 
                 // After this, only the new shape layers will be marked as selected.
                 app.executeCommand(CREATE_SHAPES_FROM_VECTOR_LAYER);
-                
+
                 // Fix the layer's parents
                 for(var i = 1; i <= fillComp.numLayers; i++) {
                     var layer = fillComp.layer(i);
-                    
+
                     if(!layer.parent) continue;
-                    
+
                     if(!layer.parent.nullLayer && !(layer.parent instanceof ShapeLayer))
                         layer.parent = fillComp.layer(layer.parent.name + ' Outlines');
                 }
-                
+
                 app.executeCommand(DESELECT_ALL);
-                
+
                 // Remove any non-shape layers
                 for(var i = 1; i <= fillComp.numLayers; i++) {
                     var layer = fillComp.layer(i);
-                    
+
                     if(!layer.nullLayer && !(layer instanceof ShapeLayer || layer instanceof TextLayer)) {
                         layer.remove();
                         i--;
@@ -438,7 +642,7 @@ if(proj) {
                 // Remove bordered layers from the main comp
                 for(var i = 1; i <= mainComp.numLayers; i++) {
                     var layer = mainComp.layer(i);
-                    
+
                     // The main comp has not been processed, yet, so add " Outlines" to the layer name
                     if(!layer.nullLayer && !!attachesToBorder[layer.name + ' Outlines']) {
                         layer.remove();
@@ -449,13 +653,13 @@ if(proj) {
                 // Remove unbordered layers from the fill comp
                 for(var i = 1; i <= fillComp.numLayers; i++) {
                     var layer = fillComp.layer(i);
-                    
+
                     if(!layer.nullLayer && !attachesToBorder[layer.name]) {
                         layer.remove();
                         i--;
                     }
                 }
-                
+
                 // Duplicate the fill comp so we can make the border layers
                 var borderComp = fillComp.duplicate();
                 borderComp.name = comp.name + ' Border';
@@ -473,7 +677,7 @@ if(proj) {
                         var borderGroup = borderLayer.content.property(j);
 
                         var borderStroke = borderGroup.content.property('Stroke 1');
-                            
+
                         if(!!borderStroke)
                             borderStroke.remove();
 
@@ -576,10 +780,10 @@ if(proj) {
                 targets.unshift(fillComp);
                 targets.unshift(borderComp);
                 d += 2;
-                
+
                 // Add the "main" comp to the targets list so it can be processed as normal
                 targets.push(mainComp);
-                
+
                 comp.openInViewer();
             }
 
@@ -611,11 +815,11 @@ if(proj) {
                         targets.push(layer.source);
                     continue;
                 }
-            
+
                 layer.selected = true;
-                
+
                 app.executeCommand(CREATE_SHAPES_FROM_VECTOR_LAYER);
-                
+
                 layer.selected = false;
 
                 var layerOutline = comp.layer(layer.name + ' Outlines');
@@ -661,30 +865,38 @@ if(proj) {
                 if(layer.name.indexOf(' Outlines') !== -1) continue;
 
                 if(layer instanceof ShapeLayer) continue;
-                
+
                 if(layer.source instanceof CompItem) continue;
-                
+
                 if(layer.nullLayer) continue;
 
                 layer.remove();
 
                 j--;
             }
+
+            // Remove the Outlines suffix from all layers
+            for(var j = 1; j <= comp.numLayers; j++) {
+                var layer = comp.layer(j);
+
+                if(layer.name.indexOf(' Outlines') !== -1) {
+                    layer.name = layer.name.replace(' Outlines', '');
+                }
+            }
         }
 
-    
         // Obfuscation, baby. Randomize all layer names. >:3
         if(confirm('Obfuscate?')) {
             var c = 0;
-            
+
             for(var d = 0; d < targets.length; d++) {
                 var comp = targets[d];
-    
+
                 for(var j = 1; j <= comp.numLayers; j++) {
                     var layer = comp.layer(j);
-    
+
                     layer.name = c.toString(16);
-    
+
                     c++;
                 }
             }
@@ -692,6 +904,6 @@ if(proj) {
 
         app.endUndoGroup();
     }
-    
+
     app.executeCommand(app.findMenuCommandId("Bodymovin for Telegram Stickers"));
 }
