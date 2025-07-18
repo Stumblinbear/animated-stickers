@@ -1,3 +1,8 @@
+// This script imports all `.ai` files in the directory of the current project, puts them each in their own project folder,
+// sets their framerates to 30 (required by Telegram) and the composition size to 512x512 to account for `.ai` files that
+// have a size of 1024x1024 to account for visual overflow (i.e. if you have a sticker that "overflows" the edges of the
+// sticker and body parts would be cut off at a smaller size).
+
 var proj = app.project;
 
 function fullPathName(item) {
