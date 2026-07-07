@@ -1,0 +1,14 @@
+{
+  "name": "animated-stickers",
+  "version": "1.0.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Stumblinbear/animated-stickers.git"
+  },
+  "keywords": [],
+  "author": "Trevin Miller <stumblinbear@gmail.com>",
+  "license": "MIT",
+  "devDependencies": {
+    "types-for-adobe": "^7.2.5"
+  }
+}

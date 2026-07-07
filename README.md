@@ -34,6 +34,26 @@ Due to the vectorization process, you'll end up with pretty large rendered stick
 2. Find the line that says `{ level: zlib.Z_BEST_COMPRESSION }`
 3. Replace it with `{ level: zlib.Z_BEST_COMPRESSION, memLevel: 9, strategy: zlib.Z_FILTERED }`
 
+### Further reducing file sizes
+
+The Lottie format keeps a lot of unnecessary metadata in the exported files, including layer names, property names and composition names. You can remove these by searching for any line that assigns the `nm` field (`<var>.nm = <name>;` and `nm: <name>`) in the Bodymovin plugin files and setting them to an empty string.
+
+Additionally, the exporter spits out colors with essentially full prevision, but this is quite excessive.
+
+1. Edit `keyframeHelper.jsx` in the Bodymovin plugin files
+2. Find the `getPropertyValue` function
+3. Use `value[i] = Math.round(value[i]*1000)/1000;` to round the values to a more reasonable precision
+
+Optionally, you can use the following to remove unnecessary alpha values from the colors:
+
+```js
+if (value.length === 4 && value[3] === 1) {
+  value.pop();
+}
+```
+
+In files that are bumping up against the 64kb limit, these changes can cut the file size by 10-20kb.
+
 ### Hide compositions created by "Prepare for Render"
 
 When running the "Prepare for Render" script with a "Full Mask" applied, it will create a few extra compositions in order to do the effect properly. Applying this edit will hide these extra compositions from the "Bodymovin for Telegram Stickers" window that you render your finished stickers from.
@@ -43,7 +63,14 @@ When running the "Prepare for Render" script with a "Full Mask" applied, it will
 3. Replace it with the following:
 
 ```js
-if(item.name.indexOf(' Fill') + item.name.indexOf(' Border') + item.name.indexOf(' Main') + item.name.indexOf('Pre-comp') + item.name.indexOf(' Comp') > -1)
-	return false;
-return !showOnlySelected || showOnlySelected && item.selected;
+if (
+  item.name.indexOf(" Fill") +
+    item.name.indexOf(" Border") +
+    item.name.indexOf(" Main") +
+    item.name.indexOf("Pre-comp") +
+    item.name.indexOf(" Comp") >
+  -1
+)
+  return false;
+return !showOnlySelected || (showOnlySelected && item.selected);
 ```
