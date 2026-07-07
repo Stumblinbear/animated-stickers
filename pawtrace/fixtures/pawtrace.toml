@@ -1,0 +1,150 @@
+[default]
+detail = 10.0
+merge_dist = 0.07999999821186066
+alphamax = 1.43
+opttolerance = 3.4
+
+[profiles."* Fill"]
+detail = 9.5
+max_colors = 24
+merge_dist = 0.05999999865889549
+hist_bits = 4
+alphamax = 2.0
+opttolerance = 3.45
+simplify = 4.0
+mode_filter = 0
+smoothing = 1.2999999523162842
+absorb_dist = 0.07999999821186066
+stroke_width = 16.0
+
+[profiles.Bed]
+detail = 10.5
+merge_dist = 0.07500000298023224
+gradient_dist = 0.0020000000949949026
+absorb_dist = 0.23999999463558197
+
+[profiles."Deer *"]
+max_colors = 9
+opttolerance = 3.1
+seam_slack = 2.0
+mode_filter = 4
+color_cleanup = 4
+smoothing = 1.5
+absorb_dist = 0.10000000149011612
+
+[profiles."Seff *"]
+detail = 10.5
+merge_dist = 0.0
+gradient_dist = 0.0020000000949949026
+alphamax = 0.86
+opttolerance = 1.85
+seam_slack = 1.9
+absorb_dist = 0.10000000149011612
+
+[overrides."Deer Body"]
+stroke_merge_dist = 0.13500000536441803
+stroke_merge_width = 4.5
+
+[overrides."Deer L Forearm"]
+
+[overrides."Deer L Hand"]
+simplify = 4.800000000000001
+
+[overrides."Deer L Hand Border"]
+simplify = 3.6
+
+[overrides."Deer L Thigh"]
+simplify = 3.1
+
+[overrides."Deer PP"]
+detail = 11.0
+max_colors = 18
+merge_dist = 0.0
+hist_bits = 5
+pins = []
+alphamax = 1.2333333333333334
+opttolerance = 1.9500000000000002
+seam_slack = 3.4000000000000004
+simplify = 2.7
+mode_filter = 2
+color_cleanup = 2
+stroke_merge_width = 3.5
+
+[overrides."Deer Pouch"]
+pins = []
+simplify = 3.3000000000000003
+stroke_merge_dist = 0.12999999523162842
+
+[overrides."Deer R Thumb"]
+simplify = 6.1000000000000005
+
+[overrides."Seff Body"]
+merge_dist = 0.07500000298023224
+gradient_dist = 0.0005000000237487257
+locked = [
+    "#525353",
+    "#484848",
+    "#383839",
+]
+simplify = 3.6
+color_cleanup = 4
+stroke_merge_dist = 0.11999999731779099
+stroke_merge_width = 4.0
+
+[overrides."Seff Floof"]
+merge_dist = 0.05000000074505806
+gradient_dist = 0.0005000000237487257
+locked = [
+    "#4a4a4a",
+    "#515252",
+]
+simplify = 4.0
+
+[overrides."Seff Hair"]
+detail = 10.5
+gradient_dist = 0.0010000000474974513
+seam_slack = 1.8
+color_cleanup = 2
+
+[overrides."Seff Hair 2"]
+simplify = 3.9000000000000004
+
+[overrides."Seff Head"]
+merge_dist = 0.02500000037252903
+gradient_dist = 0.0005000000237487257
+locked = [
+    "#d6d6d6",
+    "#494949",
+    "#373738",
+]
+pins = [[
+    532,
+    518,
+]]
+simplify = 3.6
+color_cleanup = 1
+
+[overrides."Seff L Arm"]
+simplify = 4.6000000000000005
+
+[overrides."Seff L Ear"]
+simplify = 5.0
+
+[overrides."Seff Mouf"]
+detail = 10.0
+locked = ["#9ba0a7"]
+pins = [[
+    502,
+    461,
+]]
+simplify = 3.5
+absorb_dist = 0.10999999940395355
+
+[overrides."Seff R Brow"]
+simplify = 3.2
+
+[overrides."Seff R Eyelid"]
+simplify = 3.4000000000000004
+
+[overrides."Seff Tongue"]
+simplify = 5.6000000000000005

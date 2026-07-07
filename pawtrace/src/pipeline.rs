@@ -1,0 +1,589 @@
+//! Per-layer orchestration. The stages, in order: crop to the art's bbox,
+//! supersample + flatten (raster), palette extract + remap (palette),
+//! transition-band absorption + region segmentation (regions), then one
+//! traced shape per region (trace + fit), painted as an outside-in stack.
+
+use crate::trace::TracedPath;
+use crate::{config::Config, palette, raster, regions, timing, trace};
+use anyhow::Result;
+use image::{GrayImage, RgbaImage};
+
+/// One layer's traced result: color hex -> paths, in bottom-first paint
+/// order. Colors may repeat: paint order is per region, not per color.
+///
+/// `doc_dim` is max(document width, height). Pass the document's dimension,
+/// never the layer's own. `doc_offset` is where `src`'s origin sits in the
+/// document, in source px: (0, 0) for a document-sized layer, the crop
+/// origin for a pre-cropped one. It anchors `cfg.pins`, which are document
+/// coordinates.
+pub fn run(
+    src: &RgbaImage,
+    cfg: &Config,
+    doc_dim: u32,
+    doc_offset: (u32, u32),
+) -> Result<Vec<(String, Vec<TracedPath>)>> {
+    // PSD layers arrive document-sized with tight art, so tracing the full
+    // canvas wastes nearly all the work on transparent pixels. Trace the crop
+    // and translate the paths back by the offset below.
+    let Some((src, ox, oy)) = crop_to_alpha(src, cfg) else {
+        return Ok(Vec::new()); // fully transparent layer
+    };
+    let pins = scale_pins(
+        &cfg.pins,
+        (doc_offset.0 + ox, doc_offset.1 + oy),
+        cfg.scale,
+        (src.width(), src.height()),
+    );
+
+    // Uniform-color layers (solid fill and border mattes are ~half a
+    // production PSD) need no palette, remap, absorption, or quantization:
+    // the scaled alpha already determines their regions, and resizing one
+    // plane costs a quarter of resizing four.
+    let (alpha, regs) = if let Some(color) = raster::uniform_color(&src, cfg.alpha_threshold) {
+        let alpha = timing::PREP.time(|| raster::scale_alpha(&src, cfg));
+        let regs = timing::SEGMENT.time(|| regions::from_mask(&alpha, color));
+        (alpha, regs)
+    } else {
+        let prep = timing::PREP.time(|| raster::prepare(&src, cfg));
+        // detail normalizes against the document, not the crop: a tiny layer
+        // would otherwise derive a palette floor larger than itself (README).
+        let pal = timing::PALETTE
+            .time(|| palette::extract_palette(&prep.flat, &prep.alpha, cfg, doc_dim));
+        let quant = timing::REMAP.time(|| {
+            let quant = palette::remap(&prep.flat, &prep.alpha, &pal);
+            if cfg.color_cleanup > 0 {
+                palette::label_smooth(&quant, &prep.alpha, cfg.color_cleanup)
+            } else {
+                quant
+            }
+        });
+        // One solid shape per connected same-color region (transition bands
+        // absorbed), painted as a containment forest: a shape covers its
+        // subtree of neighbors, so the heaviest seams are fit once, by the
+        // shape on top, and a fit wobble shifts a seam instead of opening a
+        // crack to the background.
+        let regs = regions::segment_absorbed(&quant, &prep.alpha, cfg);
+        (prep.alpha, regs)
+    };
+    let mut out = simplify_paths(trace_regions(&regs, &alpha, cfg, doc_dim, &pins), cfg);
+
+    // Crop offset in scaled (traced) coordinate space.
+    let (sx, sy) = ((ox * cfg.scale) as f64, (oy * cfg.scale) as f64);
+    for (_, paths) in &mut out {
+        for p in paths {
+            p.translate(sx, sy);
+        }
+    }
+    Ok(out)
+}
+
+/// Runs the final anchor-reduction pass over every traced path when
+/// `cfg.simplify > 0`; a no-op (returned unchanged) otherwise. Corner
+/// threshold matches the tracer's, so a corner kept at fit time is kept
+/// here.
+pub fn simplify_paths(
+    mut colors: Vec<(String, Vec<TracedPath>)>,
+    cfg: &Config,
+) -> Vec<(String, Vec<TracedPath>)> {
+    if cfg.simplify <= 0.0 {
+        return colors;
+    }
+    let corner_threshold = cfg.corner_threshold();
+    use rayon::prelude::*;
+    colors.par_iter_mut().for_each(|(_, paths)| {
+        for p in paths.iter_mut() {
+            *p = crate::fit::simplify_closed(p, cfg.simplify, corner_threshold);
+        }
+    });
+    colors
+}
+
+/// Converts document-space pin points into the scaled space of a crop at
+/// `origin`, dropping pins outside it. `(w, h)` is the crop size in source
+/// px. The +scale/2 lands each pin on its source pixel's center.
+pub fn scale_pins(
+    pins: &[[u32; 2]],
+    origin: (u32, u32),
+    scale: u32,
+    (w, h): (u32, u32),
+) -> Vec<(u32, u32)> {
+    pins.iter()
+        .filter_map(|p| {
+            let x = p[0].checked_sub(origin.0).filter(|&x| x < w)?;
+            let y = p[1].checked_sub(origin.1).filter(|&y| y < h)?;
+            Some((x * scale + scale / 2, y * scale + scale / 2))
+        })
+        .collect()
+}
+
+/// Traces segmented regions into color-grouped filled paths, in bottom-first
+/// paint order (outermost shape first), in the alpha mask's coordinate space.
+/// Shared by run() and the GUI's cached stage pipeline. `pins` are
+/// speckle-floor exemption points in the same scaled space as the regions.
+pub fn trace_regions(
+    regs: &[regions::Region],
+    alpha: &GrayImage,
+    cfg: &Config,
+    doc_dim: u32,
+    pins: &[(u32, u32)],
+) -> Vec<(String, Vec<TracedPath>)> {
+    // Shapes and traces run in parallel (nested rayon inside the per-layer
+    // parallelism is fine: it's one shared thread pool). Assembly stays
+    // sequential, so paint order and output are unchanged.
+    use rayon::prelude::*;
+    let shapes = surviving_shapes(regs, alpha, cfg, doc_dim, pins);
+    let traced: Vec<([u8; 3], Vec<TracedPath>)> = timing::TRACE.time(|| {
+        shapes
+            .par_iter()
+            .map(|(color, mask, slack, (bx, by))| {
+                let mut paths = trace::trace_mask(mask, cfg, slack.as_ref());
+                // -1.0: the shape mask's origin sits one border pixel above
+                // and left of the region bbox (see region_shape).
+                for p in &mut paths {
+                    p.translate(*bx as f64 - 1.0, *by as f64 - 1.0);
+                }
+                (*color, paths)
+            })
+            .collect()
+    });
+
+    let mut out: Vec<(String, Vec<TracedPath>)> = Vec::new();
+    for (c, mut paths) in traced {
+        if paths.is_empty() {
+            continue;
+        }
+        let hex = format!("#{:02x}{:02x}{:02x}", c[0], c[1], c[2]);
+        match out.last_mut() {
+            Some((last_hex, last_paths)) if *last_hex == hex => last_paths.append(&mut paths),
+            _ => out.push((hex, paths)),
+        }
+    }
+    out
+}
+
+/// A smoothed boundary polyline and its corner points, in the alpha mask's
+/// scaled coordinate space, for the debug view.
+pub struct DebugContour {
+    pub points: Vec<(f64, f64)>,
+    pub corners: Vec<(f64, f64)>,
+    /// Per-vertex seam-slack flag, aligned with `points`: a set flag marks a
+    /// vertex fit at the slackened tolerance.
+    pub slack: Vec<bool>,
+}
+
+/// The smoothed boundary and detected corners for every shape that
+/// [`trace_regions`] would trace, in the same coordinate space as its paths.
+/// Shows what the fit is about to run on.
+pub fn debug_contours(
+    regs: &[regions::Region],
+    alpha: &GrayImage,
+    cfg: &Config,
+    doc_dim: u32,
+    pins: &[(u32, u32)],
+) -> Vec<DebugContour> {
+    use rayon::prelude::*;
+    surviving_shapes(regs, alpha, cfg, doc_dim, pins)
+        .par_iter()
+        .flat_map(|(_, mask, slack, (bx, by))| {
+            let (dx, dy) = (*bx as f64 - 1.0, *by as f64 - 1.0);
+            trace::smoothed_contours(mask, cfg, slack.as_ref())
+                .into_iter()
+                .map(|(pts, corners, flags)| {
+                    let shift = |&(x, y): &(f64, f64)| (x + dx, y + dy);
+                    let corners = corners.iter().map(|&i| shift(&pts[i])).collect();
+                    DebugContour {
+                        points: pts.iter().map(shift).collect(),
+                        corners,
+                        slack: flags,
+                    }
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+/// A paintable shape in paint order: `(region color, shape mask, seam-slack
+/// mask, mask bbox origin)`. The seam-slack mask is `None` when seam slack is
+/// off.
+type Shape = ([u8; 3], GrayImage, Option<GrayImage>, (u32, u32));
+
+/// The paintable shapes for the regions that clear the speckle floor (or
+/// hold a pin), in paint order: `(region color, shape mask, seam-slack mask,
+/// mask bbox origin)`. Shapes stack as a containment forest: each mask is the
+/// union of its subtree in a seam-weighted spanning tree, so a parent's shape
+/// covers its children and is painted before them. A pinned region is
+/// exempt from the floor, since the pin marks a small feature (a tooth, a
+/// glint) as deliberate.
+///
+/// The seam-slack mask, over the shape mask's grid, marks shape pixels
+/// 4-adjacent to a neighbor region whose color is within `2 *
+/// stroke_merge_dist` of the shape's own, so the fit can loosen there. It is
+/// `None` when `seam_slack` is off.
+fn surviving_shapes(
+    regs: &[regions::Region],
+    alpha: &GrayImage,
+    cfg: &Config,
+    doc_dim: u32,
+    pins: &[(u32, u32)],
+) -> Vec<Shape> {
+    use rayon::prelude::*;
+    let turdsize = cfg.turdsize(doc_dim) as u64;
+    // Sub-floor regions merge into a neighbor before the floor is applied:
+    // quantizing a gradient cuts thin features (an outline over shading)
+    // into short same-color arcs, each below the floor on its own, and
+    // culling them punched holes in visibly solid linework.
+    let regs = regions::merge_speckles(regs, alpha.dimensions(), turdsize, pins);
+    let (w, h) = alpha.dimensions();
+
+    let areas: Vec<u64> = timing::SHAPES.time(|| {
+        regs.par_iter()
+            .map(|r| regions::region_shape(r, alpha, turdsize).1)
+            .collect()
+    });
+    let survivors: Vec<usize> = (0..regs.len())
+        .filter(|&i| areas[i] >= turdsize || pins.iter().any(|&(x, y)| regs[i].contains(x, y)))
+        .collect();
+    if survivors.is_empty() {
+        return Vec::new();
+    }
+
+    timing::SHAPES.time(|| {
+        let m = survivors.len();
+        // Survivor id per pixel. Culled regions stay unlabeled and read as
+        // background here; their pixels return via hole-filling below.
+        let mut label = vec![u32::MAX; (w * h) as usize];
+        for (si, &ri) in survivors.iter().enumerate() {
+            let r = &regs[ri];
+            for &(px, py) in &r.pixels {
+                label[((r.y0 + py) * w + (r.x0 + px)) as usize] = si as u32;
+            }
+        }
+        let mut adj: Vec<std::collections::BTreeMap<u32, u64>> = vec![Default::default(); m];
+        let mut open_len = vec![0u64; m]; // frontier against transparency/canvas edge
+        for (si, &ri) in survivors.iter().enumerate() {
+            let r = &regs[ri];
+            for &(px, py) in &r.pixels {
+                let (x, y) = (r.x0 + px, r.y0 + py);
+                for (nx, ny) in [
+                    (x.wrapping_sub(1), y),
+                    (x + 1, y),
+                    (x, y.wrapping_sub(1)),
+                    (x, y + 1),
+                ] {
+                    if nx >= w || ny >= h {
+                        open_len[si] += 1;
+                    } else {
+                        let o = label[(ny * w + nx) as usize];
+                        if o == u32::MAX {
+                            if alpha.get_pixel(nx, ny)[0] == 0 {
+                                open_len[si] += 1;
+                            }
+                        } else if o != si as u32 {
+                            *adj[si].entry(o).or_insert(0) += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        // A maximum spanning tree per connected component, edges weighted by
+        // seam length, rooted at the longest transparency frontier. Each
+        // shape is its subtree's union, so parents cover children: the
+        // longest seams become tree edges and are fit once, by the child,
+        // and a fit crack along any seam exposes an ancestor's color, never
+        // the background. Not a single total-order stack: that re-traces a
+        // seam once per shape between its two regions' paint positions, and
+        // no total order keeps every neighbor pair adjacent.
+        let mut comp_of = vec![u32::MAX; m];
+        let mut comps: Vec<Vec<u32>> = Vec::new();
+        for s in 0..m {
+            if comp_of[s] != u32::MAX {
+                continue;
+            }
+            let cid = comps.len() as u32;
+            comp_of[s] = cid;
+            let mut queue = vec![s as u32];
+            let mut members = Vec::new();
+            while let Some(i) = queue.pop() {
+                members.push(i);
+                for &nb in adj[i as usize].keys() {
+                    if comp_of[nb as usize] == u32::MAX {
+                        comp_of[nb as usize] = cid;
+                        queue.push(nb);
+                    }
+                }
+            }
+            comps.push(members);
+        }
+        let mut parent_of = vec![u32::MAX; m];
+        let mut in_tree = vec![false; m];
+        let mut order: Vec<u32> = Vec::with_capacity(m); // paint order, parents first
+        for comp in &comps {
+            let root = *comp
+                .iter()
+                .max_by_key(|&&i| {
+                    let i = i as usize;
+                    (open_len[i], areas[survivors[i]], std::cmp::Reverse(i))
+                })
+                .unwrap();
+            in_tree[root as usize] = true;
+            order.push(root);
+            // Prim's, maximizing: attach the heaviest tree-to-outside seam.
+            for _ in 1..comp.len() {
+                let mut best: Option<(u64, u32, u32)> = None; // (seam, child, parent)
+                for &t in comp {
+                    if !in_tree[t as usize] {
+                        continue;
+                    }
+                    for (&nb, &seam) in &adj[t as usize] {
+                        if in_tree[nb as usize] {
+                            continue;
+                        }
+                        let cand = (seam, nb, t);
+                        if best.is_none_or(|(bs, bc, bp)| {
+                            (cand.0, std::cmp::Reverse(cand.1), std::cmp::Reverse(cand.2))
+                                > (bs, std::cmp::Reverse(bc), std::cmp::Reverse(bp))
+                        }) {
+                            best = Some(cand);
+                        }
+                    }
+                }
+                let Some((_, c, p)) = best else { break };
+                in_tree[c as usize] = true;
+                parent_of[c as usize] = p;
+                order.push(c);
+            }
+        }
+
+        // Emit children first, folding each subtree's pixels and bbox into
+        // its parent, so every node's mask is built from its full subtree.
+        let mut sub: Vec<Vec<u32>> = (0..m as u32).map(|i| vec![i]).collect();
+        let mut bbox: Vec<(u32, u32, u32, u32)> = survivors
+            .iter()
+            .map(|&ri| {
+                let r = &regs[ri];
+                (r.x0, r.y0, r.x1, r.y1)
+            })
+            .collect();
+        // A neighbor is "low contrast" when its color sits within this OKLab
+        // distance of the shape's own, piggybacking on the stroke-merge scale:
+        // colors that close are already treated as interchangeable linework.
+        let slack_thresh = 2.0 * cfg.stroke_merge_dist;
+        let want_slack = cfg.seam_slack > 1.0 && slack_thresh > 0.0;
+        let mut shape: Vec<Option<Shape>> = (0..m).map(|_| None).collect();
+        for &si in order.iter().rev() {
+            let si = si as usize;
+            let (x0, y0, x1, y1) = bbox[si];
+            let mut mask = GrayImage::new(x1 - x0 + 3, y1 - y0 + 3);
+            for &mi in &sub[si] {
+                let r = &regs[survivors[mi as usize]];
+                for &(px, py) in &r.pixels {
+                    mask.put_pixel(r.x0 + px - x0 + 1, r.y0 + py - y0 + 1, image::Luma([255]));
+                }
+            }
+            regions::fill_holes(&mut mask, (x0, y0), alpha, turdsize);
+            let slack = want_slack.then(|| {
+                slack_mask(&mask, (x0, y0), regs[survivors[si]].color, &label, &survivors, &regs, (w, h), slack_thresh)
+            });
+            shape[si] = Some((regs[survivors[si]].color, mask, slack, (x0, y0)));
+            let p = parent_of[si];
+            if p != u32::MAX {
+                let moved = std::mem::take(&mut sub[si]);
+                sub[p as usize].extend(moved);
+                let (sb, pb) = (bbox[si], bbox[p as usize]);
+                bbox[p as usize] = (
+                    pb.0.min(sb.0),
+                    pb.1.min(sb.1),
+                    pb.2.max(sb.2),
+                    pb.3.max(sb.3),
+                );
+            }
+        }
+        order
+            .iter()
+            .map(|&si| shape[si as usize].take().unwrap())
+            .collect()
+    })
+}
+
+/// Builds a shape's seam-slack mask over its `mask` grid: a shape pixel is
+/// set when a 4-neighbor lies outside the shape in a survivor region whose
+/// color is within `thresh` (OKLab ΔE) of `own`. Transparency and
+/// higher-contrast neighbors stay unset. `origin` is the bbox origin, so mask
+/// pixel `(mx, my)` is scaled-space `(origin.0 - 1 + mx, origin.1 - 1 + my)`;
+/// `label` maps a scaled-space pixel to its survivor id, or `u32::MAX`.
+#[allow(clippy::too_many_arguments)]
+fn slack_mask(
+    mask: &GrayImage,
+    origin: (u32, u32),
+    own: [u8; 3],
+    label: &[u32],
+    survivors: &[usize],
+    regs: &[regions::Region],
+    (w, h): (u32, u32),
+    thresh: f32,
+) -> GrayImage {
+    let (bw, bh) = mask.dimensions();
+    let (ox, oy) = (origin.0 as i64 - 1, origin.1 as i64 - 1);
+    let mut out = GrayImage::new(bw, bh);
+    let low_contrast = |o: u32| -> bool {
+        o != u32::MAX
+            && crate::config::color_dist(own, regs[survivors[o as usize]].color) < thresh
+    };
+    for my in 0..bh {
+        for mx in 0..bw {
+            if mask.get_pixel(mx, my)[0] == 0 {
+                continue;
+            }
+            let touches = [(-1i64, 0i64), (1, 0), (0, -1), (0, 1)].into_iter().any(|(dx, dy)| {
+                let (nmx, nmy) = (mx as i64 + dx, my as i64 + dy);
+                // A neighbor still inside the shape is not a seam.
+                if nmx >= 0 && nmy >= 0 && nmx < bw as i64 && nmy < bh as i64
+                    && mask.get_pixel(nmx as u32, nmy as u32)[0] != 0
+                {
+                    return false;
+                }
+                let (sx, sy) = (ox + nmx, oy + nmy);
+                sx >= 0 && sy >= 0 && sx < w as i64 && sy < h as i64
+                    && low_contrast(label[(sy as u32 * w + sx as u32) as usize])
+            });
+            if touches {
+                out.put_pixel(mx, my, image::Luma([255]));
+            }
+        }
+    }
+    out
+}
+
+/// Crops to the bounding box of pixels at or above the alpha threshold.
+/// Returns the crop and its (x, y) offset in the source image, or `None` if
+/// nothing is opaque.
+fn crop_to_alpha(src: &RgbaImage, cfg: &Config) -> Option<(RgbaImage, u32, u32)> {
+    let (w, h) = src.dimensions();
+    let (mut x0, mut y0, mut x1, mut y1) = (w, h, 0u32, 0u32);
+    for (x, y, p) in src.enumerate_pixels() {
+        if p.0[3] >= cfg.alpha_threshold {
+            x0 = x0.min(x);
+            y0 = y0.min(y);
+            x1 = x1.max(x);
+            y1 = y1.max(y);
+        }
+    }
+    if x0 > x1 {
+        return None;
+    }
+    // Pad so the mode filter has room at the crop edges. It operates in
+    // scaled space, hence the division by scale. The +1 keeps a transparent
+    // ring around the silhouette.
+    let pad = 1 + (cfg.mode_filter / 2).div_ceil(cfg.scale.max(1));
+    let x0 = x0.saturating_sub(pad);
+    let y0 = y0.saturating_sub(pad);
+    let x1 = (x1 + pad).min(w - 1);
+    let y1 = (y1 + pad).min(h - 1);
+    let crop = image::imageops::crop_imm(src, x0, y0, x1 - x0 + 1, y1 - y0 + 1).to_image();
+    Some((crop, x0, y0))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::regions;
+
+    #[test]
+    fn pinned_regions_survive_the_speckle_floor() {
+        // 16x16 dark field with a 2x2 white patch: area 4, far below the
+        // turdsize this config produces (50).
+        let dark = [10u8, 10, 10];
+        let white = [255u8, 255, 255];
+        let mut quant = image::RgbImage::from_pixel(16, 16, image::Rgb(dark));
+        let alpha = GrayImage::from_pixel(16, 16, image::Luma([255]));
+        for y in 7..9 {
+            for x in 7..9 {
+                quant.put_pixel(x, y, image::Rgb(white));
+            }
+        }
+        let cfg = Config { scale: 1, detail: 10.0, ..Default::default() };
+        let regs = regions::segment(&quant, &alpha);
+
+        let hexes = |out: Vec<(String, Vec<TracedPath>)>| -> Vec<String> {
+            out.into_iter().map(|(h, _)| h).collect()
+        };
+        let plain = hexes(trace_regions(&regs, &alpha, &cfg, 512, &[]));
+        assert!(!plain.contains(&"#ffffff".to_string()), "{plain:?}");
+
+        // A pin inside the patch keeps it; one outside does not.
+        let pinned = hexes(trace_regions(&regs, &alpha, &cfg, 512, &[(7, 8)]));
+        assert!(pinned.contains(&"#ffffff".to_string()), "{pinned:?}");
+        let missed = hexes(trace_regions(&regs, &alpha, &cfg, 512, &[(2, 2)]));
+        assert!(!missed.contains(&"#ffffff".to_string()), "{missed:?}");
+    }
+
+    #[test]
+    fn shapes_stack_outside_in() {
+        // 12x12, three vertical bands, light to dark left to right. Every
+        // band touches the canvas edge (depth 0 for all), so luminance
+        // orders the stack.
+        let colors = [[240u8, 240, 240], [128, 128, 128], [16, 16, 16]];
+        let quant = image::RgbImage::from_fn(12, 12, |x, _| image::Rgb(colors[(x / 4) as usize]));
+        let alpha = GrayImage::from_pixel(12, 12, image::Luma([255]));
+        let cfg = Config { scale: 1, detail: 5.0, ..Default::default() };
+        let regs = regions::segment(&quant, &alpha);
+
+        let shapes = surviving_shapes(&regs, &alpha, &cfg, 512, &[]);
+        let on = |mask: &GrayImage| mask.pixels().filter(|p| p[0] != 0).count();
+        // Lightest first, each shape covering everything painted after it.
+        assert_eq!(shapes.len(), 3);
+        assert_eq!(shapes[0].0, colors[0]);
+        assert_eq!(shapes[1].0, colors[1]);
+        assert_eq!(shapes[2].0, colors[2]);
+        assert_eq!(on(&shapes[0].1), 144);
+        assert_eq!(on(&shapes[1].1), 96);
+        assert_eq!(on(&shapes[2].1), 48);
+    }
+
+    #[test]
+    fn seam_slack_never_adds_cubics_on_a_low_contrast_seam() {
+        // A near-identical disk enclosed by a fill: the disk's whole boundary
+        // is a low-contrast seam, so slackening the fit there can only drop
+        // anchors, never add them. The fill's silhouette is unaffected.
+        let fill = [96u8, 96, 96];
+        let disk = [120u8, 120, 120];
+        let thresh = 2.0 * Config::default().stroke_merge_dist;
+        assert!(
+            crate::config::color_dist(fill, disk) < thresh,
+            "colors must read as a low-contrast seam"
+        );
+        let mut quant = image::RgbImage::from_pixel(32, 32, image::Rgb(fill));
+        for y in 0..32i32 {
+            for x in 0..32i32 {
+                if (x - 16).pow(2) + (y - 16).pow(2) <= 49 {
+                    quant.put_pixel(x as u32, y as u32, image::Rgb(disk));
+                }
+            }
+        }
+        let alpha = GrayImage::from_pixel(32, 32, image::Luma([255]));
+        let regs = regions::segment(&quant, &alpha);
+
+        let cubics = |slack: f64| -> usize {
+            let cfg = Config { scale: 1, detail: 1.0, seam_slack: slack, ..Default::default() };
+            trace_regions(&regs, &alpha, &cfg, 512, &[])
+                .iter()
+                .flat_map(|(_, ps)| ps.iter())
+                .map(|p| p.cubics.len())
+                .sum()
+        };
+        let base = cubics(1.0);
+        let slack = cubics(3.0);
+        assert!(base > 0);
+        assert!(slack <= base, "slack {slack} > base {base}");
+    }
+
+    #[test]
+    fn scale_pins_maps_document_points_into_the_crop() {
+        let pins = [[10u32, 20], [3, 3], [100, 100]];
+        // Crop at (8, 16), 8x8 source px, scale 3: only the first pin lands
+        // inside; it maps to the center of its scaled source pixel.
+        let scaled = scale_pins(&pins, (8, 16), 3, (8, 8));
+        assert_eq!(scaled, vec![(2 * 3 + 1, 4 * 3 + 1)]);
+    }
+}
