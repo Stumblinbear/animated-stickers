@@ -22,7 +22,8 @@ use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
 
 /// Prep and quant rasters are held for at most this many distinct layers.
-const PIXEL_LAYERS: usize = 3;
+/// A dozen keeps typical layer switching warm at a few MB per layer.
+const PIXEL_LAYERS: usize = 12;
 /// Total geometry entries across every layer and stage.
 const GEO_ENTRIES: usize = 256;
 /// Total per-shape fitted-path entries across every layer.
@@ -293,14 +294,14 @@ mod tests {
     }
 
     #[test]
-    fn pixel_cache_holds_three_layers() {
+    fn pixel_cache_evicts_past_capacity() {
         let mut m = Memo::default();
         let prep = || Arc::new(crate::raster::prepare(&image::RgbaImage::new(2, 2), &cfg()));
-        for i in 0..4u32 {
-            m.put_prep(LayerId(i as usize), i as u64, prep());
+        for i in 0..=PIXEL_LAYERS {
+            m.put_prep(LayerId(i), i as u64, prep());
         }
         assert!(m.prep(LayerId(0), 0).is_none());
-        assert!(m.prep(LayerId(3), 3).is_some());
+        assert!(m.prep(LayerId(PIXEL_LAYERS), PIXEL_LAYERS as u64).is_some());
     }
 
     #[test]
