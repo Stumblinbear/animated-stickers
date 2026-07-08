@@ -112,6 +112,11 @@ pub struct DocState {
     pub undo: Vec<Command>,
     /// Commands undone and available to redo, newest-last.
     pub redo: Vec<Command>,
+
+    /// Whether this document has been focused once. An empty selection is a
+    /// legal state after a deselect, so the first-focus auto-select keys off
+    /// this rather than on the selection being empty.
+    pub initialized: bool,
 }
 
 impl Default for DocState {
@@ -147,6 +152,7 @@ impl Default for DocState {
             full_gen: 0,
             undo: Vec::new(),
             redo: Vec::new(),
+            initialized: false,
         }
     }
 }
@@ -308,13 +314,13 @@ impl App {
 
     /// Selects document `i`. State is per document, so switching only moves
     /// focus; caches, selection, and profiles stay put. A document focused
-    /// for the first time is initialized here (its selection is still empty).
+    /// for the first time is initialized here.
     pub(super) fn select_doc(&mut self, i: usize) -> Task<Msg> {
         if i >= self.docs.len() {
             return Task::none();
         }
         self.selected_doc = i;
-        if self.docs[i].session.selection.is_empty() {
+        if !self.docs[i].session.initialized {
             return self.init_doc(i);
         }
         // Latches left set while the document was in the background (its
@@ -342,6 +348,7 @@ impl App {
     fn init_doc(&mut self, i: usize) -> Task<Msg> {
         self.ensure_project(i);
         self.selected_doc = i;
+        self.docs[i].session.initialized = true;
         // Storage is bottom-first paint order; the top of the visual stack is
         // the last index.
         let top = LayerId(self.docs[i].layers.len().saturating_sub(1));

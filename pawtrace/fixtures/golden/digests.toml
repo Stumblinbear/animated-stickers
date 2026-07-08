@@ -1,0 +1,398 @@
+[seff_deer_a.000]
+quant = "6d5e2a26313710ef"
+region_count = 1
+regions = "a3dc2b4b0428ef0a"
+fit = "507f02ba28f8f27a"
+output = "3cd3a7a191b2002e"
+
+[seff_deer_a.001]
+quant = "0e0d1469de741557"
+region_count = 2
+regions = "aadee85983f05420"
+fit = "d4347e03ead91af6"
+output = "ccd6b873bde10595"
+
+[seff_deer_a.002]
+quant = "ccb4c39ace53931c"
+region_count = 1
+regions = "a2ce4f8535ac2c18"
+fit = "16398ffc6e25dd7d"
+output = "38b059db83b40518"
+
+[seff_deer_a.003]
+quant = "c95ea0f9aa69da32"
+region_count = 1
+regions = "28dcb52af70db56f"
+fit = "67058462952d5412"
+output = "cd2447de77f497a2"
+
+[seff_deer_a.004]
+quant = "11b1ed4e9030b9e9"
+region_count = 2
+regions = "d50adec7c15f6376"
+fit = "cc781e40e556eed1"
+output = "c7599d1afaaad333"
+
+[seff_deer_a.005]
+quant = "fdf28ea5803cfbe6"
+region_count = 1
+regions = "9b499929d182c08a"
+fit = "ba2571466cd53060"
+output = "7b1c8e85b05d1b67"
+
+[seff_deer_a.006]
+quant = "693b4dc04c3cbdf4"
+region_count = 1
+regions = "ba823fae4da87f3a"
+fit = "d66e7ced37e2c674"
+output = "39e03fb5b3e0061e"
+
+[seff_deer_a.007]
+quant = "ee52127ef6d078bf"
+region_count = 4
+regions = "e5630486e6db852c"
+fit = "a6fb096ab35804db"
+output = "bbee0b3e0f97d82c"
+
+[seff_deer_a.008]
+quant = "6ffd8293bb2ae5d1"
+region_count = 1
+regions = "fedc6c49870bed9f"
+fit = "f89c75089c291016"
+output = "c7442a9c8125ceea"
+
+[seff_deer_a.009]
+quant = "1a14edda1584a288"
+region_count = 488
+regions = "c0543bb7c72091ee"
+fit = "3e3b159624a43423"
+output = "cbb4decb85e09f12"
+
+[seff_deer_a.010]
+quant = "1a2e3c623d725ee5"
+region_count = 1
+regions = "fb7e55a8e697bffa"
+fit = "3e3f3cdedcff75cb"
+output = "877028e5d417749b"
+
+[seff_deer_a.011]
+quant = "fcff3451c45b31e4"
+region_count = 11
+regions = "1500599afaf66341"
+fit = "31df72d1c799b60d"
+output = "d3548ce6613559cc"
+
+[seff_deer_a.012]
+quant = "85588b898ade2f2e"
+region_count = 30
+regions = "f2b81a3e4ba6a93c"
+fit = "8da0b77f81b9d0e1"
+output = "21e52ea268826546"
+
+[seff_deer_a.013]
+quant = "7f4d6e855e10d0f4"
+region_count = 14
+regions = "92c11cd5f6494d84"
+fit = "473400cb8728e1c6"
+output = "261da7ac12c5e740"
+
+[seff_deer_a.014]
+quant = "b13580b55893f748"
+region_count = 45
+regions = "78a1dc0cf423ed86"
+fit = "b59bcfdfc0d69680"
+output = "b04b036922f87b67"
+
+[seff_deer_a.015]
+quant = "72f8e9902a327f05"
+region_count = 8
+regions = "bcbfe99df7823c4e"
+fit = "4f6a6dbe03737ff8"
+output = "8894b1e57461f9b7"
+
+[seff_deer_a.016]
+quant = "8d83f48845ef6a2d"
+region_count = 2
+regions = "cde26efd3aa77fde"
+fit = "8a42f1c787ab2443"
+output = "f24a9bc1e4c508da"
+
+[seff_deer_a.017]
+quant = "842b15770e1b5914"
+region_count = 7
+regions = "09f9d2ce4a3b08b3"
+fit = "a5670ed55dcce335"
+output = "f2a61df8e4b15d5f"
+
+[seff_deer_b.000]
+quant = "d3a19ba31661e63a"
+region_count = 1
+regions = "38589a9fdb0c1263"
+fit = "9fbb7cc6a9722411"
+output = "ed13f247cab442ff"
+
+[seff_deer_b.001]
+quant = "370b75f52bd1a88e"
+region_count = 1
+regions = "1c1d14d5ee4b6087"
+fit = "aae2a6871af7a09a"
+output = "08a01e7315689fca"
+
+[seff_deer_b.002]
+quant = "c5020aa6ded32114"
+region_count = 1
+regions = "5908e267fc31d156"
+fit = "9efdbccbac153b7e"
+output = "a6afd87f4756bf26"
+
+[seff_deer_b.003]
+quant = "fddcd97cac2f37ab"
+region_count = 1
+regions = "1824829becdf8bb4"
+fit = "2c961657157b2024"
+output = "6be7d3f3ea39829d"
+
+[seff_deer_b.004]
+quant = "e359627ea24c4c8e"
+region_count = 1
+regions = "a2413e91e3417067"
+fit = "ceb409471534f409"
+output = "2a946808eeb49402"
+
+[seff_deer_b.005]
+quant = "897e5b1748ccb388"
+region_count = 1
+regions = "b66b307c22ce86f6"
+fit = "ab402dcc282064d5"
+output = "92c84561009f469e"
+
+[seff_deer_b.006]
+quant = "fb32457c7ee5fc71"
+region_count = 1
+regions = "0fc05e99f0d80cd3"
+fit = "ae8c7cc7ace0fdbd"
+output = "db106d6a8e707a65"
+
+[seff_deer_b.007]
+quant = "45966a31b0f387c1"
+region_count = 1
+regions = "2ef23898f680bbd5"
+fit = "665a9cf31a2e9b00"
+output = "9ccbeede4153f620"
+
+[seff_deer_b.008]
+quant = "5d189c9057494119"
+region_count = 1
+regions = "428d248fe7044282"
+fit = "2af5f5e0b7372ca4"
+output = "85a5b77612268860"
+
+[seff_deer_b.009]
+quant = "fbf39c7a8b19fe59"
+region_count = 1
+regions = "e9d643e4c1f0e138"
+fit = "6991660cd516c9a7"
+output = "fa58f1b0e9342306"
+
+[seff_deer_b.010]
+quant = "d39b1151ef20bb5b"
+region_count = 2
+regions = "cb0b053d84ceee30"
+fit = "a9a3699a3d538049"
+output = "9b43245ec49a3818"
+
+[seff_deer_b.011]
+quant = "cfdb01543237f567"
+region_count = 3
+regions = "1d38da6a44fe69d9"
+fit = "eb8472193c0eb902"
+output = "b8b19aeafa8a2efc"
+
+[seff_deer_b.012]
+quant = "0311914936a4119b"
+region_count = 1
+regions = "b0636d95e2cadfe4"
+fit = "0c073783afb139f6"
+output = "d35159a382a702b6"
+
+[seff_deer_b.013]
+quant = "02f17507d2750e27"
+region_count = 1
+regions = "1f6402eedc6a8469"
+fit = "3bd6d9a43c8084ac"
+output = "e08b1d1ba543a5ad"
+
+[seff_deer_b.014]
+quant = "721c44300719888e"
+region_count = 1
+regions = "9225edfcd589311d"
+fit = "5b5f3ec95e9d9aa3"
+output = "68c7477150dfe709"
+
+[seff_deer_b.015]
+quant = "6e03db597a9b4f7b"
+region_count = 15
+regions = "543f227e1fd8e564"
+fit = "931fa45d49ee2134"
+output = "826bed303ba7eba6"
+
+[seff_deer_b.016]
+quant = "1beaa405b3ebb0c7"
+region_count = 6
+regions = "e4230ce43ad2d35d"
+fit = "cc078e57f16ff380"
+output = "beddc257f39168ca"
+
+[seff_deer_b.017]
+quant = "661ebf95b0b56f9f"
+region_count = 16
+regions = "583acad6a3ea0c14"
+fit = "b9c01251fd7a1d4c"
+output = "d38ded49e5219cd1"
+
+[seff_deer_b.018]
+quant = "84c0660574fc5147"
+region_count = 12
+regions = "a04495b01a71e1cd"
+fit = "4769814fdc04bfa0"
+output = "d0a8d3a12533bfa1"
+
+[seff_deer_b.019]
+quant = "2ee5850b3b8ba5c3"
+region_count = 48
+regions = "ea3a1eddeec94bda"
+fit = "7f43d9f0254f0a17"
+output = "60257cc88f3e7e25"
+
+[seff_deer_b.020]
+quant = "14b43979d3ddfaca"
+region_count = 439
+regions = "f7c22eb0fc91ce6c"
+fit = "9621f40e9b4c3581"
+output = "f7d0a3c759655492"
+
+[seff_deer_b.021]
+quant = "776c768b3a6b3bc7"
+region_count = 1
+regions = "0546236e32be7949"
+fit = "516182c80ad4dca0"
+output = "174824a0090bec24"
+
+[seff_deer_b.022]
+quant = "03079b2454fda7a0"
+region_count = 2
+regions = "3283e217511c9a13"
+fit = "9d353425f36b5e31"
+output = "19fbdf9204325847"
+
+[seff_deer_b.023]
+quant = "dee3e7ed0fa95bc2"
+region_count = 49
+regions = "7bcfeb31b7c1e2b4"
+fit = "bbf285822c5a00b4"
+output = "7e8d6efff5feb94f"
+
+[seff_deer_b.024]
+quant = "e5c2eccdc9b06e7a"
+region_count = 1
+regions = "a3c2f75364d04cbb"
+fit = "7a2a8249241533e1"
+output = "b7c4d8f30ba2c833"
+
+[seff_deer_b.025]
+quant = "9806faea5cbffba9"
+region_count = 2
+regions = "4cce8ef7131ae10d"
+fit = "18e305c0b60ce8da"
+output = "c4a5548773237f9d"
+
+[seff_deer_b.026]
+quant = "0101b72e7b484751"
+region_count = 1
+regions = "6edd3eee1b67111d"
+fit = "b8374525250f3768"
+output = "9a50a78bf65abc6f"
+
+[seff_deer_b.027]
+quant = "710ca53708b4a076"
+region_count = 1
+regions = "54b06c037d6337a0"
+fit = "0500eca19cb7aae9"
+output = "b462f5856fe65acd"
+
+[seff_deer_b.028]
+quant = "6630fdca329c1ce4"
+region_count = 1
+regions = "91a5a50e826ed88e"
+fit = "c7fbc3506e2e9dee"
+output = "51c6c44d2ef74932"
+
+[seff_deer_b.029]
+quant = "a9ff5455aea33b3e"
+region_count = 134
+regions = "fca51feed3148381"
+fit = "2698c2f5444e86fd"
+output = "fa9b6014736589e4"
+
+[seff_deer_b.030]
+quant = "55883a15a5e5a0a0"
+region_count = 14
+regions = "dc847b2b845b49c4"
+fit = "dfa7cf237f03f6eb"
+output = "de90def546095708"
+
+[seff_deer_b.031]
+quant = "e55175019d8aae82"
+region_count = 20
+regions = "f68430c65181975b"
+fit = "8e3bc3f23da1eabc"
+output = "ec5169ed4701a66d"
+
+[seff_deer_b.032]
+quant = "3287c8e4c63fcc0d"
+region_count = 185
+regions = "40d6f72835890fd8"
+fit = "391ba7db6574bfa7"
+output = "c91ed184d809ad35"
+
+[seff_deer_b.033]
+quant = "4c09433be519d51d"
+region_count = 18
+regions = "b5ca9e1d06d72797"
+fit = "37b241b15d53bafd"
+output = "c84f3c6aadc3b10a"
+
+[seff_deer_b.034]
+quant = "c4eae5b94f8c1154"
+region_count = 34
+regions = "82622f1b52537448"
+fit = "ae210a4efb823ef0"
+output = "57595cf28b5052c0"
+
+[seff_deer_b.035]
+quant = "91d468185166e764"
+region_count = 32
+regions = "565caa33f51300af"
+fit = "36f2f7f80aad0c8d"
+output = "5bc08ac4ec2560b6"
+
+[seff_deer_b.036]
+quant = "5167e08914d65789"
+region_count = 26
+regions = "64e923854b5ff7ff"
+fit = "dd8db9e53e81d345"
+output = "589a35b64a13b5db"
+
+[seff_deer_b.037]
+quant = "ae75877c824713bd"
+region_count = 197
+regions = "55e10148b6926b44"
+fit = "cbe3d99e751d1839"
+output = "a278ebe2ad132204"
+
+[seff_deer_b.038]
+quant = "b7980571babcbe27"
+region_count = 186
+regions = "3c57e8c68d58ffb1"
+fit = "97ea497e3db1ed0a"
+output = "f001750b15cc475c"

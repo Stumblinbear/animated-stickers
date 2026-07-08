@@ -12,18 +12,25 @@ use super::{Img, LayerTrace};
 use crate::config::Config;
 use crate::gui::ids::LayerId;
 use crate::raster::Prepared;
-use crate::regions::Region;
+use crate::regions::{MergePlan, Region};
+use crate::trace::TracedPath;
 use image::RgbImage;
 use lru::LruCache;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::num::NonZeroUsize;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 /// Prep and quant rasters are held for at most this many distinct layers.
 const PIXEL_LAYERS: usize = 3;
 /// Total geometry entries across every layer and stage.
 const GEO_ENTRIES: usize = 256;
+/// Total per-shape fitted-path entries across every layer.
+const SHAPE_ENTRIES: usize = 4096;
+
+/// Fitted paths per shape, keyed by shape content and fit params (see
+/// [`super::shape_memo`]), shared with the stage worker across recomputes.
+pub(in crate::gui) type ShapeCache = Arc<Mutex<LruCache<u64, Arc<Vec<TracedPath>>>>>;
 
 /// The content keys for one layer's config, one per pipeline stage. Two
 /// configs share a stage's key exactly when every field that stage or an
@@ -87,12 +94,14 @@ impl StageKeys {
     }
 }
 
-/// The prep and quant rasters for one layer, each tagged with the key it was
+/// The raster-heavy values for one layer, each tagged with the key it was
 /// built under.
 #[derive(Default)]
 struct PixelSlot {
     prep: Option<(u64, Arc<Prepared>)>,
     quant: Option<(u64, Arc<RgbImage>)>,
+    /// Keyed by `regions_view`: the plan folds the pins into the merge.
+    plan: Option<(u64, Arc<MergePlan>)>,
 }
 
 /// A geometry cache entry, addressed by `(layer, stage, key)`.
@@ -119,6 +128,7 @@ enum GeoStage {
 pub(in crate::gui) struct Memo {
     pixel: LruCache<LayerId, PixelSlot>,
     geo: LruCache<(LayerId, GeoStage, u64), Geo>,
+    shapes: ShapeCache,
 }
 
 impl Default for Memo {
@@ -126,6 +136,9 @@ impl Default for Memo {
         Self {
             pixel: LruCache::new(NonZeroUsize::new(PIXEL_LAYERS).unwrap()),
             geo: LruCache::new(NonZeroUsize::new(GEO_ENTRIES).unwrap()),
+            shapes: Arc::new(Mutex::new(LruCache::new(
+                NonZeroUsize::new(SHAPE_ENTRIES).unwrap(),
+            ))),
         }
     }
 }
@@ -145,12 +158,28 @@ impl Memo {
         }
     }
 
+    pub fn plan(&mut self, layer: LayerId, key: u64) -> Option<Arc<MergePlan>> {
+        match self.pixel.get(&layer)?.plan {
+            Some((k, ref v)) if k == key => Some(v.clone()),
+            _ => None,
+        }
+    }
+
+    /// The shared per-shape fitted-path cache, cloned into stage workers.
+    pub fn shape_cache(&self) -> ShapeCache {
+        self.shapes.clone()
+    }
+
     pub fn put_prep(&mut self, layer: LayerId, key: u64, v: Arc<Prepared>) {
         self.pixel_slot(layer).prep = Some((key, v));
     }
 
     pub fn put_quant(&mut self, layer: LayerId, key: u64, v: Arc<RgbImage>) {
         self.pixel_slot(layer).quant = Some((key, v));
+    }
+
+    pub fn put_plan(&mut self, layer: LayerId, key: u64, v: Arc<MergePlan>) {
+        self.pixel_slot(layer).plan = Some((key, v));
     }
 
     /// The layer's pixel slot, created empty if absent, marked most-recent.

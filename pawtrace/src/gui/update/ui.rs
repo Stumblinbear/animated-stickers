@@ -2,7 +2,7 @@
 //! expansion, zoom, and rail resizing. None recompute the pipeline.
 
 use crate::gui::app::App;
-use crate::gui::msg::{Msg, UiMsg};
+use crate::gui::msg::{Msg, StripView, UiMsg};
 use iced::Task;
 
 const ZOOM_STEP: f32 = 1.25;
@@ -13,7 +13,11 @@ pub(super) fn update(app: &mut App, msg: UiMsg) -> Task<Msg> {
     match msg {
         UiMsg::View(v) => {
             if let Some(s) = app.session_mut() {
-                s.view = v;
+                // Stage views show the selected layer; with nothing selected
+                // there is nothing to show, so the chips stay on Document.
+                if v == StripView::Document || !s.selection.is_empty() {
+                    s.view = v;
+                }
             }
         }
         UiMsg::Tool(t) => app.tool = t,

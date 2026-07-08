@@ -12,3 +12,9 @@ impl LayerId {
         self.0
     }
 }
+
+/// The layers rail's scrollable, shared by the rail widget and the canvas
+/// hit-test so a click can scroll the selected row into view.
+pub fn layers_scrollable() -> iced::advanced::widget::Id {
+    iced::advanced::widget::Id::new("pawtrace-layers-rail")
+}

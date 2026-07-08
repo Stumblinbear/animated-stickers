@@ -3,6 +3,7 @@
 //! published in the shown view's image pixels; the pan/zoom gestures are
 //! resolved here and published as a viewport.
 
+use super::checkerboard::checkerboard;
 use super::overlays::pin_overlay;
 use super::viewport::Viewport;
 use crate::gui::app::App;
@@ -10,26 +11,16 @@ use crate::gui::compute::Img;
 use crate::gui::msg::{CanvasMsg, Msg, Tool};
 use iced::advanced::image as core_image;
 use iced::mouse;
-use iced::widget::canvas::{Action, Cache, Event, Frame, Geometry, Program};
+use iced::widget::canvas::{Action, Cache, Event, Geometry, Program};
 use iced::widget::stack;
-use iced::{Color, Element, Length, Point, Rectangle, Size, Vector};
+use iced::{Element, Length, Point, Rectangle, Size, Vector};
 use std::cell::Cell;
 
-const CHECK_LIGHT: Color = Color {
-    r: 0.16,
-    g: 0.16,
-    b: 0.18,
-    a: 1.0,
-};
-const CHECK_DARK: Color = Color {
-    r: 0.11,
-    g: 0.11,
-    b: 0.13,
-    a: 1.0,
-};
-const TILE: f32 = 8.0;
 const ZOOM_MIN: f32 = 0.05;
 const ZOOM_MAX: f32 = 32.0;
+/// Screen-pixel travel below which a Select press-and-release counts as a
+/// click rather than a pan.
+const CLICK_SLOP: f32 = 4.0;
 
 /// Builds the preview widget over the document's active image and viewport,
 /// with the selected layer's pins overlaid on top.
@@ -40,6 +31,7 @@ pub fn preview(app: &App) -> Element<'_, Msg> {
         pan: app.session().map(|s| s.pan()).unwrap_or(Vector::ZERO),
         factor: app.view_density(),
         tool: app.tool,
+        doc_view: app.session().is_some_and(|s| s.is_doc_view()),
     };
     let base = iced::widget::canvas(program)
         .width(Length::Fill)
@@ -55,6 +47,9 @@ struct Preview<'a> {
     /// this is the crop-space dimensions the viewport works in.
     factor: f32,
     tool: Tool,
+    /// Whether the active view is the whole-document composite, the only view
+    /// on which a Select click hit-tests layers.
+    doc_view: bool,
 }
 
 #[derive(Default)]
@@ -64,6 +59,9 @@ struct State {
     panning: bool,
     /// A pin press is in progress, so cursor moves drag the tool.
     tool_active: bool,
+    /// Screen position where a Select-tool left press began; a release near it
+    /// is a click, farther away was a pan.
+    press: Option<Point>,
     /// The checkerboard and art, redrawn only when the viewport or image
     /// changes so other widgets' animation frames don't re-tessellate them.
     statics: Cache,
@@ -99,6 +97,30 @@ impl Preview<'_> {
             vp.zoom,
         ))
     }
+
+    /// A `SelectAt` action when a Select press released near where it began on
+    /// the Document view, carrying the release point in document px; `None`
+    /// when the gesture was a pan, off the Document view, or before the
+    /// composite exists to map the point.
+    fn click_on_release(
+        &self,
+        press: Option<Point>,
+        cursor: mouse::Cursor,
+        bounds: Rectangle,
+    ) -> Option<Action<Msg>> {
+        let press = press?;
+        let released = cursor.position_in(bounds)?;
+        if !self.doc_view
+            || (released.x - press.x).abs() >= CLICK_SLOP
+            || (released.y - press.y).abs() >= CLICK_SLOP
+        {
+            return None;
+        }
+        let (cw, ch) = self.canonical()?;
+        let vp = Viewport::resolve(bounds.size(), (cw, ch), self.zoom, self.pan);
+        let doc_px = vp.to_image(released);
+        Some(Action::publish(Msg::Canvas(CanvasMsg::SelectAt(doc_px))))
+    }
 }
 
 impl Program<Msg> for Preview<'_> {
@@ -117,10 +139,14 @@ impl Program<Msg> for Preview<'_> {
         if let Event::Mouse(mouse::Event::ButtonReleased(_)) = event {
             if state.panning || state.tool_active {
                 let was_tool = state.tool_active;
+                let press = state.press.take();
                 state.panning = false;
                 state.tool_active = false;
                 state.last = None;
-                return was_tool.then(|| Action::publish(Msg::Canvas(CanvasMsg::ToolRelease)));
+                if was_tool {
+                    return Some(Action::publish(Msg::Canvas(CanvasMsg::ToolRelease)));
+                }
+                return self.click_on_release(press, cursor, bounds);
             }
         }
         let pos = cursor.position_in(bounds)?;
@@ -136,6 +162,9 @@ impl Program<Msg> for Preview<'_> {
                 if mid || (left && self.tool == Tool::Select) {
                     state.panning = true;
                     state.last = Some(pos);
+                    // Only a left Select press can become a click; a middle-button
+                    // pan leaves `press` clear so its release never selects.
+                    state.press = (left && self.tool == Tool::Select).then_some(pos);
                     return Some(Action::capture());
                 }
                 if left && self.tool == Tool::Pin {
@@ -236,37 +265,6 @@ impl Program<Msg> for Preview<'_> {
             }
         } else {
             mouse::Interaction::default()
-        }
-    }
-}
-
-/// Fills the display rect with the two-tone alpha checker, iterating only the
-/// tiles visible within `size` so a deep zoom stays cheap.
-fn checkerboard(frame: &mut Frame, origin: Point, dw: f32, dh: f32, size: Size) {
-    let x0 = origin.x.max(0.0);
-    let y0 = origin.y.max(0.0);
-    let x1 = (origin.x + dw).min(size.width);
-    let y1 = (origin.y + dh).min(size.height);
-    if x1 <= x0 || y1 <= y0 {
-        return;
-    }
-    frame.fill_rectangle(Point::new(x0, y0), Size::new(x1 - x0, y1 - y0), CHECK_LIGHT);
-    let col0 = ((x0 - origin.x) / TILE).floor() as i32;
-    let col1 = ((x1 - origin.x) / TILE).ceil() as i32;
-    let row0 = ((y0 - origin.y) / TILE).floor() as i32;
-    let row1 = ((y1 - origin.y) / TILE).ceil() as i32;
-    for row in row0..row1 {
-        for col in col0..col1 {
-            if (row + col) % 2 == 0 {
-                continue;
-            }
-            let px = (origin.x + col as f32 * TILE).max(x0);
-            let py = (origin.y + row as f32 * TILE).max(y0);
-            let pw = (origin.x + (col + 1) as f32 * TILE).min(x1) - px;
-            let ph = (origin.y + (row + 1) as f32 * TILE).min(y1) - py;
-            if pw > 0.0 && ph > 0.0 {
-                frame.fill_rectangle(Point::new(px, py), Size::new(pw, ph), CHECK_DARK);
-            }
         }
     }
 }

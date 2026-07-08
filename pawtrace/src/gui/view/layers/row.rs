@@ -24,7 +24,8 @@ pub fn layer_row(app: &App, i: LayerId) -> Element<'_, Msg> {
     let name = &doc.layers[i.index()].name;
     let sess = app.session().expect("layer row needs a session");
     let selected = sess.selection.contains(&i);
-    let primary = sess.selected_layer == i;
+    // The primary is meaningless with an empty selection, so no row is primary.
+    let primary = !sess.selection.is_empty() && sess.selected_layer == i;
     let dimmed = !flags.visible || !flags.enabled;
 
     let eye_glyph = if flags.visible { icons::EYE } else { icons::EYE_OFF };

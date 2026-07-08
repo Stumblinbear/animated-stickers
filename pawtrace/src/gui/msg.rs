@@ -142,6 +142,9 @@ pub enum CanvasMsg {
         zoom: f32,
         pan: Vector,
     },
+    /// A Select-tool click on the Document view at document px: hit-tests the
+    /// layer stack, or deselects when it lands on empty space.
+    SelectAt(Point),
     ToolPress(Point),
     ToolDrag(Point),
     ToolRelease,

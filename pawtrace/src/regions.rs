@@ -37,91 +37,146 @@ impl Region {
 pub fn from_mask(mask: &GrayImage, color: [u8; 3]) -> Vec<Region> {
     // A uniform image quantizes to itself, so the mask's connected
     // components are exactly the regions and no color comparison is needed.
-    let (w, h) = mask.dimensions();
-    let am = mask.as_raw();
-    let idx = |x: u32, y: u32| (y * w + x) as usize;
-    let mut seen = vec![false; (w * h) as usize];
-    let mut regions = Vec::new();
-    let mut queue: Vec<(u32, u32)> = Vec::new();
-    for y in 0..h {
-        for x in 0..w {
-            if seen[idx(x, y)] || am[idx(x, y)] == 0 {
-                continue;
-            }
-            let mut pixels = Vec::new();
-            let (mut x0, mut y0, mut x1, mut y1) = (x, y, x, y);
-            seen[idx(x, y)] = true;
-            queue.push((x, y));
-            while let Some((px, py)) = queue.pop() {
-                pixels.push((px, py));
-                x0 = x0.min(px);
-                y0 = y0.min(py);
-                x1 = x1.max(px);
-                y1 = y1.max(py);
-                let mut visit = |nx: u32, ny: u32, queue: &mut Vec<(u32, u32)>| {
-                    if !seen[idx(nx, ny)] && am[idx(nx, ny)] != 0 {
-                        seen[idx(nx, ny)] = true;
-                        queue.push((nx, ny));
-                    }
-                };
-                if px > 0 { visit(px - 1, py, &mut queue); }
-                if py > 0 { visit(px, py - 1, &mut queue); }
-                if px + 1 < w { visit(px + 1, py, &mut queue); }
-                if py + 1 < h { visit(px, py + 1, &mut queue); }
-            }
-            for p in &mut pixels {
-                p.0 -= x0;
-                p.1 -= y0;
-            }
-            regions.push(Region { color, x0, y0, x1, y1, pixels });
-        }
-    }
-    regions
+    segment_runs(row_runs(None, mask, color))
 }
 
-/// Connected same-color regions (4-connectivity) over art pixels.
+/// Connected same-color regions (4-connectivity) over art pixels, in
+/// first-encounter scan order.
 pub fn segment(quant: &RgbImage, alpha: &GrayImage) -> Vec<Region> {
-    let (w, h) = quant.dimensions();
-    let q3 = quant.as_raw();
+    segment_runs(row_runs(Some(quant), alpha, [0, 0, 0]))
+}
+
+/// A maximal same-color span of opaque pixels in one row: `(x0, x1)`
+/// inclusive, plus the color.
+struct Run {
+    x0: u32,
+    x1: u32,
+    color: [u8; 3],
+}
+
+/// The runs of every row, rows in order. Color comes from `quant`, or is
+/// `uniform` for every run when `quant` is `None` (mask-only segmentation).
+fn row_runs(quant: Option<&RgbImage>, alpha: &GrayImage, uniform: [u8; 3]) -> Vec<Vec<Run>> {
+    let (w, _) = alpha.dimensions();
     let am = alpha.as_raw();
-    let idx = |x: u32, y: u32| (y * w + x) as usize;
-    let color_at = |i: usize| -> [u8; 3] { [q3[3 * i], q3[3 * i + 1], q3[3 * i + 2]] };
-    let mut seen = vec![false; (w * h) as usize];
-    let mut regions = Vec::new();
-    let mut queue: Vec<(u32, u32)> = Vec::new();
-    for y in 0..h {
-        for x in 0..w {
-            if seen[idx(x, y)] || am[idx(x, y)] == 0 {
-                continue;
+    use rayon::prelude::*;
+    // Rows are independent, so run building (the only per-pixel work) is
+    // embarrassingly parallel; the union pass below is per-run and cheap.
+    am.par_chunks_exact(w as usize)
+        .enumerate()
+        .map(|(y, arow)| {
+            let mut runs: Vec<Run> = Vec::new();
+            let color_at = |x: usize| match quant {
+                Some(q) => {
+                    let i = (y * w as usize + x) * 3;
+                    let q3 = q.as_raw();
+                    [q3[i], q3[i + 1], q3[i + 2]]
+                }
+                None => uniform,
+            };
+            for (x, &a) in arow.iter().enumerate() {
+                if a == 0 {
+                    continue;
+                }
+                let c = color_at(x);
+                match runs.last_mut() {
+                    Some(r) if r.x1 + 1 == x as u32 && r.color == c => r.x1 = x as u32,
+                    _ => runs.push(Run { x0: x as u32, x1: x as u32, color: c }),
+                }
             }
-            let color = color_at(idx(x, y));
-            let mut pixels = Vec::new();
-            let (mut x0, mut y0, mut x1, mut y1) = (x, y, x, y);
-            seen[idx(x, y)] = true;
-            queue.push((x, y));
-            while let Some((px, py)) = queue.pop() {
-                pixels.push((px, py));
-                x0 = x0.min(px);
-                y0 = y0.min(py);
-                x1 = x1.max(px);
-                y1 = y1.max(py);
-                let mut visit = |nx: u32, ny: u32, queue: &mut Vec<(u32, u32)>| {
-                    let i = idx(nx, ny);
-                    if !seen[i] && am[i] != 0 && color_at(i) == color {
-                        seen[i] = true;
-                        queue.push((nx, ny));
+            runs
+        })
+        .collect()
+}
+
+/// Union-find labeling over row runs: runs in adjacent rows join when their
+/// column spans overlap and their colors match (4-connectivity). Regions come
+/// out in first-encounter scan order, the same order a row-major flood fill
+/// discovers them in.
+fn segment_runs(rows: Vec<Vec<Run>>) -> Vec<Region> {
+    let n: usize = rows.iter().map(|r| r.len()).sum();
+    // Global run ids are row-major (row by row, left to right), so a root's
+    // smallest run id identifies the component's first pixel in scan order.
+    let mut parent: Vec<u32> = (0..n as u32).collect();
+    fn find(parent: &mut [u32], id: u32) -> u32 {
+        let mut id = id;
+        while parent[id as usize] != id {
+            parent[id as usize] = parent[parent[id as usize] as usize];
+            id = parent[id as usize];
+        }
+        id
+    }
+    let mut base = 0usize; // global id of the current row's first run
+    let mut prev_base = 0usize;
+    for y in 1..rows.len() {
+        let above = &rows[y - 1];
+        base += above.len();
+        let cur = &rows[y];
+        let mut ai = 0usize;
+        for (ci, c) in cur.iter().enumerate() {
+            // Two-pointer: runs are sorted by x within a row, so each pair
+            // is visited at most once.
+            while ai < above.len() && above[ai].x1 < c.x0 {
+                ai += 1;
+            }
+            let mut aj = ai;
+            while aj < above.len() && above[aj].x0 <= c.x1 {
+                if above[aj].color == c.color {
+                    let ra = find(&mut parent, (prev_base + aj) as u32);
+                    let rc = find(&mut parent, (base + ci) as u32);
+                    if ra != rc {
+                        // Smaller root wins, keeping every root the smallest
+                        // run id of its component.
+                        let (lo, hi) = (ra.min(rc), ra.max(rc));
+                        parent[hi as usize] = lo;
                     }
-                };
-                if px > 0 { visit(px - 1, py, &mut queue); }
-                if py > 0 { visit(px, py - 1, &mut queue); }
-                if px + 1 < w { visit(px + 1, py, &mut queue); }
-                if py + 1 < h { visit(px, py + 1, &mut queue); }
+                }
+                aj += 1;
             }
-            for p in &mut pixels {
-                p.0 -= x0;
-                p.1 -= y0;
-            }
-            regions.push(Region { color, x0, y0, x1, y1, pixels });
+        }
+        prev_base = base;
+    }
+
+    // Regions ordered by root id = first-encounter scan order.
+    let mut region_of: Vec<u32> = vec![u32::MAX; n];
+    let mut regions: Vec<Region> = Vec::new();
+    let mut gid = 0usize;
+    for (y, row) in rows.iter().enumerate() {
+        let y = y as u32;
+        for run in row {
+            let root = find(&mut parent, gid as u32) as usize;
+            let idx = if region_of[root] != u32::MAX {
+                region_of[root] as usize
+            } else {
+                region_of[root] = regions.len() as u32;
+                regions.push(Region {
+                    color: run.color,
+                    x0: run.x0,
+                    y0: y,
+                    x1: run.x1,
+                    y1: y,
+                    pixels: Vec::new(),
+                });
+                regions.len() - 1
+            };
+            let r = &mut regions[idx];
+            r.x0 = r.x0.min(run.x0);
+            r.x1 = r.x1.max(run.x1);
+            r.y1 = r.y1.max(y);
+            gid += 1;
+        }
+    }
+    // Second pass now that bboxes are final: pixels are stored relative to
+    // (x0, y0), which the first pass could not know yet.
+    let mut gid = 0usize;
+    for (y, row) in rows.iter().enumerate() {
+        let y = y as u32;
+        for run in row {
+            let root = find(&mut parent, gid as u32) as usize;
+            let r = &mut regions[region_of[root] as usize];
+            let (ox, oy) = (r.x0, r.y0);
+            r.pixels.extend((run.x0..=run.x1).map(|x| (x - ox, y - oy)));
+            gid += 1;
         }
     }
     regions
@@ -349,6 +404,61 @@ pub struct RegionReport {
     pub floor: u64,
 }
 
+/// The speckle-merge outcome shared by the region report and the trace: the
+/// merge roots, the merged regions in the trace's emission order, and each
+/// merged region's hole-filled shape mask, area, and floor verdict. Built once
+/// per (regions, pins, floor) input by [`merge_plan`], then read by
+/// [`report_of`] and [`crate::pipeline::trace_planned`].
+#[derive(Debug)]
+pub struct MergePlan {
+    /// Speckle floor (px) the areas were tested against.
+    pub floor: u64,
+    /// Per input region: the input index of the region it settled into.
+    pub roots: Vec<u32>,
+    /// Merged regions, ascending by root index.
+    pub regs: Vec<Region>,
+    /// The root index of each entry of `regs`.
+    pub root_ids: Vec<u32>,
+    /// Hole-filled shape mask per merged region; origin `(x0-1, y0-1)`.
+    pub masks: Vec<GrayImage>,
+    /// Hole-filled area per merged region.
+    pub areas: Vec<u64>,
+    /// Per merged region: clears the floor or holds a pin.
+    pub survives: Vec<bool>,
+}
+
+/// Runs the speckle merge and per-region shape build once, for every
+/// downstream consumer. `pins` are floor-exemption points in the regions'
+/// scaled space.
+pub fn merge_plan(
+    regs: &[Region],
+    alpha: &GrayImage,
+    cfg: &Config,
+    doc_dim: u32,
+    pins: &[(u32, u32)],
+) -> MergePlan {
+    let floor = cfg.turdsize(doc_dim) as u64;
+    let (roots, colors) = merge_speckle_roots(regs, alpha.dimensions(), floor, pins);
+    let merged = gather_speckle_merged(regs, &roots, &colors);
+    let root_ids: Vec<u32> = merged.keys().copied().collect();
+    let mregs: Vec<Region> = merged.into_values().collect();
+    use rayon::prelude::*;
+    let shapes: Vec<(GrayImage, u64)> = crate::timing::SHAPES
+        .time(|| mregs.par_iter().map(|r| region_shape(r, alpha, floor)).collect());
+    let mut masks = Vec::with_capacity(shapes.len());
+    let mut areas = Vec::with_capacity(shapes.len());
+    for (m, a) in shapes {
+        masks.push(m);
+        areas.push(a);
+    }
+    let survives = mregs
+        .iter()
+        .zip(&areas)
+        .map(|(r, &a)| a >= floor || pins.iter().any(|&(x, y)| r.contains(x, y)))
+        .collect();
+    MergePlan { floor, roots, regs: mregs, root_ids, masks, areas, survives }
+}
+
 /// Classifies each region in `regs` by what the trace will do with it, under
 /// the same speckle merge and floor the pipeline applies. `pins` are
 /// floor-exemption points in the regions' scaled space.
@@ -359,41 +469,30 @@ pub fn region_report(
     doc_dim: u32,
     pins: &[(u32, u32)],
 ) -> RegionReport {
-    let floor = cfg.turdsize(doc_dim) as u64;
-    let (roots, colors) = merge_speckle_roots(regs, alpha.dimensions(), floor, pins);
-    let merged = gather_speckle_merged(regs, &roots, &colors);
-    // The floor tests the merged region: its hole-filled area against the
-    // floor, exempting any pin it covers, exactly as surviving_shapes does.
-    use rayon::prelude::*;
-    let mut root_area: std::collections::HashMap<u32, u64> = Default::default();
-    let mut root_survives: std::collections::HashMap<u32, bool> = Default::default();
-    let entries: Vec<(u32, u64, bool)> = merged
-        .par_iter()
-        .map(|(&root, mr)| {
-            let area = region_shape(mr, alpha, floor).1;
-            let survives = area >= floor || pins.iter().any(|&(x, y)| mr.contains(x, y));
-            (root, area, survives)
-        })
-        .collect();
-    for (root, area, survives) in entries {
-        root_area.insert(root, area);
-        root_survives.insert(root, survives);
-    }
-    let fates = roots
+    report_of(&merge_plan(regs, alpha, cfg, doc_dim, pins))
+}
+
+/// The report `plan` implies, without re-running the merge or the shapes.
+pub fn report_of(plan: &MergePlan) -> RegionReport {
+    // root_ids ascends (BTreeMap key order), so a root resolves by binary
+    // search.
+    let idx_of = |root: u32| plan.root_ids.binary_search(&root).unwrap();
+    let fates = plan
+        .roots
         .iter()
         .enumerate()
         .map(|(id, &root)| {
             if root as usize != id {
                 Fate::MergedInto(root as usize)
-            } else if root_survives[&root] {
+            } else if plan.survives[idx_of(root)] {
                 Fate::Traced
             } else {
                 Fate::Culled
             }
         })
         .collect();
-    let areas = roots.iter().map(|&root| root_area[&root]).collect();
-    RegionReport { fates, areas, floor }
+    let areas = plan.roots.iter().map(|&root| plan.areas[idx_of(root)]).collect();
+    RegionReport { fates, areas, floor: plan.floor }
 }
 
 /// Classifies each region in `regs` by what the trace will do with it. See
@@ -435,6 +534,25 @@ fn find(nodes: &mut Vec<Node>, id: u32) -> u32 {
     let root = find(nodes, p);
     nodes[id as usize].parent = root;
     root
+}
+
+/// The roots a just-applied merge batch could have changed: each merge's
+/// surviving root plus every root adjacent to it (the absorbed side's edges
+/// now live on the survivor). Sorted ascending, so the next round's scan
+/// visits them in the same order a full scan would.
+fn next_worklist(nodes: &mut Vec<Node>, merges: &[(u32, u32)]) -> Vec<u32> {
+    let mut targets: Vec<u32> = merges.iter().map(|&(_, t)| find(nodes, t)).collect();
+    targets.sort_unstable();
+    targets.dedup();
+    let mut next = Vec::new();
+    for &r in &targets {
+        next.push(r);
+        let nb: Vec<u32> = nodes[r as usize].neighbors.iter().map(|&(nid, _)| nid).collect();
+        next.extend(nb.into_iter().map(|nid| find(nodes, nid)));
+    }
+    next.sort_unstable();
+    next.dedup();
+    next
 }
 
 /// Segments the quantized labels into regions and collapses AA transition
@@ -479,6 +597,11 @@ fn absorb(regions: Vec<Region>, w: u32, h: u32, cfg: &Config) -> Vec<Region> {
     // are repainted once at the end.
     let mut by_len = vec![0u64; nodes.len()];
     let mut btouched: Vec<u32> = Vec::new();
+    // Rounds 2+ re-examine only roots a merge could have changed: the merge
+    // targets and every root adjacent to a merged pair. An untouched root's
+    // inputs (its own stats, its neighbors' roots and stats) are exactly last
+    // round's, so it would reach the same no-merge decision again.
+    let mut worklist: Vec<u32> = (0..nodes.len() as u32).collect();
     for _ in 0..8 {
         // Roots snapshot once per round: merges only land as a batch below,
         // so this equals a per-neighbor find() and lets the scan borrow
@@ -486,13 +609,19 @@ fn absorb(regions: Vec<Region>, w: u32, h: u32, cfg: &Config) -> Vec<Region> {
         let root_of: Vec<u32> = (0..nodes.len() as u32)
             .map(|id| find(&mut nodes, id))
             .collect();
-        let roots: Vec<u32> = (0..nodes.len() as u32)
-            .filter(|&id| root_of[id as usize] == id)
-            .collect();
         let mut merges: Vec<(u32, u32)> = Vec::new();
-        for &id in &roots {
+        for &id in &worklist {
+            if root_of[id as usize] != id {
+                continue;
+            }
             let n = &nodes[id as usize];
             let (color, area, perimeter, bbox) = (n.color, n.area, n.perimeter, n.bbox);
+            // Mean width first: it needs no neighbor aggregation, and wide
+            // fills (most of a layer's pixels) exit here.
+            let mean_width = 2.0 * area as f32 / perimeter.max(1) as f32;
+            if mean_width >= max_mean_width {
+                continue;
+            }
             // Resolve neighbor ids to current roots, summing boundary.
             for &(nid, len) in &n.neighbors {
                 let root = root_of[nid as usize];
@@ -548,10 +677,6 @@ fn absorb(regions: Vec<Region>, w: u32, h: u32, cfg: &Config) -> Vec<Region> {
             if da + db > 1.25 * color_dist(a, b) {
                 continue;
             }
-            let mean_width = 2.0 * area as f32 / perimeter.max(1) as f32;
-            if mean_width >= max_mean_width {
-                continue;
-            }
             // A blur band is equally thin everywhere; a deliberate band
             // (layered fur) has wide spikes even where its mean is small.
             if 2.0 * depth_of(&mut nodes, &regions, id) as f32 >= max_max_width {
@@ -569,7 +694,7 @@ fn absorb(regions: Vec<Region>, w: u32, h: u32, cfg: &Config) -> Vec<Region> {
         if merges.is_empty() {
             break;
         }
-        for (id, target) in merges {
+        for &(id, target) in &merges {
             let t = find(&mut nodes, target);
             let s = find(&mut nodes, id);
             if s == t {
@@ -603,6 +728,7 @@ fn absorb(regions: Vec<Region>, w: u32, h: u32, cfg: &Config) -> Vec<Region> {
             tn.neighbors.extend(sn);
             nodes[s as usize].parent = t;
         }
+        worklist = next_worklist(&mut nodes, &merges);
     }
 
     gather_merged(regions, &mut nodes)
@@ -732,15 +858,18 @@ fn merge_strokes(regions: Vec<Region>, w: u32, h: u32, cfg: &Config) -> Vec<Regi
 
     let mut by_len = vec![0u64; n];
     let mut btouched: Vec<u32> = Vec::new();
+    // Rounds 2+ re-examine only roots a merge could have changed, as in
+    // absorb().
+    let mut worklist: Vec<u32> = (0..n as u32).collect();
     for _ in 0..8 {
         // Roots snapshot once per round, as in absorb(): merges land as a
         // batch, so the snapshot equals per-neighbor find() calls.
         let root_of: Vec<u32> = (0..n as u32).map(|id| find(&mut nodes, id)).collect();
-        let roots: Vec<u32> = (0..n as u32)
-            .filter(|&id| root_of[id as usize] == id)
-            .collect();
         let mut merges: Vec<(u32, u32)> = Vec::new();
-        for &id in &roots {
+        for &id in &worklist {
+            if root_of[id as usize] != id {
+                continue;
+            }
             if !is_thin(id, &mut nodes, &mut thin) {
                 continue;
             }
@@ -774,7 +903,7 @@ fn merge_strokes(regions: Vec<Region>, w: u32, h: u32, cfg: &Config) -> Vec<Regi
         if merges.is_empty() {
             break;
         }
-        for (id, target) in merges {
+        for &(id, target) in &merges {
             let t = find(&mut nodes, target);
             let s = find(&mut nodes, id);
             if s == t {
@@ -802,6 +931,7 @@ fn merge_strokes(regions: Vec<Region>, w: u32, h: u32, cfg: &Config) -> Vec<Regi
             thin[t as usize] = Some(true);
             nodes[s as usize].parent = t;
         }
+        worklist = next_worklist(&mut nodes, &merges);
     }
     gather_merged(regions, &mut nodes)
 }

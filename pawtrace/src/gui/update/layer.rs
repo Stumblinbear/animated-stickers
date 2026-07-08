@@ -3,7 +3,7 @@
 
 use crate::gui::app::App;
 use crate::gui::ids::LayerId;
-use crate::gui::msg::{LayerMsg, Msg};
+use crate::gui::msg::{LayerMsg, Msg, StripView};
 use crate::gui::undo::{FlagChange, FlagKind};
 use iced::Task;
 use std::collections::BTreeSet;
@@ -63,18 +63,23 @@ pub(super) fn update(app: &mut App, msg: LayerMsg) -> Task<Msg> {
             app.record_flags(changes);
             app.spawn_full()
         }
-        LayerMsg::ClearSelection => {
-            if let Some(s) = app.session_mut() {
-                let primary = s.selected_layer;
-                s.selection = BTreeSet::from([primary]);
-                s.select_anchor = primary;
-            }
-            Task::none()
-        }
+        LayerMsg::ClearSelection => deselect(app),
     }
 }
 
-fn click(app: &mut App, i: LayerId) -> Task<Msg> {
+/// Empties the selection, a legal resting state with no primary layer. A stage
+/// view then has no layer to show, so it falls back to the Document view.
+pub(super) fn deselect(app: &mut App) -> Task<Msg> {
+    if let Some(s) = app.session_mut() {
+        s.selection = BTreeSet::new();
+        if !s.is_doc_view() {
+            s.view = StripView::Document;
+        }
+    }
+    Task::none()
+}
+
+pub(super) fn click(app: &mut App, i: LayerId) -> Task<Msg> {
     let m = app.modifiers;
     let Some(sess) = app.session() else {
         return Task::none();

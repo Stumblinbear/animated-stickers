@@ -4,14 +4,14 @@
 //! and its image is re-emitted only when it is stale (a different layer or a
 //! changed input), so an unchanged stage never flickers.
 
-use super::memo::StageKeys;
+use super::memo::{ShapeCache, StageKeys};
 use super::render::{masked, region_fates_handle, render_debug, render_svg, rgba_img};
-use super::{Img, LayerTrace, Shown, StagePart, STAGE_COUNT};
+use super::{shape_memo, Img, LayerTrace, Shown, StagePart, STAGE_COUNT};
 use crate::config::Config;
 use crate::gui::ids::LayerId;
 use crate::gui::msg::{ComputeMsg, Msg};
 use crate::raster::Prepared;
-use crate::regions::Region;
+use crate::regions::{MergePlan, Region};
 use crate::{output, palette, pipeline, regions};
 use iced::Task;
 use image::{RgbImage, RgbaImage};
@@ -23,6 +23,7 @@ pub(super) struct Snapshot {
     pub quant: Option<Arc<RgbImage>>,
     pub palette: Option<Arc<Vec<[u8; 3]>>>,
     pub regions: Option<Arc<Vec<Region>>>,
+    pub plan: Option<Arc<MergePlan>>,
     pub smooth: Option<Option<Img>>,
     pub fit: Option<Arc<LayerTrace>>,
     pub simplify: Option<Arc<LayerTrace>>,
@@ -39,6 +40,7 @@ pub(super) struct StageJob {
     pub pending: [bool; STAGE_COUNT],
     pub shown: Shown,
     pub snap: Snapshot,
+    pub shape_cache: ShapeCache,
 }
 
 /// Which stage images are stale against the ones currently shown. Source
@@ -72,7 +74,7 @@ pub(super) fn stream(job: StageJob) -> Task<Msg> {
         move |mut tx: iced::futures::channel::mpsc::Sender<Msg>| async move {
             use iced::futures::SinkExt;
             let StageJob {
-                doc, generation, img, offset, doc_dim, cfg, pending, shown, snap,
+                doc, generation, img, offset, doc_dim, cfg, pending, shown, snap, shape_cache,
             } = job;
             // A send failure means the app dropped this stream, superseded or
             // shut down. The remaining work would be wasted either way.
@@ -121,8 +123,26 @@ pub(super) fn stream(job: StageJob) -> Task<Msg> {
                 Some(r) => (r, false),
                 None => (Arc::new(regions::segment_absorbed(&quant, &prep.alpha, &cfg)), true),
             };
+            // One merge plan feeds the report, the debug contours, and the
+            // trace below; each used to re-run the speckle merge and shape
+            // build for itself. Skipped when every consumer is cached.
+            let fit_shortcut = snap.simplify.is_some() && cfg.simplify <= 0.0;
+            let need_plan = pending[3]
+                || regs_c
+                || snap.smooth.is_none()
+                || (snap.fit.is_none() && !fit_shortcut);
+            let plan = match snap.plan {
+                Some(p) => Some(p),
+                None if need_plan => {
+                    let p =
+                        Arc::new(regions::merge_plan(&regs, &prep.alpha, &cfg, doc_dim, &pins));
+                    emit!(StagePart::Plan(p.clone()));
+                    Some(p)
+                }
+                None => None,
+            };
             if pending[3] || regs_c {
-                let report = regions::region_report(&regs, &prep.alpha, &cfg, doc_dim, &pins);
+                let report = regions::report_of(plan.as_ref().unwrap());
                 emit!(StagePart::Regions(
                     region_fates_handle(&regs, quant.dimensions(), &report.fates, &pins),
                     regs.len(),
@@ -146,10 +166,17 @@ pub(super) fn stream(job: StageJob) -> Task<Msg> {
                 (render_svg(&svg, w * 2, h * 2), anchors)
             };
 
+            // One shape build serves the contour view and the trace: the
+            // spanning-tree mask union is most of their cost.
+            let need_shapes =
+                snap.smooth.is_none() || (snap.fit.is_none() && !fit_shortcut);
+            let shapes = need_shapes
+                .then(|| pipeline::planned_shapes(plan.as_ref().unwrap(), &prep.alpha, &cfg));
+
             let (smooth, smooth_c) = match snap.smooth {
                 Some(s) => (s, false),
                 None => {
-                    let contours = pipeline::debug_contours(&regs, &prep.alpha, &cfg, doc_dim, &pins);
+                    let contours = pipeline::debug_from_shapes(shapes.as_ref().unwrap(), &cfg);
                     (render_debug(&contours, w, h, cfg.scale), true)
                 }
             };
@@ -163,7 +190,14 @@ pub(super) fn stream(job: StageJob) -> Task<Msg> {
                 Some(f) => (f, false),
                 None => match &snap.simplify {
                     Some(s) if cfg.simplify <= 0.0 => (s.clone(), true),
-                    _ => (Arc::new(pipeline::trace_regions(&regs, &prep.alpha, &cfg, doc_dim, &pins)), true),
+                    _ => (
+                        Arc::new(shape_memo::trace_shapes_memo(
+                            &shape_cache,
+                            shapes.as_ref().unwrap(),
+                            &cfg,
+                        )),
+                        true,
+                    ),
                 },
             };
             if pending[5] || fit_c {

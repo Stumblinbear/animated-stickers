@@ -4,7 +4,10 @@
 
 use crate::gui::app::App;
 use crate::gui::compute::StageKeys;
+use crate::gui::ids::{layers_scrollable, LayerId};
 use crate::gui::msg::{CanvasMsg, Msg, StripView, Tool};
+use iced::advanced::widget::operation::scrollable::{snap_to, RelativeOffset};
+use iced::advanced::widget::operate;
 use iced::{Point, Task};
 
 pub(super) fn update(app: &mut App, msg: CanvasMsg) -> Task<Msg> {
@@ -15,9 +18,13 @@ pub(super) fn update(app: &mut App, msg: CanvasMsg) -> Task<Msg> {
             }
             Task::none()
         }
+        CanvasMsg::SelectAt(p) => select_at(app, p),
         CanvasMsg::ToolPress(p) => press(app, p),
         // Dragging the pin tool paints pins.
         CanvasMsg::ToolDrag(p) if app.tool == Tool::Pin => {
+            if selection_empty(app) {
+                return Task::none();
+            }
             let view = match app.session() {
                 Some(s) => s.view,
                 None => return Task::none(),
@@ -35,6 +42,10 @@ pub(super) fn update(app: &mut App, msg: CanvasMsg) -> Task<Msg> {
 }
 
 fn press(app: &mut App, p: Point) -> Task<Msg> {
+    // A tool acts on the primary layer; with nothing selected it has no target.
+    if selection_empty(app) {
+        return Task::none();
+    }
     let (tool, view) = match app.session() {
         Some(s) => (app.tool, s.view),
         None => return Task::none(),
@@ -44,6 +55,66 @@ fn press(app: &mut App, p: Point) -> Task<Msg> {
         Tool::Select if view == StripView::Stage(2) => pick_color(app, p),
         _ => Task::none(),
     }
+}
+
+fn selection_empty(app: &App) -> bool {
+    app.session().is_none_or(|s| s.selection.is_empty())
+}
+
+/// Resolves a Document-view click at document px `p`: selects the topmost
+/// enabled, visible layer whose art covers the point, routing the hit through
+/// the rail's click semantics so modifiers behave identically, or deselects
+/// when the click lands on empty space. On a hit the rail scrolls the row into
+/// view so both selection surfaces agree.
+fn select_at(app: &mut App, p: Point) -> Task<Msg> {
+    match hit_test(app, p) {
+        Some(i) => {
+            let selected = super::layer::click(app, i);
+            Task::batch([selected, scroll_to_row(app, i)])
+        }
+        None => super::layer::deselect(app),
+    }
+}
+
+/// The topmost layer covering document px `p`: walks the stack front-to-back,
+/// skips preview-hidden and export-excluded layers, and takes the first whose
+/// cropped art has source alpha at or above that layer's resolved threshold.
+fn hit_test(app: &App, p: Point) -> Option<LayerId> {
+    let doc_idx = app.selected_doc;
+    let doc = app.doc()?;
+    (0..doc.layers.len()).rev().find_map(|idx| {
+        let flags = doc.flags[idx];
+        if !flags.visible || !flags.enabled {
+            return None;
+        }
+        let layer = &doc.layers[idx];
+        let (lx, ly) = (p.x - layer.offset.0 as f32, p.y - layer.offset.1 as f32);
+        if lx < 0.0 || ly < 0.0 {
+            return None;
+        }
+        let (x, y) = (lx as u32, ly as u32);
+        if x >= layer.img.width() || y >= layer.img.height() {
+            return None;
+        }
+        let alpha = layer.img.get_pixel(x, y).0[3];
+        let threshold = app.stack(doc_idx).resolve(&layer.name).0.alpha_threshold;
+        (alpha >= threshold).then_some(LayerId(idx))
+    })
+}
+
+/// Scrolls the rail so layer `i`'s row is visible.
+fn scroll_to_row(app: &App, i: LayerId) -> Task<Msg> {
+    let Some(n) = app.doc().map(|d| d.layers.len()) else {
+        return Task::none();
+    };
+    if n <= 1 {
+        return Task::none();
+    }
+    // The rail lists layers topmost-first, so a row's fraction down the list is
+    // its distance from the top of the stack over the stack height.
+    let from_top = (n - 1 - i.index()) as f32 / (n - 1) as f32;
+    let offset = RelativeOffset { x: 0.0, y: from_top }.into();
+    operate(snap_to(layers_scrollable(), offset))
 }
 
 /// Locks or unlocks the palette color at source-crop px `p` on the quantized

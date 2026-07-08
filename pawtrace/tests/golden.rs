@@ -1,147 +1,59 @@
-//! Visual golden tests for the full tracing pipeline. For each fixture PSD,
-//! traces every layer exactly as `src/main.rs` does, rasterizes the assembled
-//! document SVG at native size, and compares against a blessed baseline PNG
-//! with a perceptual (OKLab ΔE) metric. A separate stats guard catches anchor
-//! explosions that a pixel diff cannot see.
+//! Perceptual golden test over the curated manifest (`fixtures/visual/subsets.toml`).
+//! For each entry it traces every manifest layer exactly as `src/main.rs`
+//! does, rasterizes the assembled composite at native size, and compares
+//! against the entry's `_final.png` with an OKLab ΔE metric. A separate stats
+//! guard catches anchor explosions a pixel diff cannot see.
 //!
-//! Run: `cargo test --features preview` (heavy in debug; see Cargo.toml's
-//! `[profile.test]` opt bumps).
-//! Re-bless: `UPDATE_GOLDENS=1 cargo test --features preview` rewrites the
-//! baseline PNGs and `fixtures/golden/stats.toml`, then passes.
+//! The `_final.png` baselines are owned by the visual harness (`tests/visual.rs`);
+//! this test reads them and blesses only `fixtures/golden/stats.toml`.
+//!
+//! Run: `cargo test --features preview --test golden`
+//! Re-bless: bless the visual harness first (`PAWTRACE_BLESS=1`), then
+//! `UPDATE_GOLDENS=1 cargo test --features preview --test golden` rewrites
+//! `stats.toml`.
 
 #![cfg(feature = "preview")]
+
+mod common;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use image::{Rgba, RgbaImage};
-use rayon::prelude::*;
-use resvg::{tiny_skia, usvg};
 use serde::{Deserialize, Serialize};
 
 use pawtrace::config::srgb_to_oklab;
-use pawtrace::output::{self, Stroke, SvgLayer};
-use pawtrace::profiles::ProfileStack;
-use pawtrace::trace::TracedPath;
-use pawtrace::{pipeline, psd_import};
 
-const FIXTURES: &[&str] = &["a good throat swabbing.psd", "between the buck's legs.psd"];
+use common::{
+    composite_over_grid, counts, load_manifest, render, resolve_entry, trace, visual_golden_dir,
+};
 
 /// Per-pixel OKLab ΔE at or above which a pixel counts as visibly changed.
 /// Below this is anti-alias jitter along edges; a dropped outline or a
-/// re-colored region lands far above it (ΔE > 0.3).
+/// re-colored region lands far above it.
 const VISIBLE_DELTA_E: f32 = 0.06;
 /// Mean ΔE budget over the compared pixel set. The pipeline is deterministic,
-/// so an unregressed render matches its baseline exactly at mean 0. The budget
-/// is headroom for a future resvg or AA shift, not expected drift.
+/// so an unregressed render matches its baseline exactly at mean 0.
 const MEAN_DELTA_E_BUDGET: f32 = 0.01;
-/// Budget on the fraction of compared pixels that are visibly changed. Tight
-/// enough that a missing thin feature (which paints a contiguous band of
-/// high-ΔE pixels) trips it, loose enough for edge AA reflow.
+/// Budget on the fraction of compared pixels that are visibly changed.
 const VISIBLE_FRACTION_BUDGET: f32 = 0.02;
 /// Stats may grow this much over the blessed totals before failing. Anchor
 /// explosions multiply the count several-fold, well past this.
 const STATS_GROWTH: f64 = 1.25;
 
-fn fixtures_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures")
+fn stats_path() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures").join("golden").join("stats.toml")
 }
 
-fn golden_dir() -> PathBuf {
-    fixtures_dir().join("golden")
-}
-
-/// Filesystem-safe stem for a fixture's baseline artifacts.
-fn slug(psd: &str) -> String {
-    Path::new(psd)
-        .file_stem()
-        .unwrap()
-        .to_string_lossy()
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
-        .collect()
-}
-
-/// Path count and cubic-segment count summed across every layer of a document.
+/// Path count and cubic-segment count summed across every layer of an entry.
 #[derive(Serialize, Deserialize, PartialEq, Debug)]
 struct DocStats {
     paths: usize,
     cubics: usize,
 }
 
-struct Traced {
-    name: String,
-    stroke: Option<Stroke>,
-    colors: Vec<(String, Vec<TracedPath>)>,
-}
-
-/// Traces every layer of `psd_path` the way `src/main.rs` does: profiles
-/// resolved per layer, `pipeline::run` on the full document-sized layer, and
-/// per-layer paths rescaled from the layer's own supersample space into the
-/// document's. Returns the document size and the assembled layers.
-fn trace_document(psd_path: &Path) -> (u32, u32, u32, Vec<Traced>) {
-    let profiles = ProfileStack::load_near(psd_path);
-    let bytes = std::fs::read(psd_path).unwrap();
-    let layers = psd_import::layers(&bytes).unwrap();
-    let (w, h) = (layers[0].1.width(), layers[0].1.height());
-    let doc_scale = profiles.resolve("").0.scale;
-
-    let traced = layers
-        .par_iter()
-        .map(|(name, img)| {
-            let (layer_cfg, _) = profiles.resolve(name);
-            let mut colors = pipeline::run(img, &layer_cfg, w.max(h), (0, 0)).unwrap();
-            let ratio = doc_scale as f64 / layer_cfg.scale as f64;
-            if ratio != 1.0 {
-                for (_, paths) in &mut colors {
-                    for p in paths {
-                        p.scale(ratio);
-                    }
-                }
-            }
-            Traced {
-                name: name.clone(),
-                stroke: output::stroke_of(&layer_cfg),
-                colors,
-            }
-        })
-        .collect();
-
-    (w, h, doc_scale, traced)
-}
-
-/// Rasterizes the assembled document SVG at its native (source-pixel) size.
-fn render(w: u32, h: u32, scale: u32, layers: &[Traced]) -> RgbaImage {
-    let svg_layers: Vec<SvgLayer> = layers
-        .iter()
-        .map(|l| SvgLayer {
-            name: &l.name,
-            stroke: l.stroke.as_ref(),
-            colors: &l.colors,
-        })
-        .collect();
-    let svg = output::svg(w, h, scale, 0.0, &svg_layers);
-    let tree = usvg::Tree::from_data(svg.as_bytes(), &usvg::Options::default()).unwrap();
-    let mut pix = tiny_skia::Pixmap::new(w, h).unwrap();
-    resvg::render(&tree, tiny_skia::Transform::identity(), &mut pix.as_mut());
-    RgbaImage::from_raw(w, h, pix.take()).unwrap()
-}
-
-fn doc_stats(layers: &[Traced]) -> DocStats {
-    let mut paths = 0;
-    let mut cubics = 0;
-    for l in layers {
-        for (_, ps) in &l.colors {
-            paths += ps.len();
-            cubics += ps.iter().map(|p| p.cubics.len()).sum::<usize>();
-        }
-    }
-    DocStats { paths, cubics }
-}
-
-/// Straight sRGB of a tiny_skia premultiplied-RGBA pixel composited over
-/// white, so an alpha drop (a hole where the baseline was opaque) reads as a
-/// large color change instead of vanishing.
+/// Straight sRGB of a premultiplied-RGBA pixel over white, so an alpha drop
+/// reads as a large color change instead of vanishing.
 fn over_white(p: &Rgba<u8>) -> [u8; 3] {
     let bg = 255 - p.0[3];
     [
@@ -185,38 +97,53 @@ fn compare(current: &RgbaImage, baseline: &RgbaImage) -> (f32, f32) {
 #[test]
 fn golden_documents_match_baselines() {
     let bless = std::env::var_os("UPDATE_GOLDENS").is_some();
-    let dir = golden_dir();
-    std::fs::create_dir_all(&dir).unwrap();
-
-    let stats_path = dir.join("stats.toml");
-    let mut blessed_stats: BTreeMap<String, DocStats> = std::fs::read_to_string(&stats_path)
-        .ok()
-        .and_then(|s| toml::from_str(&s).ok())
-        .unwrap_or_default();
+    let stats_path = stats_path();
+    // Bless rebuilds the map from scratch so entries dropped from the manifest
+    // leave no stale key behind.
+    let mut blessed_stats: BTreeMap<String, DocStats> = if bless {
+        BTreeMap::new()
+    } else {
+        std::fs::read_to_string(&stats_path)
+            .ok()
+            .and_then(|s| toml::from_str(&s).ok())
+            .unwrap_or_default()
+    };
 
     let mut failures = Vec::new();
-    for &fixture in FIXTURES {
-        let psd = fixtures_dir().join(fixture);
-        assert!(psd.exists(), "missing fixture: {}", psd.display());
-        let slug = slug(fixture);
-        let png = dir.join(format!("{slug}.png"));
+    for entry in load_manifest() {
+        let resolved = resolve_entry(&entry);
+        for m in &resolved.missing {
+            failures.push(format!("{}: manifest layer '{m}' resolved to no PSD layer", entry.name));
+        }
 
-        let (w, h, scale, layers) = trace_document(&psd);
-        let current = render(w, h, scale, &layers);
-        let stats = doc_stats(&layers);
+        let doc = trace(&resolved);
+        // The `_final.png` baseline is composited over the transparency grid by
+        // the visual harness, so match it here to compare like for like.
+        let current = composite_over_grid(&render(&doc));
+        let (paths, cubics) = counts(&doc);
+        let stats = DocStats { paths, cubics };
 
         if bless {
-            current.save(&png).unwrap();
-            blessed_stats.insert(slug, stats);
+            blessed_stats.insert(entry.name.clone(), stats);
             continue;
         }
 
-        let baseline = image::open(&png)
-            .unwrap_or_else(|e| panic!("no baseline {} ({e}); bless with UPDATE_GOLDENS=1", png.display()))
-            .to_rgba8();
+        let png = visual_golden_dir().join(&entry.name).join("_final.png");
+        let baseline = match image::open(&png) {
+            Ok(img) => img.to_rgba8(),
+            Err(e) => {
+                failures.push(format!(
+                    "{}: no baseline {} ({e}); bless the visual harness with PAWTRACE_BLESS=1",
+                    entry.name,
+                    png.display()
+                ));
+                continue;
+            }
+        };
         if baseline.dimensions() != current.dimensions() {
             failures.push(format!(
-                "{fixture}: size {:?} != baseline {:?}",
+                "{}: size {:?} != baseline {:?}",
+                entry.name,
                 current.dimensions(),
                 baseline.dimensions()
             ));
@@ -226,21 +153,21 @@ fn golden_documents_match_baselines() {
         let (mean, visible) = compare(&current, &baseline);
         if mean > MEAN_DELTA_E_BUDGET || visible > VISIBLE_FRACTION_BUDGET {
             failures.push(format!(
-                "{fixture}: mean ΔE {mean:.4} (budget {MEAN_DELTA_E_BUDGET}), \
-                 visible {:.3}% (budget {:.1}%)",
+                "{}: mean ΔE {mean:.4} (budget {MEAN_DELTA_E_BUDGET}), visible {:.3}% (budget {:.1}%)",
+                entry.name,
                 visible * 100.0,
                 VISIBLE_FRACTION_BUDGET * 100.0
             ));
         }
 
-        match blessed_stats.get(&slug) {
-            None => failures.push(format!("{fixture}: no blessed stats; bless with UPDATE_GOLDENS=1")),
+        match blessed_stats.get(&entry.name) {
+            None => failures.push(format!("{}: no blessed stats; bless with UPDATE_GOLDENS=1", entry.name)),
             Some(blessed) => {
                 let grew = |cur: usize, base: usize| cur as f64 > base as f64 * STATS_GROWTH;
                 if grew(stats.paths, blessed.paths) || grew(stats.cubics, blessed.cubics) {
                     failures.push(format!(
-                        "{fixture}: stats grew past {STATS_GROWTH}x — paths {} vs {}, cubics {} vs {}",
-                        stats.paths, blessed.paths, stats.cubics, blessed.cubics
+                        "{}: stats grew past {STATS_GROWTH}x — paths {} vs {}, cubics {} vs {}",
+                        entry.name, stats.paths, blessed.paths, stats.cubics, blessed.cubics
                     ));
                 }
             }
@@ -248,8 +175,7 @@ fn golden_documents_match_baselines() {
     }
 
     if bless {
-        let toml = toml::to_string_pretty(&blessed_stats).unwrap();
-        std::fs::write(&stats_path, toml).unwrap();
+        std::fs::write(&stats_path, toml::to_string_pretty(&blessed_stats).unwrap()).unwrap();
         return;
     }
     assert!(failures.is_empty(), "golden mismatches:\n{}", failures.join("\n"));

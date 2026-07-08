@@ -31,9 +31,12 @@ pub fn layers(app: &App) -> Element<'_, Msg> {
             list = list.push(rows::layer_row(app, LayerId(i)));
         }
     }
-    let body = column![header, scrollable(list).height(Length::Fill)]
-        .spacing(8)
-        .padding(8);
+    let body = column![
+        header,
+        scrollable(list).id(crate::gui::ids::layers_scrollable()).height(Length::Fill)
+    ]
+    .spacing(8)
+    .padding(8);
     let underlay = container(body)
         .style(theme::panel)
         .width(Length::Fill)

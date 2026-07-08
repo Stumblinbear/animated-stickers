@@ -14,7 +14,7 @@ use pawtrace::profiles::ProfileStack;
 use pawtrace::trace::TracedPath;
 use pawtrace::{palette, pipeline, psd_import, raster, regions};
 
-const FIXTURES: &[&str] = &["a good throat swabbing.psd", "between the buck's legs.psd"];
+const FIXTURES: &[&str] = &["seff_deer_a.psd", "seff_deer_b.psd"];
 const ITERS: usize = 4;
 
 const STAGES: &[&str] = &[

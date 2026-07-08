@@ -6,6 +6,7 @@
 mod full;
 mod memo;
 mod render;
+mod shape_memo;
 mod stages;
 
 use super::app::App;
@@ -92,6 +93,9 @@ pub struct FullResult {
 pub enum StagePart {
     Source(Img),
     Flat(Img, Arc<crate::raster::Prepared>),
+    /// The merge plan computed this run, memoized under the `regions_view`
+    /// key for the report, contours, and trace of later runs.
+    Plan(Arc<regions::MergePlan>),
     Quant(Img, RgbaImage, Arc<image::RgbImage>, Arc<Vec<[u8; 3]>>),
     Regions(Img, usize, regions::RegionReport, Arc<Vec<regions::Region>>),
     /// Smoothed boundary, stored under the fit key.
@@ -141,17 +145,19 @@ impl App {
             return self.drain_full_queued();
         }
 
-        let snap = {
+        let (snap, shape_cache) = {
             let m = &mut self.docs[doc_idx].session.memo;
-            stages::Snapshot {
+            let snap = stages::Snapshot {
                 prep: m.prep(layer, keys.prep),
                 quant: m.quant(layer, keys.quant),
                 palette: m.palette(layer, keys.quant),
                 regions: m.regions(layer, keys.regions),
+                plan: m.plan(layer, keys.regions_view),
                 smooth: m.smooth(layer, keys.fit),
                 fit: m.fit(layer, keys.fit),
                 simplify: m.simplify(layer, keys.simplify),
-            }
+            };
+            (snap, m.shape_cache())
         };
 
         self.stages_gen += 1;
@@ -173,6 +179,7 @@ impl App {
             pending,
             shown: Shown { layer, keys, stroke_bits, stroke_color },
             snap,
+            shape_cache,
         })
     }
 

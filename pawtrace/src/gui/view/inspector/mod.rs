@@ -29,6 +29,9 @@ pub fn inspector(app: &App) -> Element<'_, Msg> {
             .padding(10)
             .into();
     };
+    if sess.selection.is_empty() {
+        return no_selection();
+    }
     let layer_name = app.layer_name().unwrap_or_else(|| "-".into());
 
     let mut header = row![
@@ -69,6 +72,31 @@ pub fn inspector(app: &App) -> Element<'_, Msg> {
     .spacing(10)
     .padding(10);
 
+    container(body)
+        .style(theme::panel)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
+}
+
+/// The inspector with no layer selected: the rail heading over a muted hint,
+/// no stage sections, and no override footer, since there is nothing to edit.
+fn no_selection<'a>() -> Element<'a, Msg> {
+    let header = row![
+        text("INSPECTOR").size(11).color(theme::MUTED),
+        space().width(Length::Fill),
+    ]
+    .spacing(8)
+    .align_y(Alignment::Center);
+    let hint = container(
+        text("No layer selected. Click a layer to edit its settings.")
+            .size(12)
+            .color(theme::MUTED),
+    )
+    .height(Length::Fill)
+    .center_x(Length::Fill)
+    .padding(10);
+    let body = column![header, hint].spacing(10).padding(10);
     container(body)
         .style(theme::panel)
         .width(Length::Fill)

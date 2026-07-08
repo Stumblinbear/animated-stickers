@@ -37,6 +37,9 @@ fn stage_part(app: &mut App, doc: usize, generation: u64, part: StagePart) -> Ta
                     s.memo.put_prep(layer, keys.prep, prep);
                     s.stage_pending[1] = false;
                 }
+                StagePart::Plan(plan) => {
+                    s.memo.put_plan(layer, keys.regions_view, plan);
+                }
                 StagePart::Quant(img, px, quant, pal) => {
                     s.stages.quant = Some(img);
                     s.stages.palette = (*pal).clone();

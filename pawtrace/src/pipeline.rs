@@ -127,11 +127,22 @@ pub fn trace_regions(
     doc_dim: u32,
     pins: &[(u32, u32)],
 ) -> Vec<(String, Vec<TracedPath>)> {
+    trace_planned(&regions::merge_plan(regs, alpha, cfg, doc_dim, pins), alpha, cfg)
+}
+
+/// [`trace_regions`] from a prebuilt merge plan, so a caller that also needs
+/// the region report or the debug contours runs the speckle merge and shape
+/// build once.
+pub fn trace_planned(
+    plan: &regions::MergePlan,
+    alpha: &GrayImage,
+    cfg: &Config,
+) -> Vec<(String, Vec<TracedPath>)> {
     // Shapes and traces run in parallel (nested rayon inside the per-layer
     // parallelism is fine: it's one shared thread pool). Assembly stays
     // sequential, so paint order and output are unchanged.
     use rayon::prelude::*;
-    let shapes = surviving_shapes(regs, alpha, cfg, doc_dim, pins);
+    let shapes = surviving_shapes(plan, alpha, cfg);
     let traced: Vec<([u8; 3], Vec<TracedPath>)> = timing::TRACE.time(|| {
         shapes
             .par_iter()
@@ -146,7 +157,15 @@ pub fn trace_regions(
             })
             .collect()
     });
+    group_traced(traced)
+}
 
+/// Groups per-shape traces, in paint order, into the color-hex runs the
+/// output format wants: adjacent shapes of one color join a single entry,
+/// empty traces drop out.
+pub(crate) fn group_traced(
+    traced: Vec<([u8; 3], Vec<TracedPath>)>,
+) -> Vec<(String, Vec<TracedPath>)> {
     let mut out: Vec<(String, Vec<TracedPath>)> = Vec::new();
     for (c, mut paths) in traced {
         if paths.is_empty() {
@@ -181,8 +200,23 @@ pub fn debug_contours(
     doc_dim: u32,
     pins: &[(u32, u32)],
 ) -> Vec<DebugContour> {
+    debug_planned(&regions::merge_plan(regs, alpha, cfg, doc_dim, pins), alpha, cfg)
+}
+
+/// [`debug_contours`] from a prebuilt merge plan.
+pub fn debug_planned(
+    plan: &regions::MergePlan,
+    alpha: &GrayImage,
+    cfg: &Config,
+) -> Vec<DebugContour> {
+    debug_from_shapes(&surviving_shapes(plan, alpha, cfg), cfg)
+}
+
+/// [`debug_contours`] from prebuilt shapes, so the GUI shares one shape build
+/// between the contour view and the trace.
+pub(crate) fn debug_from_shapes(shapes: &[Shape], cfg: &Config) -> Vec<DebugContour> {
     use rayon::prelude::*;
-    surviving_shapes(regs, alpha, cfg, doc_dim, pins)
+    shapes
         .par_iter()
         .flat_map(|(_, mask, slack, (bx, by))| {
             let (dx, dy) = (*bx as f64 - 1.0, *by as f64 - 1.0);
@@ -205,7 +239,18 @@ pub fn debug_contours(
 /// A paintable shape in paint order: `(region color, shape mask, seam-slack
 /// mask, mask bbox origin)`. The seam-slack mask is `None` when seam slack is
 /// off.
-type Shape = ([u8; 3], GrayImage, Option<GrayImage>, (u32, u32));
+pub(crate) type Shape = ([u8; 3], GrayImage, Option<GrayImage>, (u32, u32));
+
+/// The shapes [`trace_planned`] traces, in paint order, for callers that fit
+/// them shape by shape (the GUI's per-shape trace memo).
+#[cfg(feature = "gui")]
+pub(crate) fn planned_shapes(
+    plan: &regions::MergePlan,
+    alpha: &GrayImage,
+    cfg: &Config,
+) -> Vec<Shape> {
+    surviving_shapes(plan, alpha, cfg)
+}
 
 /// The paintable shapes for the regions that clear the speckle floor (or
 /// hold a pin), in paint order: `(region color, shape mask, seam-slack mask,
@@ -219,37 +264,14 @@ type Shape = ([u8; 3], GrayImage, Option<GrayImage>, (u32, u32));
 /// 4-adjacent to a neighbor region whose color is within `2 *
 /// stroke_merge_dist` of the shape's own, so the fit can loosen there. It is
 /// `None` when `seam_slack` is off.
-fn surviving_shapes(
-    regs: &[regions::Region],
-    alpha: &GrayImage,
-    cfg: &Config,
-    doc_dim: u32,
-    pins: &[(u32, u32)],
-) -> Vec<Shape> {
+fn surviving_shapes(plan: &regions::MergePlan, alpha: &GrayImage, cfg: &Config) -> Vec<Shape> {
     use rayon::prelude::*;
-    let turdsize = cfg.turdsize(doc_dim) as u64;
-    // Sub-floor regions merge into a neighbor before the floor is applied:
-    // quantizing a gradient cuts thin features (an outline over shading)
-    // into short same-color arcs, each below the floor on its own, and
-    // culling them punched holes in visibly solid linework.
-    let regs = regions::merge_speckles(regs, alpha.dimensions(), turdsize, pins);
+    let turdsize = plan.floor;
+    let regs = &plan.regs;
+    let areas = &plan.areas;
     let (w, h) = alpha.dimensions();
 
-    // Keep the hole-filled masks: a tree leaf's shape below is exactly its
-    // region_shape mask (its bbox never folds), so caching here saves a
-    // second mask build and hole fill per leaf.
-    let shapes0: Vec<(std::sync::Mutex<Option<GrayImage>>, u64)> = timing::SHAPES.time(|| {
-        regs.par_iter()
-            .map(|r| {
-                let (mask, area) = regions::region_shape(r, alpha, turdsize);
-                (std::sync::Mutex::new(Some(mask)), area)
-            })
-            .collect()
-    });
-    let areas: Vec<u64> = shapes0.iter().map(|s| s.1).collect();
-    let survivors: Vec<usize> = (0..regs.len())
-        .filter(|&i| areas[i] >= turdsize || pins.iter().any(|&(x, y)| regs[i].contains(x, y)))
-        .collect();
+    let survivors: Vec<usize> = (0..regs.len()).filter(|&i| plan.survives[i]).collect();
     if survivors.is_empty() {
         return Vec::new();
     }
@@ -419,7 +441,9 @@ fn surviving_shapes(
                 let si = si as usize;
                 let (x0, y0, x1, y1) = bbox[si];
                 let mask = if children[si].is_empty() {
-                    shapes0[survivors[si]].0.lock().unwrap().take().unwrap()
+                    // A leaf's shape is exactly its plan mask (its bbox never
+                    // folds), so cloning it skips a mask build and hole fill.
+                    plan.masks[survivors[si]].clone()
                 } else {
                     let bw = x1 - x0 + 3;
                     let mut mask = GrayImage::new(bw, y1 - y0 + 3);
@@ -439,7 +463,7 @@ fn surviving_shapes(
                     mask
                 };
                 let slack = want_slack.then(|| {
-                    slack_mask(&mask, (x0, y0), regs[survivors[si]].color, &label, &survivors, &regs, (w, h), slack_thresh)
+                    slack_mask(&mask, (x0, y0), regs[survivors[si]].color, &label, &survivors, regs, (w, h), slack_thresh)
                 });
                 (regs[survivors[si]].color, mask, slack, (x0, y0))
             })
@@ -629,7 +653,8 @@ mod tests {
         let cfg = Config { scale: 1, detail: 5.0, ..Default::default() };
         let regs = regions::segment(&quant, &alpha);
 
-        let shapes = surviving_shapes(&regs, &alpha, &cfg, 512, &[]);
+        let plan = regions::merge_plan(&regs, &alpha, &cfg, 512, &[]);
+        let shapes = surviving_shapes(&plan, &alpha, &cfg);
         let on = |mask: &GrayImage| mask.pixels().filter(|p| p[0] != 0).count();
         // Lightest first, each shape covering everything painted after it.
         assert_eq!(shapes.len(), 3);

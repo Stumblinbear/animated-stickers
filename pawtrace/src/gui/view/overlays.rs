@@ -41,8 +41,10 @@ pub fn marching_ants(frame: &mut Frame, path: &Path, now: Instant) {
     );
 }
 
-/// Builds the transparent pin overlay for the selected layer's pins.
+/// Builds the transparent pin overlay for the selected layer's pins. Draws
+/// nothing when the selection is empty, since there is no layer to protect.
 pub fn pin_overlay(app: &App) -> Element<'_, Msg> {
+    let has_selection = app.session().is_some_and(|s| !s.selection.is_empty());
     let offset = app
         .session()
         .zip(app.doc())
@@ -53,7 +55,11 @@ pub fn pin_overlay(app: &App) -> Element<'_, Msg> {
         img: app.active_image().map(|i| i.size),
         zoom: app.session().and_then(|s| s.zoom()),
         pan: app.session().map(|s| s.pan()).unwrap_or(Vector::ZERO),
-        pins: app.session().map(|s| s.cfg.pins.as_slice()).unwrap_or(&[]),
+        pins: if has_selection {
+            app.session().map(|s| s.cfg.pins.as_slice()).unwrap_or(&[])
+        } else {
+            &[]
+        },
         offset,
         factor: app.view_density(),
         view: app.session().map(|s| s.view).unwrap_or_default(),

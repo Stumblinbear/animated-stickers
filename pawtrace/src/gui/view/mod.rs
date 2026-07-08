@@ -4,6 +4,7 @@
 
 mod anim;
 mod canvas_toolbar;
+mod checkerboard;
 mod icons;
 mod inspector;
 mod layers;

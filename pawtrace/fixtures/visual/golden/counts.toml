@@ -1,0 +1,43 @@
+[bed]
+paths = 5
+anchors = 73
+
+[blushiboi]
+paths = 141
+anchors = 1525
+
+[buck_bed]
+paths = 9
+anchors = 139
+
+[buck_deer_head]
+paths = 79
+anchors = 474
+
+[buck_deer_leg]
+paths = 17
+anchors = 215
+
+[fingagun]
+paths = 110
+anchors = 1197
+
+[happy_king]
+paths = 95
+anchors = 1045
+
+[mad_king]
+paths = 94
+anchors = 1038
+
+[seff_arm]
+paths = 8
+anchors = 65
+
+[seff_face]
+paths = 71
+anchors = 603
+
+[seff_head]
+paths = 94
+anchors = 1010

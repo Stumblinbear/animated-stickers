@@ -1,0 +1,112 @@
+[[subset]]
+name = "seff_face"
+source = "fixtures/seff_deer_a.psd"
+exercises = "hair gradients + floof + eyelid/brow linework: palette and fine-detail tracing"
+layers = [
+    "Seff Head",
+    "Seff Head Border",
+    "Seff Head Fill",
+    "Seff Hair",
+    "Seff Hair Border",
+    "Seff Hair Fill",
+    "Seff Hair 2",
+    "Seff Hair 2 Fill",
+    "Seff Floof",
+    "Seff Floof Fill",
+    "Seff L Ear",
+    "Seff L Ear Fill",
+    "Seff R Brow",
+    "Seff R Eyelid",
+]
+
+[[subset]]
+name = "bed"
+source = "fixtures/seff_deer_a.psd"
+exercises = "large flat fill under a soft gradient: broad-region stroke/fill profiles"
+layers = ["Bed", "Bed Fill"]
+
+[[subset]]
+name = "seff_arm"
+source = "fixtures/seff_deer_a.psd"
+exercises = "single small furred limb: isolated base + fill pairing"
+layers = ["Seff L Arm", "Seff L Arm Fill"]
+
+[[subset]]
+name = "buck_deer_head"
+source = "fixtures/seff_deer_b.psd"
+exercises = "antler silhouette + hair tuft + irises/eyelids: palette and fine-detail tracing"
+layers = [
+    "Deer Head",
+    "Deer Head Fill",
+    "Deer R Ear",
+    "Deer R Ear Fill",
+    "Deer L Ear",
+    "Deer L Ear Fill",
+    "Deer Hair",
+    "Deer Hair Fill",
+    "Deer R Eyelid",
+    "Deer L Eyelid",
+    "Deer R Iris",
+    "Deer L Iris",
+]
+
+[[subset]]
+name = "seff_head"
+source = "fixtures/seff_deer_b.psd"
+exercises = "striped mane with Border + Fill layers: stroke/fill profile coverage"
+layers = [
+    "Seff Head",
+    "Seff Head Border",
+    "Seff Head Fill",
+    "Seff Hair",
+    "Seff Hair Border",
+    "Seff Hair Fill",
+    "Seff L Ear",
+    "Seff L Ear Border",
+    "Seff L Ear Fill",
+    "Seff R Ear",
+    "Seff R Ear Fill",
+    "Seff Necc",
+    "Seff Necc Fill",
+    "Seff Mane 1",
+    "Seff Mane 1 Fill",
+    "Seff Mane 2",
+    "Seff Mane 2 Fill",
+    "Seff Mane 3",
+    "Seff Mane 3 Fill",
+]
+
+[[subset]]
+name = "buck_deer_leg"
+source = "fixtures/seff_deer_b.psd"
+exercises = "single lower-leg chain with Border + Fill: stroke/fill profile coverage"
+layers = [
+    "Deer R Calf",
+    "Deer R Calf Border",
+    "Deer R Calf Fill",
+    "Deer R Foot",
+    "Deer R Foot Border",
+    "Deer R Foot Fill",
+]
+
+[[subset]]
+name = "buck_bed"
+source = "fixtures/seff_deer_b.psd"
+exercises = "wide draped sheet: large flat region with soft folds"
+layers = ["Bed", "Bed Fill"]
+
+[[whole]]
+name = "blushiboi"
+source = "fixtures/blushiboi.psd"
+
+[[whole]]
+name = "fingagun"
+source = "fixtures/fingagun.psd"
+
+[[whole]]
+name = "happy_king"
+source = "fixtures/happy king.psd"
+
+[[whole]]
+name = "mad_king"
+source = "fixtures/mad king.psd"
