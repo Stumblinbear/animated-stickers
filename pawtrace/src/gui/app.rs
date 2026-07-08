@@ -125,7 +125,7 @@ impl Default for DocState {
             selected_layer: LayerId(0),
             selection: BTreeSet::new(),
             select_anchor: LayerId(0),
-            override_layer: false,
+            override_layer: true,
             profile_input: String::new(),
             cfg: Config::default(),
             stroke_hex: String::new(),
