@@ -61,9 +61,11 @@ impl TracedPath {
 pub fn trace_mask(mask: &GrayImage, cfg: &Config, slack: Option<&GrayImage>) -> Vec<TracedPath> {
     let (w, h) = (mask.width() as usize, mask.height() as usize);
     let mut bin = BinaryImage::new_w_h(w, h);
-    for (x, y, p) in mask.enumerate_pixels() {
-        if p[0] > 0 {
-            bin.set_pixel(x as usize, y as usize, true);
+    // The mask and BinaryImage share row-major layout, so the raw index maps
+    // straight through.
+    for (i, &v) in mask.as_raw().iter().enumerate() {
+        if v > 0 {
+            bin.set_pixel_index(i, true);
         }
     }
 
@@ -143,9 +145,11 @@ pub fn smoothed_contours(
 ) -> Vec<SmoothedContour> {
     let (w, h) = (mask.width() as usize, mask.height() as usize);
     let mut bin = BinaryImage::new_w_h(w, h);
-    for (x, y, p) in mask.enumerate_pixels() {
-        if p[0] > 0 {
-            bin.set_pixel(x as usize, y as usize, true);
+    // The mask and BinaryImage share row-major layout, so the raw index maps
+    // straight through.
+    for (i, &v) in mask.as_raw().iter().enumerate() {
+        if v > 0 {
+            bin.set_pixel_index(i, true);
         }
     }
     let corner_threshold = cfg.corner_threshold();

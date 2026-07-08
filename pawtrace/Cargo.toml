@@ -17,25 +17,33 @@ fast_image_resize = "5"
 # Tracing backend — pure Rust (vtracer's engine). VERIFY exact API against docs.rs.
 visioncortex = "0.8"
 
+[[example]]
+name = "perf"
+required-features = ["preview"]
+
 [features]
 default = []
-gui = ["dep:iced", "dep:iced_aw", "dep:rfd", "dep:resvg", "iced/web-colors"]
+gui = ["dep:iced", "dep:iced_aw", "dep:rfd", "dep:resvg", "dep:lru", "iced/web-colors"]
 pdf = ["dep:svg2pdf", "dep:usvg"]
 preview = ["dep:resvg"]
 
 [dependencies.iced]
 version = "0.14"
 optional = true
-features = ["image", "tokio"]
+features = ["image", "tokio", "canvas", "advanced"]
 
 [dependencies.iced_aw]
 version = "0.14"
 optional = true
 default-features = false
-features = ["menu", "context_menu"]
+features = ["menu", "context_menu", "drop_down"]
 
 [dependencies.rfd]
 version = "0.15"
+optional = true
+
+[dependencies.lru]
+version = "0.12"
 optional = true
 
 [dependencies.svg2pdf]

@@ -195,6 +195,11 @@ pub struct Profiles {
     /// class it belongs to. Project tier only.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub overrides: BTreeMap<String, Overrides>,
+    /// Exact layer name -> profile key. An explicit assignment pins a layer to
+    /// a named profile regardless of glob matching, overriding specificity.
+    /// Project tier only.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub assign: BTreeMap<String, String>,
 }
 
 impl Profiles {
@@ -255,16 +260,115 @@ pub fn global_path() -> Option<std::path::PathBuf> {
         })
 }
 
+/// A borrowed view over a global tier and one project tier.
+#[derive(Clone, Copy)]
+pub struct StackRef<'a> {
+    pub global: &'a Profiles,
+    pub project: &'a Profiles,
+}
+
+impl<'a> StackRef<'a> {
+    /// Resolve a layer's config: built-in defaults, then each tier's
+    /// `[default]`, then the single most specific matching profile, then the
+    /// project layer override for this exact layer. The returned name is that
+    /// one profile, for display. Profiles never stack.
+    pub fn resolve(self, layer_name: &str) -> (Config, Option<String>) {
+        let mut c = self.profile_base();
+        let matched = self.best_profile(layer_name);
+        if let Some((_, ov)) = matched {
+            c = ov.apply(c);
+        }
+        if let Some(ov) = self.project.overrides.get(layer_name) {
+            c = ov.apply(c);
+        }
+        (c, matched.map(|(k, _)| k.to_string()))
+    }
+
+    /// The profile governing a layer: an explicit project assignment if one
+    /// names an existing profile, otherwise the single most specific matching
+    /// profile across both tiers, project preferred on an equal-specificity
+    /// tie.
+    pub fn best_profile(self, layer_name: &str) -> Option<(&'a str, &'a Overrides)> {
+        if let Some(key) = self.project.assign.get(layer_name) {
+            if let Some(hit) = self.lookup_key(key) {
+                return Some(hit);
+            }
+        }
+        match (
+            self.global.best_profile(layer_name),
+            self.project.best_profile(layer_name),
+        ) {
+            (g, None) => g,
+            (None, p) => p,
+            (Some(g), Some(p)) => {
+                Some(if specificity(p.0) >= specificity(g.0) { p } else { g })
+            }
+        }
+    }
+
+    /// A profile by exact key, project tier preferred, for an explicit
+    /// assignment whose key an unmatching glob would otherwise miss.
+    fn lookup_key(self, key: &str) -> Option<(&'a str, &'a Overrides)> {
+        self.project
+            .profiles
+            .get_key_value(key)
+            .or_else(|| self.global.profiles.get_key_value(key))
+            .map(|(k, ov)| (k.as_str(), ov))
+    }
+
+    /// The config both tiers' `[default]` sections resolve to, which every
+    /// profile applies on top of.
+    pub fn profile_base(self) -> Config {
+        self.project.default.apply(self.global.default.apply(Config::default()))
+    }
+
+    /// The base a layer override edits on top of: the full resolution of the
+    /// layer minus the override itself (defaults plus the matching profile).
+    pub fn override_base(self, layer_name: &str) -> Config {
+        let mut c = self.profile_base();
+        if let Some((_, ov)) = self.best_profile(layer_name) {
+            c = ov.apply(c);
+        }
+        c
+    }
+
+    /// Whether a layer has its own override.
+    pub fn has_override(self, layer_name: &str) -> bool {
+        self.project.overrides.contains_key(layer_name)
+    }
+
+    /// Display tag: the single matching profile's name.
+    pub fn match_name(self, layer_name: &str) -> Option<String> {
+        self.best_profile(layer_name).map(|(k, _)| k.to_string())
+    }
+
+    /// An owned stack cloned from both tiers.
+    pub fn to_owned(self) -> ProfileStack {
+        ProfileStack {
+            global: self.global.clone(),
+            project: self.project.clone(),
+        }
+    }
+}
+
+/// Loads the global library, or an empty tier when there is none.
+pub fn load_global() -> Profiles {
+    global_path()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|s| toml::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
 impl ProfileStack {
     pub fn load_near(input: &std::path::Path) -> Self {
-        let global = global_path()
-            .and_then(|p| std::fs::read_to_string(p).ok())
-            .and_then(|s| toml::from_str(&s).ok())
-            .unwrap_or_default();
         Self {
-            global,
+            global: load_global(),
             project: Profiles::load_near(input),
         }
+    }
+
+    pub fn as_stack_ref(&self) -> StackRef<'_> {
+        StackRef { global: &self.global, project: &self.project }
     }
 
     pub fn tier(&self, scope: Scope) -> &Profiles {
@@ -281,41 +385,19 @@ impl ProfileStack {
         }
     }
 
-    /// Resolve a layer's config: built-in defaults, then each tier's
-    /// `[default]`, then the single most specific matching profile, then the
-    /// project layer override for this exact layer. The returned name is that
-    /// one profile, for display. Profiles never stack.
+    /// See [`StackRef::resolve`].
     pub fn resolve(&self, layer_name: &str) -> (Config, Option<String>) {
-        let mut c = self.profile_base();
-        let matched = self.best_profile(layer_name);
-        if let Some((_, ov)) = matched {
-            c = ov.apply(c);
-        }
-        if let Some(ov) = self.project.overrides.get(layer_name) {
-            c = ov.apply(c);
-        }
-        (c, matched.map(|(k, _)| k.to_string()))
+        self.as_stack_ref().resolve(layer_name)
     }
 
-    /// The single most specific profile across both tiers, project preferred
-    /// on an equal-specificity tie.
+    /// See [`StackRef::best_profile`].
     pub fn best_profile(&self, layer_name: &str) -> Option<(&str, &Overrides)> {
-        match (
-            self.global.best_profile(layer_name),
-            self.project.best_profile(layer_name),
-        ) {
-            (g, None) => g,
-            (None, p) => p,
-            (Some(g), Some(p)) => {
-                Some(if specificity(p.0) >= specificity(g.0) { p } else { g })
-            }
-        }
+        self.as_stack_ref().best_profile(layer_name)
     }
 
-    /// The config both tiers' `[default]` sections resolve to, which every
-    /// profile applies on top of.
+    /// See [`StackRef::profile_base`].
     pub fn profile_base(&self) -> Config {
-        self.project.default.apply(self.global.default.apply(Config::default()))
+        self.as_stack_ref().profile_base()
     }
 
     /// The base a `[default]` edit at `scope` layers onto: nothing for the
@@ -327,24 +409,19 @@ impl ProfileStack {
         }
     }
 
-    /// The base a layer override edits on top of: the full resolution of the
-    /// layer minus the override itself (defaults plus the matching profile).
+    /// See [`StackRef::override_base`].
     pub fn override_base(&self, layer_name: &str) -> Config {
-        let mut c = self.profile_base();
-        if let Some((_, ov)) = self.best_profile(layer_name) {
-            c = ov.apply(c);
-        }
-        c
+        self.as_stack_ref().override_base(layer_name)
     }
 
-    /// Whether a layer has its own override.
+    /// See [`StackRef::has_override`].
     pub fn has_override(&self, layer_name: &str) -> bool {
         self.project.overrides.contains_key(layer_name)
     }
 
-    /// Display tag: the single matching profile's name.
+    /// See [`StackRef::match_name`].
     pub fn match_name(&self, layer_name: &str) -> Option<String> {
-        self.best_profile(layer_name).map(|(k, _)| k.to_string())
+        self.as_stack_ref().match_name(layer_name)
     }
 }
 
@@ -548,6 +625,84 @@ mod tests {
         let (cfg, matched) = s.resolve("Deer Fill");
         assert_eq!(cfg.detail, 3.0);
         assert_eq!(matched.as_deref(), Some("* Fill"));
+    }
+
+    #[test]
+    fn assignment_beats_glob_and_restores_on_removal() {
+        let mut s = ProfileStack::default();
+        s.project.profiles.insert(
+            "Deer *".into(),
+            Overrides { detail: Some(2.0), ..Default::default() },
+        );
+        s.project.profiles.insert(
+            "Special".into(),
+            Overrides { detail: Some(9.0), ..Default::default() },
+        );
+        // "Deer L Hand" globs to "Deer *"; an explicit assignment to "Special"
+        // wins even though "Special" would never match by glob.
+        s.project.assign.insert("Deer L Hand".into(), "Special".into());
+        let (cfg, matched) = s.resolve("Deer L Hand");
+        assert_eq!(cfg.detail, 9.0);
+        assert_eq!(matched.as_deref(), Some("Special"));
+        // Removing the assignment restores the glob match.
+        s.project.assign.remove("Deer L Hand");
+        let (cfg, matched) = s.resolve("Deer L Hand");
+        assert_eq!(cfg.detail, 2.0);
+        assert_eq!(matched.as_deref(), Some("Deer *"));
+    }
+
+    #[test]
+    fn assignment_to_a_global_tier_key_works() {
+        let mut s = ProfileStack::default();
+        s.global.profiles.insert(
+            "Eye".into(),
+            Overrides { detail: Some(7.0), ..Default::default() },
+        );
+        s.project.assign.insert("Deer L Hand".into(), "Eye".into());
+        let (cfg, matched) = s.resolve("Deer L Hand");
+        assert_eq!(cfg.detail, 7.0);
+        assert_eq!(matched.as_deref(), Some("Eye"));
+    }
+
+    #[test]
+    fn assignment_round_trips_toml() {
+        let mut p = Profiles::default();
+        p.assign.insert("Deer L Hand".into(), "Special".into());
+        let toml = toml::to_string(&p).unwrap();
+        assert!(toml.contains("[assign]"));
+        let back: Profiles = toml::from_str(&toml).unwrap();
+        assert_eq!(back.assign.get("Deer L Hand").map(String::as_str), Some("Special"));
+        // An empty assign map is skipped, leaving no orphan table.
+        let empty = toml::to_string(&Profiles::default()).unwrap();
+        assert!(!empty.contains("[assign]"));
+    }
+
+    #[test]
+    fn promoting_a_layer_keeps_its_resolution() {
+        let mut s = ProfileStack::default();
+        s.project.profiles.insert(
+            "Deer *".into(),
+            Overrides { detail: Some(2.0), max_colors: Some(9), ..Default::default() },
+        );
+        // 7.0 differs from Config::default().detail (5.0), which the diff
+        // below would otherwise omit.
+        s.project.overrides.insert(
+            "Deer L Hand".into(),
+            Overrides { detail: Some(7.0), ..Default::default() },
+        );
+        let (before, _) = s.resolve("Deer L Hand");
+        // Mirrors the GUI's promote-to-profile: the new profile is the layer's
+        // full deviation from the tier defaults, because the assignment
+        // replaces both the old glob profile and the override.
+        let ov = diff(&s.profile_base(), &before);
+        assert_eq!(ov.detail, Some(7.0));
+        assert_eq!(ov.max_colors, Some(9)); // the old profile's field comes along
+        s.project.profiles.insert("Deer 2 *".into(), ov);
+        s.project.assign.insert("Deer L Hand".into(), "Deer 2 *".into());
+        s.project.overrides.remove("Deer L Hand");
+        let (after, matched) = s.resolve("Deer L Hand");
+        assert_eq!(after, before);
+        assert_eq!(matched.as_deref(), Some("Deer 2 *"));
     }
 
     #[test]

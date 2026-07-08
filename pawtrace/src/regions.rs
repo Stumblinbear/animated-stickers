@@ -3,7 +3,9 @@
 //! output: each becomes one filled path, painted as an outside-in stack.
 
 use crate::config::{color_dist, Config};
-use image::{GrayImage, Luma, RgbImage};
+use image::{GrayImage, RgbImage};
+#[cfg(test)]
+use image::Luma;
 
 #[derive(Debug, Clone)]
 pub struct Region {
@@ -33,26 +35,19 @@ impl Region {
 /// and quantization would only rediscover them. Components stay separate:
 /// trace_mask walks one component per shape.
 pub fn from_mask(mask: &GrayImage, color: [u8; 3]) -> Vec<Region> {
-    // A uniform image quantizes to itself, so segmentation over the mask
-    // colors yields exactly the connected components.
+    // A uniform image quantizes to itself, so the mask's connected
+    // components are exactly the regions and no color comparison is needed.
     let (w, h) = mask.dimensions();
-    let quant = RgbImage::from_pixel(w, h, image::Rgb(color));
-    segment(&quant, mask)
-}
-
-/// Connected same-color regions (4-connectivity) over art pixels.
-pub fn segment(quant: &RgbImage, alpha: &GrayImage) -> Vec<Region> {
-    let (w, h) = quant.dimensions();
+    let am = mask.as_raw();
     let idx = |x: u32, y: u32| (y * w + x) as usize;
     let mut seen = vec![false; (w * h) as usize];
     let mut regions = Vec::new();
     let mut queue: Vec<(u32, u32)> = Vec::new();
     for y in 0..h {
         for x in 0..w {
-            if seen[idx(x, y)] || alpha.get_pixel(x, y)[0] == 0 {
+            if seen[idx(x, y)] || am[idx(x, y)] == 0 {
                 continue;
             }
-            let color = quant.get_pixel(x, y).0;
             let mut pixels = Vec::new();
             let (mut x0, mut y0, mut x1, mut y1) = (x, y, x, y);
             seen[idx(x, y)] = true;
@@ -64,11 +59,56 @@ pub fn segment(quant: &RgbImage, alpha: &GrayImage) -> Vec<Region> {
                 x1 = x1.max(px);
                 y1 = y1.max(py);
                 let mut visit = |nx: u32, ny: u32, queue: &mut Vec<(u32, u32)>| {
-                    if !seen[idx(nx, ny)]
-                        && alpha.get_pixel(nx, ny)[0] != 0
-                        && quant.get_pixel(nx, ny).0 == color
-                    {
+                    if !seen[idx(nx, ny)] && am[idx(nx, ny)] != 0 {
                         seen[idx(nx, ny)] = true;
+                        queue.push((nx, ny));
+                    }
+                };
+                if px > 0 { visit(px - 1, py, &mut queue); }
+                if py > 0 { visit(px, py - 1, &mut queue); }
+                if px + 1 < w { visit(px + 1, py, &mut queue); }
+                if py + 1 < h { visit(px, py + 1, &mut queue); }
+            }
+            for p in &mut pixels {
+                p.0 -= x0;
+                p.1 -= y0;
+            }
+            regions.push(Region { color, x0, y0, x1, y1, pixels });
+        }
+    }
+    regions
+}
+
+/// Connected same-color regions (4-connectivity) over art pixels.
+pub fn segment(quant: &RgbImage, alpha: &GrayImage) -> Vec<Region> {
+    let (w, h) = quant.dimensions();
+    let q3 = quant.as_raw();
+    let am = alpha.as_raw();
+    let idx = |x: u32, y: u32| (y * w + x) as usize;
+    let color_at = |i: usize| -> [u8; 3] { [q3[3 * i], q3[3 * i + 1], q3[3 * i + 2]] };
+    let mut seen = vec![false; (w * h) as usize];
+    let mut regions = Vec::new();
+    let mut queue: Vec<(u32, u32)> = Vec::new();
+    for y in 0..h {
+        for x in 0..w {
+            if seen[idx(x, y)] || am[idx(x, y)] == 0 {
+                continue;
+            }
+            let color = color_at(idx(x, y));
+            let mut pixels = Vec::new();
+            let (mut x0, mut y0, mut x1, mut y1) = (x, y, x, y);
+            seen[idx(x, y)] = true;
+            queue.push((x, y));
+            while let Some((px, py)) = queue.pop() {
+                pixels.push((px, py));
+                x0 = x0.min(px);
+                y0 = y0.min(py);
+                x1 = x1.max(px);
+                y1 = y1.max(py);
+                let mut visit = |nx: u32, ny: u32, queue: &mut Vec<(u32, u32)>| {
+                    let i = idx(nx, ny);
+                    if !seen[i] && am[i] != 0 && color_at(i) == color {
+                        seen[i] = true;
                         queue.push((nx, ny));
                     }
                 };
@@ -128,8 +168,11 @@ fn merge_speckle_roots(
 
     let mut area: Vec<u64> = regs.iter().map(|r| r.pixels.len() as u64).collect();
     let mut neighbors: Vec<Vec<(u32, u64)>> = Vec::with_capacity(n);
+    // Dense-id scratch counter, as in census(): first-touch order is fine
+    // because the merge loop re-aggregates by root with its own tie-breaks.
+    let mut shared = vec![0u64; n];
+    let mut touched: Vec<u32> = Vec::new();
     for (id, r) in regs.iter().enumerate() {
-        let mut shared: std::collections::HashMap<u32, u64> = Default::default();
         for &(px, py) in &r.pixels {
             let (x, y) = (r.x0 + px, r.y0 + py);
             for (nx, ny) in [
@@ -141,12 +184,24 @@ fn merge_speckle_roots(
                 if nx < w && ny < h {
                     let other = label[(ny * w + nx) as usize];
                     if other != u32::MAX && other != id as u32 {
-                        *shared.entry(other).or_insert(0) += 1;
+                        if shared[other as usize] == 0 {
+                            touched.push(other);
+                        }
+                        shared[other as usize] += 1;
                     }
                 }
             }
         }
-        neighbors.push(shared.into_iter().collect());
+        neighbors.push(
+            touched
+                .drain(..)
+                .map(|o| {
+                    let e = (o, shared[o as usize]);
+                    shared[o as usize] = 0;
+                    e
+                })
+                .collect(),
+        );
     }
 
     let pinned: Vec<bool> = regs
@@ -165,23 +220,38 @@ fn merge_speckle_roots(
         root
     }
 
+    let mut by_len = vec![0u64; n];
+    let mut btouched: Vec<u32> = Vec::new();
     loop {
+        // Roots snapshot once per round: merges land as a batch below, so
+        // the snapshot equals per-neighbor find() calls.
+        let root_of: Vec<u32> = (0..n as u32).map(|id| find(&mut nodes, id)).collect();
         let mut merges: Vec<(u32, u32)> = Vec::new();
         for id in 0..n as u32 {
-            if find(&mut nodes, id) != id || pinned[id as usize] || area[id as usize] >= min_area
+            if root_of[id as usize] != id || pinned[id as usize] || area[id as usize] >= min_area
             {
                 continue;
             }
-            let mut by_root: std::collections::HashMap<u32, u64> = Default::default();
             for &(nid, len) in &neighbors[id as usize] {
-                let root = find(&mut nodes, nid);
+                let root = root_of[nid as usize];
                 // Pinned regions take no part in merging, as source or
                 // target: a pin marks the region as deliberate exactly as
                 // drawn, and receiving a neighbor would grow it.
                 if root != id && !pinned[root as usize] {
-                    *by_root.entry(root).or_insert(0) += len;
+                    if by_len[root as usize] == 0 {
+                        btouched.push(root);
+                    }
+                    by_len[root as usize] += len;
                 }
             }
+            let by_root: Vec<(u32, u64)> = btouched
+                .drain(..)
+                .map(|o| {
+                    let e = (o, by_len[o as usize]);
+                    by_len[o as usize] = 0;
+                    e
+                })
+                .collect();
             // Nearest color picks the target, not dominant boundary: a
             // border arc shares more edge with the fill it outlines than
             // with the sibling arcs at its two ends, and boundary-major
@@ -294,11 +364,18 @@ pub fn region_report(
     let merged = gather_speckle_merged(regs, &roots, &colors);
     // The floor tests the merged region: its hole-filled area against the
     // floor, exempting any pin it covers, exactly as surviving_shapes does.
+    use rayon::prelude::*;
     let mut root_area: std::collections::HashMap<u32, u64> = Default::default();
     let mut root_survives: std::collections::HashMap<u32, bool> = Default::default();
-    for (&root, mr) in &merged {
-        let area = region_shape(mr, alpha, floor).1;
-        let survives = area >= floor || pins.iter().any(|&(x, y)| mr.contains(x, y));
+    let entries: Vec<(u32, u64, bool)> = merged
+        .par_iter()
+        .map(|(&root, mr)| {
+            let area = region_shape(mr, alpha, floor).1;
+            let survives = area >= floor || pins.iter().any(|&(x, y)| mr.contains(x, y));
+            (root, area, survives)
+        })
+        .collect();
+    for (root, area, survives) in entries {
         root_area.insert(root, area);
         root_survives.insert(root, survives);
     }
@@ -400,27 +477,43 @@ fn absorb(regions: Vec<Region>, w: u32, h: u32, cfg: &Config) -> Vec<Region> {
     // Merge cascade on the region graph: each round evaluates every root
     // against round-start state and applies the merges as a batch. Pixels
     // are repainted once at the end.
+    let mut by_len = vec![0u64; nodes.len()];
+    let mut btouched: Vec<u32> = Vec::new();
     for _ in 0..8 {
+        // Roots snapshot once per round: merges only land as a batch below,
+        // so this equals a per-neighbor find() and lets the scan borrow
+        // neighbor lists instead of cloning them.
+        let root_of: Vec<u32> = (0..nodes.len() as u32)
+            .map(|id| find(&mut nodes, id))
+            .collect();
         let roots: Vec<u32> = (0..nodes.len() as u32)
-            .filter(|&id| find(&mut nodes, id) == id)
+            .filter(|&id| root_of[id as usize] == id)
             .collect();
         let mut merges: Vec<(u32, u32)> = Vec::new();
         for &id in &roots {
             let n = &nodes[id as usize];
             let (color, area, perimeter, bbox) = (n.color, n.area, n.perimeter, n.bbox);
-            let raw: Vec<(u32, u64)> = n.neighbors.clone();
             // Resolve neighbor ids to current roots, summing boundary.
-            let mut by_root: std::collections::HashMap<u32, u64> = Default::default();
-            for (nid, len) in raw {
-                let root = find(&mut nodes, nid);
+            for &(nid, len) in &n.neighbors {
+                let root = root_of[nid as usize];
                 if root != id {
-                    *by_root.entry(root).or_insert(0) += len;
+                    if by_len[root as usize] == 0 {
+                        btouched.push(root);
+                    }
+                    by_len[root as usize] += len;
                 }
             }
-            let mut neigh: Vec<(u32, u64)> = by_root.into_iter().collect();
-            // Tie-break by id: HashMap order is randomized per process, and
-            // boundary-length ties would otherwise pick different dominant
-            // neighbors run to run.
+            let mut neigh: Vec<(u32, u64)> = btouched
+                .drain(..)
+                .map(|o| {
+                    let e = (o, by_len[o as usize]);
+                    by_len[o as usize] = 0;
+                    e
+                })
+                .collect();
+            // The sort's id tie-break makes the accumulation order above
+            // unobservable: boundary-length ties would otherwise pick
+            // different dominant neighbors run to run.
             neigh.sort_by_key(|&(rid, l)| (std::cmp::Reverse(l), rid));
             // Islands bordering a single region are deliberate marks
             // (highlights, spots), never transitions.
@@ -485,18 +578,17 @@ fn absorb(regions: Vec<Region>, w: u32, h: u32, cfg: &Config) -> Vec<Region> {
             // Aggregate the absorbed band into the target root. Shared
             // boundary becomes interior, so it leaves both perimeters. Depth
             // adds as a bound: stacked thin bands can be that wide together.
-            let shared: u64 = nodes[s as usize]
-                .neighbors
-                .clone()
-                .into_iter()
-                .filter(|&(nid, _)| find(&mut nodes, nid) == t)
-                .map(|(_, l)| l)
+            let sn = std::mem::take(&mut nodes[s as usize].neighbors);
+            let shared: u64 = sn
+                .iter()
+                .filter(|&&(nid, _)| find(&mut nodes, nid) == t)
+                .map(|&(_, l)| l)
                 .sum();
             let sd = depth_of(&mut nodes, &regions, s);
             let td = depth_of(&mut nodes, &regions, t);
-            let (sa, sp, sb, sn) = {
+            let (sa, sp, sb) = {
                 let n = &nodes[s as usize];
-                (n.area, n.perimeter, n.bbox, n.neighbors.clone())
+                (n.area, n.perimeter, n.bbox)
             };
             let tn = &mut nodes[t as usize];
             tn.area += sa;
@@ -527,9 +619,14 @@ fn census(regions: &[Region], w: u32, h: u32) -> Vec<Node> {
         }
     }
     let mut nodes: Vec<Node> = Vec::with_capacity(regions.len());
+    // Dense-id scratch counter instead of a hash map: neighbor ids index it
+    // directly, and `touched` limits the reset to the ids actually seen.
+    // Neighbor list order becomes first-touch order, which no consumer
+    // observes: they re-aggregate by root or sort with explicit tie-breaks.
+    let mut shared = vec![0u64; regions.len()];
+    let mut touched: Vec<u32> = Vec::new();
     for (id, r) in regions.iter().enumerate() {
         let mut perimeter = 0u64;
-        let mut shared: std::collections::HashMap<u32, u64> = Default::default();
         let mut interior = 0u32;
         let mut ring: Vec<(u32, u32)> = Vec::new();
         for &(px, py) in &r.pixels {
@@ -552,7 +649,10 @@ fn census(regions: &[Region], w: u32, h: u32) -> Vec<Node> {
                 foreign = true;
                 perimeter += 1;
                 if other != u32::MAX {
-                    *shared.entry(other).or_insert(0) += 1;
+                    if shared[other as usize] == 0 {
+                        touched.push(other);
+                    }
+                    shared[other as usize] += 1;
                 }
             }
             if foreign {
@@ -561,6 +661,14 @@ fn census(regions: &[Region], w: u32, h: u32) -> Vec<Node> {
                 interior += 1;
             }
         }
+        let neighbors = touched
+            .drain(..)
+            .map(|o| {
+                let n = (o, shared[o as usize]);
+                shared[o as usize] = 0;
+                n
+            })
+            .collect();
         nodes.push(Node {
             color: r.color,
             area: r.pixels.len() as u64,
@@ -569,7 +677,7 @@ fn census(regions: &[Region], w: u32, h: u32) -> Vec<Node> {
             ring,
             interior,
             bbox: (r.x0, r.y0, r.x1, r.y1),
-            neighbors: shared.into_iter().collect(),
+            neighbors,
             parent: id as u32,
         });
     }
@@ -622,9 +730,14 @@ fn merge_strokes(regions: Vec<Region>, w: u32, h: u32, cfg: &Config) -> Vec<Regi
         t
     };
 
+    let mut by_len = vec![0u64; n];
+    let mut btouched: Vec<u32> = Vec::new();
     for _ in 0..8 {
+        // Roots snapshot once per round, as in absorb(): merges land as a
+        // batch, so the snapshot equals per-neighbor find() calls.
+        let root_of: Vec<u32> = (0..n as u32).map(|id| find(&mut nodes, id)).collect();
         let roots: Vec<u32> = (0..n as u32)
-            .filter(|&id| find(&mut nodes, id) == id)
+            .filter(|&id| root_of[id as usize] == id)
             .collect();
         let mut merges: Vec<(u32, u32)> = Vec::new();
         for &id in &roots {
@@ -632,15 +745,23 @@ fn merge_strokes(regions: Vec<Region>, w: u32, h: u32, cfg: &Config) -> Vec<Regi
                 continue;
             }
             let color = nodes[id as usize].color;
-            let raw: Vec<(u32, u64)> = nodes[id as usize].neighbors.clone();
-            let mut by_root: std::collections::HashMap<u32, u64> = Default::default();
-            for (nid, len) in raw {
-                let root = find(&mut nodes, nid);
+            for &(nid, len) in &nodes[id as usize].neighbors {
+                let root = root_of[nid as usize];
                 if root != id {
-                    *by_root.entry(root).or_insert(0) += len;
+                    if by_len[root as usize] == 0 {
+                        btouched.push(root);
+                    }
+                    by_len[root as usize] += len;
                 }
             }
-            let mut neigh: Vec<(u32, u64)> = by_root.into_iter().collect();
+            let mut neigh: Vec<(u32, u64)> = btouched
+                .drain(..)
+                .map(|o| {
+                    let e = (o, by_len[o as usize]);
+                    by_len[o as usize] = 0;
+                    e
+                })
+                .collect();
             neigh.sort_by_key(|&(rid, l)| (std::cmp::Reverse(l), rid));
             let target = neigh.into_iter().find(|&(rid, _)| {
                 color_dist(color, nodes[rid as usize].color) < cfg.stroke_merge_dist
@@ -661,9 +782,10 @@ fn merge_strokes(regions: Vec<Region>, w: u32, h: u32, cfg: &Config) -> Vec<Regi
             }
             // The larger side keeps its color, so a chain of stroke segments
             // converges on its biggest member, not on merge order.
-            let (sa, sb, sn, sc) = {
+            let sn = std::mem::take(&mut nodes[s as usize].neighbors);
+            let (sa, sb, sc) = {
                 let node = &nodes[s as usize];
-                (node.area, node.bbox, node.neighbors.clone(), node.color)
+                (node.area, node.bbox, node.color)
             };
             let tn = &mut nodes[t as usize];
             if sa > tn.area {
@@ -705,19 +827,25 @@ fn region_depth(r: &Region, ring: &[(u32, u32)], interior: u32) -> u32 {
     }
     let (bw, bh) = (r.x1 - r.x0 + 1, r.y1 - r.y0 + 1);
     let idx = |x: u32, y: u32| (y * bw + x) as usize;
-    let mut depth = vec![u32::MAX; (bw * bh) as usize];
-    // member gates the BFS to region cells; depth doubles as "visited".
-    let mut member = vec![false; (bw * bh) as usize];
+    // One grid carries both roles: 0 = not a member, u32::MAX = member not
+    // yet reached, anything else = assigned depth. Real depths never reach
+    // u32::MAX.
+    let mut depth = vec![0u32; (bw * bh) as usize];
     for &(px, py) in &r.pixels {
-        member[idx(px, py)] = true;
+        depth[idx(px, py)] = u32::MAX;
     }
-    let mut q: std::collections::VecDeque<(u32, u32)> = Default::default();
+    // Vec plus head cursor is the same FIFO a VecDeque gives, without the
+    // ring-buffer bookkeeping.
+    let mut q: Vec<(u32, u32)> = Vec::with_capacity(ring.len());
     for &(px, py) in ring {
         depth[idx(px, py)] = 1;
-        q.push_back((px, py));
+        q.push((px, py));
     }
+    let mut head = 0;
     let mut max_d = 1;
-    while let Some((x, y)) = q.pop_front() {
+    while head < q.len() {
+        let (x, y) = q[head];
+        head += 1;
         let d = depth[idx(x, y)];
         max_d = max_d.max(d);
         for (nx, ny) in [
@@ -726,9 +854,9 @@ fn region_depth(r: &Region, ring: &[(u32, u32)], interior: u32) -> u32 {
             (x, y.wrapping_sub(1)),
             (x, y + 1),
         ] {
-            if nx < bw && ny < bh && member[idx(nx, ny)] && depth[idx(nx, ny)] == u32::MAX {
+            if nx < bw && ny < bh && depth[idx(nx, ny)] == u32::MAX {
                 depth[idx(nx, ny)] = d + 1;
-                q.push_back((nx, ny));
+                q.push((nx, ny));
             }
         }
     }
@@ -742,8 +870,9 @@ fn region_depth(r: &Region, ring: &[(u32, u32)], interior: u32) -> u32 {
 pub fn region_shape(r: &Region, alpha: &GrayImage, min_hole: u64) -> (GrayImage, u64) {
     let (bw, bh) = (r.x1 - r.x0 + 3, r.y1 - r.y0 + 3);
     let mut mask = GrayImage::new(bw, bh);
+    let m: &mut [u8] = &mut mask;
     for &(px, py) in &r.pixels {
-        mask.put_pixel(px + 1, py + 1, Luma([255]));
+        m[((py + 1) * bw + px + 1) as usize] = 255;
     }
     let area = fill_holes(&mut mask, (r.x0, r.y0), alpha, min_hole);
     (mask, area)
@@ -761,6 +890,8 @@ pub fn fill_holes(
     min_hole: u64,
 ) -> u64 {
     let (bw, bh) = mask.dimensions();
+    let m: &mut [u8] = mask;
+    let (aw, araw) = (alpha.width(), alpha.as_raw());
 
     // Flood the off-pixels from the border; unreached off-components are
     // holes.
@@ -770,7 +901,7 @@ pub fn fill_holes(
     outside[0] = true;
     while let Some((x, y)) = q.pop() {
         let mut visit = |nx: u32, ny: u32, q: &mut Vec<(u32, u32)>| {
-            if !outside[idx(nx, ny)] && mask.get_pixel(nx, ny)[0] == 0 {
+            if !outside[idx(nx, ny)] && m[idx(nx, ny)] == 0 {
                 outside[idx(nx, ny)] = true;
                 q.push((nx, ny));
             }
@@ -787,7 +918,7 @@ pub fn fill_holes(
     let mut hole_keep: Vec<bool> = vec![false]; // index 0 unused
     for y in 0..bh {
         for x in 0..bw {
-            if mask.get_pixel(x, y)[0] != 0 || outside[idx(x, y)] || hole_id[idx(x, y)] != 0 {
+            if m[idx(x, y)] != 0 || outside[idx(x, y)] || hole_id[idx(x, y)] != 0 {
                 continue;
             }
             let id = hole_keep.len() as u32;
@@ -798,13 +929,13 @@ pub fn fill_holes(
             while let Some((hx, hy)) = q.pop() {
                 size += 1;
                 let (dx, dy) = (origin.0 + hx - 1, origin.1 + hy - 1);
-                if alpha.get_pixel(dx, dy)[0] == 0 {
+                if araw[(dy * aw + dx) as usize] == 0 {
                     transparent = true;
                 }
                 let mut visit = |nx: u32, ny: u32, q: &mut Vec<(u32, u32)>| {
                     if hole_id[idx(nx, ny)] == 0
                         && !outside[idx(nx, ny)]
-                        && mask.get_pixel(nx, ny)[0] == 0
+                        && m[idx(nx, ny)] == 0
                     {
                         hole_id[idx(nx, ny)] = id;
                         q.push((nx, ny));
@@ -819,15 +950,13 @@ pub fn fill_holes(
         }
     }
     let mut area = 0u64;
-    for y in 0..bh {
-        for x in 0..bw {
-            let id = hole_id[idx(x, y)];
-            if id != 0 && !hole_keep[id as usize] {
-                mask.put_pixel(x, y, Luma([255]));
-            }
-            if mask.get_pixel(x, y)[0] != 0 {
-                area += 1;
-            }
+    for (i, mv) in m.iter_mut().enumerate() {
+        let id = hole_id[i];
+        if id != 0 && !hole_keep[id as usize] {
+            *mv = 255;
+        }
+        if *mv != 0 {
+            area += 1;
         }
     }
     area

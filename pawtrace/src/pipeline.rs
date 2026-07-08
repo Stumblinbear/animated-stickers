@@ -235,11 +235,18 @@ fn surviving_shapes(
     let regs = regions::merge_speckles(regs, alpha.dimensions(), turdsize, pins);
     let (w, h) = alpha.dimensions();
 
-    let areas: Vec<u64> = timing::SHAPES.time(|| {
+    // Keep the hole-filled masks: a tree leaf's shape below is exactly its
+    // region_shape mask (its bbox never folds), so caching here saves a
+    // second mask build and hole fill per leaf.
+    let shapes0: Vec<(std::sync::Mutex<Option<GrayImage>>, u64)> = timing::SHAPES.time(|| {
         regs.par_iter()
-            .map(|r| regions::region_shape(r, alpha, turdsize).1)
+            .map(|r| {
+                let (mask, area) = regions::region_shape(r, alpha, turdsize);
+                (std::sync::Mutex::new(Some(mask)), area)
+            })
             .collect()
     });
+    let areas: Vec<u64> = shapes0.iter().map(|s| s.1).collect();
     let survivors: Vec<usize> = (0..regs.len())
         .filter(|&i| areas[i] >= turdsize || pins.iter().any(|&(x, y)| regs[i].contains(x, y)))
         .collect();
@@ -258,7 +265,13 @@ fn surviving_shapes(
                 label[((r.y0 + py) * w + (r.x0 + px)) as usize] = si as u32;
             }
         }
-        let mut adj: Vec<std::collections::BTreeMap<u32, u64>> = vec![Default::default(); m];
+        let araw = alpha.as_raw();
+        // Dense-id scratch counter, as in regions::census(): adjacency order
+        // is unobservable because the root pick and Prim's edge pick compare
+        // with total-order tie-breaks.
+        let mut adj: Vec<Vec<(u32, u64)>> = vec![Vec::new(); m];
+        let mut seam_len = vec![0u64; m];
+        let mut touched: Vec<u32> = Vec::new();
         let mut open_len = vec![0u64; m]; // frontier against transparency/canvas edge
         for (si, &ri) in survivors.iter().enumerate() {
             let r = &regs[ri];
@@ -275,15 +288,26 @@ fn surviving_shapes(
                     } else {
                         let o = label[(ny * w + nx) as usize];
                         if o == u32::MAX {
-                            if alpha.get_pixel(nx, ny)[0] == 0 {
+                            if araw[(ny * w + nx) as usize] == 0 {
                                 open_len[si] += 1;
                             }
                         } else if o != si as u32 {
-                            *adj[si].entry(o).or_insert(0) += 1;
+                            if seam_len[o as usize] == 0 {
+                                touched.push(o);
+                            }
+                            seam_len[o as usize] += 1;
                         }
                     }
                 }
             }
+            adj[si] = touched
+                .drain(..)
+                .map(|o| {
+                    let e = (o, seam_len[o as usize]);
+                    seam_len[o as usize] = 0;
+                    e
+                })
+                .collect();
         }
 
         // A maximum spanning tree per connected component, edges weighted by
@@ -306,7 +330,7 @@ fn surviving_shapes(
             let mut members = Vec::new();
             while let Some(i) = queue.pop() {
                 members.push(i);
-                for &nb in adj[i as usize].keys() {
+                for &(nb, _) in &adj[i as usize] {
                     if comp_of[nb as usize] == u32::MAX {
                         comp_of[nb as usize] = cid;
                         queue.push(nb);
@@ -335,7 +359,7 @@ fn surviving_shapes(
                     if !in_tree[t as usize] {
                         continue;
                     }
-                    for (&nb, &seam) in &adj[t as usize] {
+                    for &(nb, seam) in &adj[t as usize] {
                         if in_tree[nb as usize] {
                             continue;
                         }
@@ -355,9 +379,16 @@ fn surviving_shapes(
             }
         }
 
-        // Emit children first, folding each subtree's pixels and bbox into
-        // its parent, so every node's mask is built from its full subtree.
-        let mut sub: Vec<Vec<u32>> = (0..m as u32).map(|i| vec![i]).collect();
+        // Every node's mask is the union of its whole subtree. Fold each
+        // bbox into its parent children-first (order runs parents-first, so
+        // its reverse finishes a child before its parent needs it), then
+        // build the masks in parallel: each is independent given the tree.
+        let mut children: Vec<Vec<u32>> = vec![Vec::new(); m];
+        for (si, &p) in parent_of.iter().enumerate() {
+            if p != u32::MAX {
+                children[p as usize].push(si as u32);
+            }
+        }
         let mut bbox: Vec<(u32, u32, u32, u32)> = survivors
             .iter()
             .map(|&ri| {
@@ -365,32 +396,10 @@ fn surviving_shapes(
                 (r.x0, r.y0, r.x1, r.y1)
             })
             .collect();
-        // A neighbor is "low contrast" when its color sits within this OKLab
-        // distance of the shape's own, piggybacking on the stroke-merge scale:
-        // colors that close are already treated as interchangeable linework.
-        let slack_thresh = 2.0 * cfg.stroke_merge_dist;
-        let want_slack = cfg.seam_slack > 1.0 && slack_thresh > 0.0;
-        let mut shape: Vec<Option<Shape>> = (0..m).map(|_| None).collect();
         for &si in order.iter().rev() {
-            let si = si as usize;
-            let (x0, y0, x1, y1) = bbox[si];
-            let mut mask = GrayImage::new(x1 - x0 + 3, y1 - y0 + 3);
-            for &mi in &sub[si] {
-                let r = &regs[survivors[mi as usize]];
-                for &(px, py) in &r.pixels {
-                    mask.put_pixel(r.x0 + px - x0 + 1, r.y0 + py - y0 + 1, image::Luma([255]));
-                }
-            }
-            regions::fill_holes(&mut mask, (x0, y0), alpha, turdsize);
-            let slack = want_slack.then(|| {
-                slack_mask(&mask, (x0, y0), regs[survivors[si]].color, &label, &survivors, &regs, (w, h), slack_thresh)
-            });
-            shape[si] = Some((regs[survivors[si]].color, mask, slack, (x0, y0)));
-            let p = parent_of[si];
+            let p = parent_of[si as usize];
             if p != u32::MAX {
-                let moved = std::mem::take(&mut sub[si]);
-                sub[p as usize].extend(moved);
-                let (sb, pb) = (bbox[si], bbox[p as usize]);
+                let (sb, pb) = (bbox[si as usize], bbox[p as usize]);
                 bbox[p as usize] = (
                     pb.0.min(sb.0),
                     pb.1.min(sb.1),
@@ -399,9 +408,41 @@ fn surviving_shapes(
                 );
             }
         }
+        // A neighbor is "low contrast" when its color sits within this OKLab
+        // distance of the shape's own, piggybacking on the stroke-merge scale:
+        // colors that close are already treated as interchangeable linework.
+        let slack_thresh = 2.0 * cfg.stroke_merge_dist;
+        let want_slack = cfg.seam_slack > 1.0 && slack_thresh > 0.0;
         order
-            .iter()
-            .map(|&si| shape[si as usize].take().unwrap())
+            .par_iter()
+            .map(|&si| {
+                let si = si as usize;
+                let (x0, y0, x1, y1) = bbox[si];
+                let mask = if children[si].is_empty() {
+                    shapes0[survivors[si]].0.lock().unwrap().take().unwrap()
+                } else {
+                    let bw = x1 - x0 + 3;
+                    let mut mask = GrayImage::new(bw, y1 - y0 + 3);
+                    {
+                        let mraw: &mut [u8] = &mut mask;
+                        let mut stack = vec![si as u32];
+                        while let Some(mi) = stack.pop() {
+                            stack.extend_from_slice(&children[mi as usize]);
+                            let r = &regs[survivors[mi as usize]];
+                            for &(px, py) in &r.pixels {
+                                mraw[((r.y0 + py - y0 + 1) * bw + (r.x0 + px - x0 + 1))
+                                    as usize] = 255;
+                            }
+                        }
+                    }
+                    regions::fill_holes(&mut mask, (x0, y0), alpha, turdsize);
+                    mask
+                };
+                let slack = want_slack.then(|| {
+                    slack_mask(&mask, (x0, y0), regs[survivors[si]].color, &label, &survivors, &regs, (w, h), slack_thresh)
+                });
+                (regs[survivors[si]].color, mask, slack, (x0, y0))
+            })
             .collect()
     })
 }
@@ -426,20 +467,23 @@ fn slack_mask(
     let (bw, bh) = mask.dimensions();
     let (ox, oy) = (origin.0 as i64 - 1, origin.1 as i64 - 1);
     let mut out = GrayImage::new(bw, bh);
-    let low_contrast = |o: u32| -> bool {
-        o != u32::MAX
-            && crate::config::color_dist(own, regs[survivors[o as usize]].color) < thresh
-    };
+    let mraw = mask.as_raw();
+    let oraw: &mut [u8] = &mut out;
+    let lc: Vec<bool> = survivors
+        .iter()
+        .map(|&ri| crate::config::color_dist(own, regs[ri].color) < thresh)
+        .collect();
+    let low_contrast = |o: u32| -> bool { o != u32::MAX && lc[o as usize] };
     for my in 0..bh {
         for mx in 0..bw {
-            if mask.get_pixel(mx, my)[0] == 0 {
+            if mraw[(my * bw + mx) as usize] == 0 {
                 continue;
             }
             let touches = [(-1i64, 0i64), (1, 0), (0, -1), (0, 1)].into_iter().any(|(dx, dy)| {
                 let (nmx, nmy) = (mx as i64 + dx, my as i64 + dy);
                 // A neighbor still inside the shape is not a seam.
                 if nmx >= 0 && nmy >= 0 && nmx < bw as i64 && nmy < bh as i64
-                    && mask.get_pixel(nmx as u32, nmy as u32)[0] != 0
+                    && mraw[(nmy as u32 * bw + nmx as u32) as usize] != 0
                 {
                     return false;
                 }
@@ -448,7 +492,7 @@ fn slack_mask(
                     && low_contrast(label[(sy as u32 * w + sx as u32) as usize])
             });
             if touches {
-                out.put_pixel(mx, my, image::Luma([255]));
+                oraw[(my * bw + mx) as usize] = 255;
             }
         }
     }
@@ -458,14 +502,26 @@ fn slack_mask(
 /// Crops to the bounding box of pixels at or above the alpha threshold.
 /// Returns the crop and its (x, y) offset in the source image, or `None` if
 /// nothing is opaque.
-fn crop_to_alpha(src: &RgbaImage, cfg: &Config) -> Option<(RgbaImage, u32, u32)> {
+pub fn crop_to_alpha(src: &RgbaImage, cfg: &Config) -> Option<(RgbaImage, u32, u32)> {
     let (w, h) = src.dimensions();
+    let raw = src.as_raw();
     let (mut x0, mut y0, mut x1, mut y1) = (w, h, 0u32, 0u32);
-    for (x, y, p) in src.enumerate_pixels() {
-        if p.0[3] >= cfg.alpha_threshold {
-            x0 = x0.min(x);
+    for y in 0..h {
+        let row = &raw[(y as usize) * (w as usize) * 4..(y as usize + 1) * (w as usize) * 4];
+        let mut first = None;
+        let mut last = 0u32;
+        for (x, px) in row.chunks_exact(4).enumerate() {
+            if px[3] >= cfg.alpha_threshold {
+                if first.is_none() {
+                    first = Some(x as u32);
+                }
+                last = x as u32;
+            }
+        }
+        if let Some(f) = first {
+            x0 = x0.min(f);
+            x1 = x1.max(last);
             y0 = y0.min(y);
-            x1 = x1.max(x);
             y1 = y1.max(y);
         }
     }
@@ -487,7 +543,51 @@ fn crop_to_alpha(src: &RgbaImage, cfg: &Config) -> Option<(RgbaImage, u32, u32)>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::regions;
+    use crate::{palette, raster, regions};
+
+    /// The GUI stage strip traces the whole uncropped layer while `run` (and
+    /// the full render) traces the alpha crop and translates back. The memo
+    /// shares one trace between them, so the two must produce identical
+    /// geometry: integer-scale bilinear supersampling is shift-equivariant and
+    /// the crop pad covers the filter's reach, so an interior art crop resolves
+    /// to the same scaled pixels either way.
+    #[test]
+    fn uncropped_and_cropped_traces_are_identical() {
+        // Art at (8..32) inside a 40x40 layer, so the crop bbox is a strict,
+        // grid-aligned subset. Two colors give two regions.
+        let mut img = RgbaImage::new(40, 40);
+        for y in 8..32u32 {
+            for x in 8..32u32 {
+                let c = if x < 20 { [200, 50, 50, 255] } else { [50, 60, 200, 255] };
+                img.put_pixel(x, y, image::Rgba(c));
+            }
+        }
+        let cfg = Config { scale: 3, detail: 1.0, ..Default::default() };
+        let doc_dim = 40;
+
+        let cropped = run(&img, &cfg, doc_dim, (0, 0)).unwrap();
+
+        let prep = raster::prepare(&img, &cfg);
+        let pal = palette::extract_palette(&prep.flat, &prep.alpha, &cfg, doc_dim);
+        let mut quant = palette::remap(&prep.flat, &prep.alpha, &pal);
+        if cfg.color_cleanup > 0 {
+            quant = palette::label_smooth(&quant, &prep.alpha, cfg.color_cleanup);
+        }
+        let pins = scale_pins(&cfg.pins, (0, 0), cfg.scale, img.dimensions());
+        let regs = regions::segment_absorbed(&quant, &prep.alpha, &cfg);
+        let uncropped = simplify_paths(trace_regions(&regs, &prep.alpha, &cfg, doc_dim, &pins), &cfg);
+
+        assert_eq!(cropped.len(), uncropped.len());
+        assert!(!cropped.is_empty());
+        for ((h1, p1), (h2, p2)) in cropped.iter().zip(&uncropped) {
+            assert_eq!(h1, h2);
+            assert_eq!(p1.len(), p2.len());
+            for (a, b) in p1.iter().zip(p2) {
+                assert_eq!(a.start, b.start);
+                assert_eq!(a.cubics, b.cubics);
+            }
+        }
+    }
 
     #[test]
     fn pinned_regions_survive_the_speckle_floor() {

@@ -1,5 +1,6 @@
 //! Document loading: PSD/PNG files as layer stacks ready for the pipeline.
 
+use super::app::DocState;
 use crate::psd_import;
 use image::RgbaImage;
 use std::sync::Arc;
@@ -12,6 +13,20 @@ pub(super) struct Layer {
     pub(super) offset: (u32, u32),
 }
 
+/// Session flags for one layer. `visible` off skips the layer in the preview
+/// composite only; `enabled` off excludes it from processing and export.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct LayerFlags {
+    pub(super) visible: bool,
+    pub(super) enabled: bool,
+}
+
+impl Default for LayerFlags {
+    fn default() -> Self {
+        Self { visible: true, enabled: true }
+    }
+}
+
 pub(super) struct Doc {
     pub(super) path: std::path::PathBuf,
     /// Document dimensions, which detail normalization needs (README).
@@ -19,6 +34,11 @@ pub(super) struct Doc {
     /// Bottom-first paint order, as psd_import returns them. Arc so
     /// background tasks can borrow the pixels without cloning them.
     pub(super) layers: Arc<Vec<Layer>>,
+    /// Parallel to `layers`.
+    pub(super) flags: Vec<LayerFlags>,
+    /// Everything the user sees and selects for this document, preserved
+    /// across tab switches.
+    pub(super) session: DocState,
 }
 
 /// Every PSD/PNG directly in `dir`, sorted by name. Not recursive: art
@@ -63,7 +83,14 @@ pub(super) fn load_doc(path: &std::path::Path) -> anyhow::Result<Doc> {
             Some(Layer { name, img: crop, offset: (x0, y0) })
         })
         .collect();
-    Ok(Doc { path: path.to_path_buf(), size, layers: Arc::new(layers) })
+    let flags = vec![LayerFlags::default(); layers.len()];
+    Ok(Doc {
+        path: path.to_path_buf(),
+        size,
+        layers: Arc::new(layers),
+        flags,
+        session: DocState::default(),
+    })
 }
 
 fn alpha_bbox(img: &RgbaImage) -> Option<(u32, u32, u32, u32)> {

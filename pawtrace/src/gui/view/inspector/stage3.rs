@@ -1,0 +1,175 @@
+//! Stage 3 (Palette & remap) settings, plus the palette swatches with their
+//! nearest-neighbor distance and click-to-lock.
+
+use super::setting::setting;
+use crate::gui::app::App;
+use crate::gui::fields::Field;
+use crate::gui::msg::{EditMsg, Msg};
+use crate::gui::view::icons;
+use iced::widget::{button, column, container, row, slider, text};
+use iced::{Alignment, Background, Color, Element};
+
+pub fn stage3(app: &App) -> Element<'_, Msg> {
+    let Some(sess) = app.session() else {
+        return column![].into();
+    };
+    let cfg = &sess.cfg;
+    column![
+        setting(
+            app,
+            "Detail",
+            format!("{:.1}px", cfg.detail),
+            "Smallest feature worth keeping, in pixels at 512-canvas \
+             scale. Drives the palette floor and speckle removal.",
+            Field::Detail,
+            slider(0.5..=24.0, cfg.detail as f64, |v| Msg::Edit(EditMsg::Set(Field::Detail, v)))
+                .step(0.5),
+        ),
+        setting(
+            app,
+            "Max colors",
+            format!("{}", cfg.max_colors),
+            "Palette safety cap; extraction usually self-terminates \
+             below it.",
+            Field::MaxColors,
+            slider(2.0..=64.0, cfg.max_colors as f64, |v| {
+                Msg::Edit(EditMsg::Set(Field::MaxColors, v))
+            })
+            .step(1.0),
+        ),
+        setting(
+            app,
+            "Merge distance",
+            format!("{:.3} \u{394}E", cfg.merge_dist),
+            "Colors within this perceptual distance (OKLab \u{394}E, \
+             roughly 0..1) merge into one slot. 0 keeps every distinct \
+             bucket. Too high erases soft shading and highlights; fur \
+             highlights sit around 0.037 \u{394}E from their base.",
+            Field::MergeDist,
+            slider(0.0..=0.30, cfg.merge_dist as f64, |v| {
+                Msg::Edit(EditMsg::Set(Field::MergeDist, v))
+            })
+            .step(0.005),
+        ),
+        setting(
+            app,
+            "Gradient merge",
+            format!("{:.4} \u{394}E", cfg.gradient_dist),
+            "Candidates within this perceptual distance (OKLab \u{394}E) \
+             of the line between \
+             two kept colors merge as gradient interiors, however far \
+             they are from the endpoints. Distinct features survive: \
+             outlines and highlights are extrema, beyond every segment, \
+             and deliberate mid-tones are picked before their endpoints \
+             form a segment. Soft deliberate strokes sit within ~0.003 \
+             of a segment, so useful values are tiny. 0 disables.",
+            Field::GradientDist,
+            slider(0.0..=0.05, cfg.gradient_dist as f64, |v| {
+                Msg::Edit(EditMsg::Set(Field::GradientDist, v))
+            })
+            .step(0.0005),
+        ),
+        setting(
+            app,
+            "Histogram buckets",
+            format!(
+                "{} bits ({}-step)",
+                cfg.hist_bits,
+                256u32 >> cfg.hist_bits.clamp(3, 6)
+            ),
+            "Bucket granularity for palette candidates, bits per \
+             channel. Coarser pools soft airbrushed strokes into \
+             candidates that clear the detail floor; finer keeps close \
+             distinct colors apart. Range is a hard cap: finer than 6 \
+             bits costs hundreds of MB of histogram. Keep bucket width \
+             at or below merge distance.",
+            Field::HistBits,
+            slider(3.0..=6.0, cfg.hist_bits as f64, |v| {
+                Msg::Edit(EditMsg::Set(Field::HistBits, v))
+            })
+            .step(1.0),
+        ),
+        setting(
+            app,
+            "Color cleanup",
+            if cfg.color_cleanup == 0 {
+                "off".into()
+            } else {
+                format!("{} px", cfg.color_cleanup)
+            },
+            "Reassigns each pixel to the majority color in a window \
+             (kernel width in supersampled px, 0 = off). Cleans jagged \
+             or speckled edges where two similar palette colors (a dark \
+             line on dark fur) got assigned noisily. Larger kernels also \
+             swallow 1px detail strokes, so raise it only when a \
+             boundary looks ragged.",
+            Field::ColorCleanup,
+            slider(0.0..=9.0, cfg.color_cleanup as f64, |v| {
+                Msg::Edit(EditMsg::Set(Field::ColorCleanup, v))
+            })
+            .step(1.0),
+        ),
+        text("PALETTE · CLICK TO LOCK")
+            .size(9)
+            .color(crate::gui::view::theme::MUTED),
+        swatches(app),
+    ]
+    .spacing(10)
+    .into()
+}
+
+/// The extracted palette as clickable swatches. Each shows its hex, a lock
+/// marker when locked, and its OKLab distance to the nearest other slot.
+fn swatches(app: &App) -> Element<'_, Msg> {
+    let Some(sess) = app.session() else {
+        return row![].into();
+    };
+    let pal = &sess.stages.palette;
+    let locked = &sess.cfg.locked;
+    let nearest = |i: usize| -> f32 {
+        pal.iter()
+            .enumerate()
+            .filter(|&(j, _)| j != i)
+            .map(|(_, o)| crate::config::color_dist(pal[i], *o))
+            .fold(f32::INFINITY, f32::min)
+    };
+    pal.iter()
+        .enumerate()
+        .fold(row![].spacing(4), |r, (i, c)| {
+            let is_locked = locked.contains(c);
+            let hex = format!("#{:02x}{:02x}{:02x}", c[0], c[1], c[2]);
+            let top = if is_locked {
+                row![icons::icon(icons::LOCK).size(10), text(hex).size(11)]
+                    .spacing(3)
+                    .align_y(Alignment::Center)
+            } else {
+                row![text(hex).size(11)]
+            };
+            let de = nearest(i);
+            let de_text = if de.is_finite() {
+                format!("{de:.3}")
+            } else {
+                "-".into()
+            };
+            let color = *c;
+            let swatch = container(column![top, text(de_text).size(9)])
+                .style(move |_: &iced::Theme| container::Style {
+                    background: Some(Background::Color(Color::from_rgb8(
+                        color[0], color[1], color[2],
+                    ))),
+                    text_color: Some(if color[0] as u32 + color[1] as u32 + color[2] as u32 > 380 {
+                        Color::BLACK
+                    } else {
+                        Color::WHITE
+                    }),
+                    ..Default::default()
+                })
+                .padding(4);
+            r.push(
+                button(swatch)
+                    .padding(if is_locked { 3 } else { 0 })
+                    .on_press(Msg::Edit(EditMsg::ToggleLock(*c))),
+            )
+        })
+        .into()
+}

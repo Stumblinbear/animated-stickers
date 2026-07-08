@@ -6,7 +6,7 @@
 
 use image::{RgbImage, GrayImage};
 use std::collections::HashMap;
-use crate::config::{color_dist, srgb_to_oklab, Config};
+use crate::config::{srgb_to_oklab, Config};
 
 pub fn extract_palette(flat: &RgbImage, alpha: &GrayImage, cfg: &Config, dim: u32)
     -> Vec<[u8; 3]>
@@ -154,12 +154,14 @@ fn seg_dist(p: [f32; 3], a: [f32; 3], b: [f32; 3]) -> f32 {
 /// the alpha keep their meaningless zero fill.
 pub fn remap(flat: &RgbImage, alpha: &GrayImage, palette: &[[u8; 3]]) -> RgbImage {
     let mut out = flat.clone();
+    let pal_lab: Vec<[f32; 3]> = palette.iter().map(|&p| srgb_to_oklab(p)).collect();
     let mut cache: HashMap<[u8; 3], [u8; 3]> = HashMap::new();
     // Flat art runs the same color for long spans; checking the previous
     // pixel first skips the hash for the vast majority of pixels.
     let mut last: Option<([u8; 3], [u8; 3])> = None;
-    for (x, y, p) in out.enumerate_pixels_mut() {
-        if alpha.get_pixel(x, y)[0] == 0 { continue; }
+    let amask = alpha.as_raw();
+    for (p, &av) in out.pixels_mut().zip(amask) {
+        if av == 0 { continue; }
         let c = p.0;
         if let Some((lc, lm)) = last {
             if c == lc {
@@ -168,9 +170,19 @@ pub fn remap(flat: &RgbImage, alpha: &GrayImage, palette: &[[u8; 3]]) -> RgbImag
             }
         }
         let mapped = *cache.entry(c).or_insert_with(|| {
-            *palette.iter()
-                .min_by(|a, b| color_dist(c, **a).partial_cmp(&color_dist(c, **b)).unwrap())
-                .unwrap_or(&c)
+            // Squared distance orders identically to color_dist and skips
+            // both the sqrt and the per-candidate OKLab re-conversion of c.
+            let cl = srgb_to_oklab(c);
+            let d2 = |l: [f32; 3]| {
+                let (d0, d1, d2) = (cl[0] - l[0], cl[1] - l[1], cl[2] - l[2]);
+                d0 * d0 + d1 * d1 + d2 * d2
+            };
+            palette
+                .iter()
+                .zip(&pal_lab)
+                .min_by(|(_, a), (_, b)| d2(**a).partial_cmp(&d2(**b)).unwrap())
+                .map(|(p, _)| *p)
+                .unwrap_or(c)
         });
         last = Some((c, mapped));
         p.0 = mapped;
@@ -185,34 +197,5 @@ pub fn remap(flat: &RgbImage, alpha: &GrayImage, palette: &[[u8; 3]]) -> RgbImag
 /// voting reclaims those pixels. Only art pixels vote: nothing outside the
 /// alpha can outvote art, so the silhouette cannot erode.
 pub fn label_smooth(quant: &RgbImage, alpha: &GrayImage, k: u32) -> RgbImage {
-    let (w, h) = quant.dimensions();
-    let r = (k / 2) as i64;
-    let mut out = quant.clone();
-    let mut counts: Vec<([u8; 3], u32)> = Vec::with_capacity((k * k) as usize);
-    for y in 0..h as i64 {
-        for x in 0..w as i64 {
-            if alpha.get_pixel(x as u32, y as u32)[0] == 0 {
-                continue;
-            }
-            counts.clear();
-            for dy in -r..=r {
-                for dx in -r..=r {
-                    let (nx, ny) = (x + dx, y + dy);
-                    if nx >= 0 && ny >= 0 && nx < w as i64 && ny < h as i64
-                        && alpha.get_pixel(nx as u32, ny as u32)[0] != 0
-                    {
-                        let c = quant.get_pixel(nx as u32, ny as u32).0;
-                        match counts.iter_mut().find(|(cc, _)| *cc == c) {
-                            Some((_, n)) => *n += 1,
-                            None => counts.push((c, 1)),
-                        }
-                    }
-                }
-            }
-            if let Some(best) = counts.iter().max_by_key(|(_, n)| *n) {
-                out.put_pixel(x as u32, y as u32, image::Rgb(best.0));
-            }
-        }
-    }
-    out
+    crate::raster::majority_vote(quant, alpha, k)
 }

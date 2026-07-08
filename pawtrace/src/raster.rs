@@ -4,7 +4,7 @@
 
 use crate::config::Config;
 use fast_image_resize as fir;
-use image::{GrayImage, Luma, Rgb, RgbImage, RgbaImage};
+use image::{GrayImage, RgbImage, RgbaImage};
 
 #[derive(Debug)]
 pub struct Prepared {
@@ -91,12 +91,14 @@ pub fn prepare(src: &RgbaImage, cfg: &Config) -> Prepared {
     // keep the zero fill; alpha is the only record of what is art.
     let mut alpha = GrayImage::new(sw, sh);
     let mut flat = RgbImage::new(sw, sh);
-    for (i, px) in big.chunks_exact(4).enumerate() {
-        let (x, y) = (i as u32 % sw, i as u32 / sw);
-        let [r, g, b, a] = [px[0], px[1], px[2], px[3]];
-        if a >= cfg.alpha_threshold {
-            alpha.put_pixel(x, y, Luma([255]));
-            flat.put_pixel(x, y, Rgb([r, g, b]));
+    {
+        let ar: &mut [u8] = &mut alpha;
+        let fr: &mut [u8] = &mut flat;
+        for (i, px) in big.chunks_exact(4).enumerate() {
+            if px[3] >= cfg.alpha_threshold {
+                ar[i] = 255;
+                fr[3 * i..3 * i + 3].copy_from_slice(&px[..3]);
+            }
         }
     }
 
@@ -110,39 +112,62 @@ pub fn prepare(src: &RgbaImage, cfg: &Config) -> Prepared {
 /// Snaps AA blend pixels to their neighborhood's dominant color. Only art
 /// pixels (alpha on) vote, and only art pixels change.
 fn mode_filter(img: &RgbImage, alpha: &GrayImage, k: u32) -> RgbImage {
+    majority_vote(img, alpha, k)
+}
+
+/// Per-pixel k x k majority vote over art pixels: each art pixel becomes its
+/// window's dominant color (ties to the last-seen candidate in row-major
+/// window order); background pixels neither vote nor change. Backs both the
+/// pre-quantization mode filter and post-remap label smoothing.
+pub(crate) fn majority_vote(img: &RgbImage, alpha: &GrayImage, k: u32) -> RgbImage {
     let (w, h) = img.dimensions();
     let r = (k / 2) as i64;
+    let src = img.as_raw();
+    let amask = alpha.as_raw();
     let mut out = img.clone();
-    // A window holds at most k*k distinct colors, small enough that a linear
-    // scan beats hashing.
-    let mut counts: Vec<([u8; 3], u32)> = Vec::with_capacity((k * k) as usize);
-    for y in 0..h as i64 {
-        for x in 0..w as i64 {
-            // Background must not vote: a majority-background window would
-            // snap the silhouette's edge pixels to the meaningless zero
-            // fill, and the remap turns that into a 1px ring.
-            if alpha.get_pixel(x as u32, y as u32)[0] == 0 {
-                continue;
-            }
-            counts.clear();
-            for dy in -r..=r {
-                for dx in -r..=r {
-                    let (nx, ny) = (x + dx, y + dy);
-                    if nx >= 0 && ny >= 0 && nx < w as i64 && ny < h as i64
-                        && alpha.get_pixel(nx as u32, ny as u32)[0] != 0
-                    {
-                        let Rgb(c) = *img.get_pixel(nx as u32, ny as u32);
-                        match counts.iter_mut().find(|(cc, _)| *cc == c) {
-                            Some((_, n)) => *n += 1,
-                            None => counts.push((c, 1)),
+    use rayon::prelude::*;
+    let out_buf: &mut [u8] = &mut out;
+    out_buf
+        .par_chunks_exact_mut(w as usize * 3)
+        .enumerate()
+        .for_each(|(y, row)| {
+            let y = y as i64;
+            // A window holds at most k*k distinct colors, small enough that a
+            // linear scan beats hashing.
+            let mut counts: Vec<([u8; 3], u32)> = Vec::with_capacity((k * k) as usize);
+            for x in 0..w as i64 {
+                // Background must not vote: a majority-background window
+                // would snap the silhouette's edge pixels to the meaningless
+                // zero fill, and the remap turns that into a 1px ring.
+                if amask[(y * w as i64 + x) as usize] == 0 {
+                    continue;
+                }
+                counts.clear();
+                for dy in -r..=r {
+                    let ny = y + dy;
+                    if ny < 0 || ny >= h as i64 {
+                        continue;
+                    }
+                    for dx in -r..=r {
+                        let nx = x + dx;
+                        if nx < 0 || nx >= w as i64 {
+                            continue;
+                        }
+                        let ni = (ny * w as i64 + nx) as usize;
+                        if amask[ni] != 0 {
+                            let c = [src[3 * ni], src[3 * ni + 1], src[3 * ni + 2]];
+                            match counts.iter_mut().find(|(cc, _)| *cc == c) {
+                                Some((_, n)) => *n += 1,
+                                None => counts.push((c, 1)),
+                            }
                         }
                     }
                 }
+                if let Some(best) = counts.iter().max_by_key(|(_, n)| *n) {
+                    let xi = x as usize * 3;
+                    row[xi..xi + 3].copy_from_slice(&best.0);
+                }
             }
-            if let Some(best) = counts.iter().max_by_key(|(_, n)| *n) {
-                out.put_pixel(x as u32, y as u32, Rgb(best.0));
-            }
-        }
-    }
+        });
     out
 }

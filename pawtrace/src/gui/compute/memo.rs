@@ -1,0 +1,287 @@
+//! Content-keyed cache of per-layer pipeline outputs, one store per document.
+//!
+//! Each stage's output is keyed by a `u64` that folds that stage's `Config`
+//! subset into the previous stage's key, so an entry is valid exactly when
+//! every input up to and including that stage matches. The subset each stage
+//! reads is declared once, in [`StageKeys::of`].
+//!
+//! Prep and quant rasters live in a small layer-capped cache; geometry (the
+//! traces, regions, palette, and smooth-view image) lives in a larger one.
+
+use super::{Img, LayerTrace};
+use crate::config::Config;
+use crate::gui::ids::LayerId;
+use crate::raster::Prepared;
+use crate::regions::Region;
+use image::RgbImage;
+use lru::LruCache;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+use std::num::NonZeroUsize;
+use std::sync::Arc;
+
+/// Prep and quant rasters are held for at most this many distinct layers.
+const PIXEL_LAYERS: usize = 3;
+/// Total geometry entries across every layer and stage.
+const GEO_ENTRIES: usize = 256;
+
+/// The content keys for one layer's config, one per pipeline stage. Two
+/// configs share a stage's key exactly when every field that stage or an
+/// earlier one reads is equal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::gui) struct StageKeys {
+    pub(in crate::gui) prep: u64,
+    pub(in crate::gui) quant: u64,
+    pub(in crate::gui) regions: u64,
+    /// Regions plus the pins drawn over them.
+    pub(in crate::gui) regions_view: u64,
+    pub(in crate::gui) fit: u64,
+    pub(in crate::gui) simplify: u64,
+}
+
+/// Folds `prev` and whatever `f` hashes into one key.
+fn fold(prev: u64, f: impl FnOnce(&mut DefaultHasher)) -> u64 {
+    let mut h = DefaultHasher::new();
+    prev.hash(&mut h);
+    f(&mut h);
+    h.finish()
+}
+
+impl StageKeys {
+    /// The stage keys for `cfg`. Every field a stage reads is hashed here and
+    /// nowhere else. Floats hash by bit pattern; `Vec` fields hash
+    /// element-wise.
+    pub(in crate::gui) fn of(cfg: &Config) -> Self {
+        let prep = fold(0x9E37_79B9_7F4A_7C15, |h| {
+            cfg.scale.hash(h);
+            cfg.alpha_threshold.hash(h);
+            cfg.mode_filter.hash(h);
+        });
+        let quant = fold(prep, |h| {
+            cfg.detail.to_bits().hash(h);
+            cfg.max_colors.hash(h);
+            cfg.merge_dist.to_bits().hash(h);
+            cfg.gradient_dist.to_bits().hash(h);
+            cfg.hist_bits.hash(h);
+            cfg.locked.hash(h);
+            cfg.color_cleanup.hash(h);
+        });
+        let regions = fold(quant, |h| {
+            cfg.absorb_dist.to_bits().hash(h);
+            cfg.absorb_aggr.to_bits().hash(h);
+            cfg.stroke_merge_dist.to_bits().hash(h);
+            cfg.stroke_merge_width.to_bits().hash(h);
+        });
+        let regions_view = fold(regions, |h| cfg.pins.hash(h));
+        // Pins gate which sub-floor regions get traced, so they belong to the
+        // fit key even though the regions themselves are unchanged.
+        let fit = fold(regions, |h| {
+            cfg.alphamax.to_bits().hash(h);
+            cfg.opttolerance.to_bits().hash(h);
+            cfg.seam_slack.to_bits().hash(h);
+            cfg.smoothing.to_bits().hash(h);
+            cfg.pins.hash(h);
+        });
+        let simplify = fold(fit, |h| cfg.simplify.to_bits().hash(h));
+        Self { prep, quant, regions, regions_view, fit, simplify }
+    }
+}
+
+/// The prep and quant rasters for one layer, each tagged with the key it was
+/// built under.
+#[derive(Default)]
+struct PixelSlot {
+    prep: Option<(u64, Arc<Prepared>)>,
+    quant: Option<(u64, Arc<RgbImage>)>,
+}
+
+/// A geometry cache entry, addressed by `(layer, stage, key)`.
+#[derive(Clone)]
+enum Geo {
+    Palette(Arc<Vec<[u8; 3]>>),
+    Regions(Arc<Vec<Region>>),
+    Trace(Arc<LayerTrace>),
+    Smooth(Option<Img>),
+}
+
+/// Which geometry a `(layer, key)` addresses, so fit and simplify traces (or
+/// regions and the smooth image, which share the fit key) never collide.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum GeoStage {
+    Palette,
+    Regions,
+    Fit,
+    Simplify,
+    Smooth,
+}
+
+/// Per-document memo of pipeline stage outputs.
+pub(in crate::gui) struct Memo {
+    pixel: LruCache<LayerId, PixelSlot>,
+    geo: LruCache<(LayerId, GeoStage, u64), Geo>,
+}
+
+impl Default for Memo {
+    fn default() -> Self {
+        Self {
+            pixel: LruCache::new(NonZeroUsize::new(PIXEL_LAYERS).unwrap()),
+            geo: LruCache::new(NonZeroUsize::new(GEO_ENTRIES).unwrap()),
+        }
+    }
+}
+
+impl Memo {
+    pub fn prep(&mut self, layer: LayerId, key: u64) -> Option<Arc<Prepared>> {
+        match self.pixel.get(&layer)?.prep {
+            Some((k, ref v)) if k == key => Some(v.clone()),
+            _ => None,
+        }
+    }
+
+    pub fn quant(&mut self, layer: LayerId, key: u64) -> Option<Arc<RgbImage>> {
+        match self.pixel.get(&layer)?.quant {
+            Some((k, ref v)) if k == key => Some(v.clone()),
+            _ => None,
+        }
+    }
+
+    pub fn put_prep(&mut self, layer: LayerId, key: u64, v: Arc<Prepared>) {
+        self.pixel_slot(layer).prep = Some((key, v));
+    }
+
+    pub fn put_quant(&mut self, layer: LayerId, key: u64, v: Arc<RgbImage>) {
+        self.pixel_slot(layer).quant = Some((key, v));
+    }
+
+    /// The layer's pixel slot, created empty if absent, marked most-recent.
+    fn pixel_slot(&mut self, layer: LayerId) -> &mut PixelSlot {
+        if self.pixel.get(&layer).is_none() {
+            self.pixel.put(layer, PixelSlot::default());
+        }
+        self.pixel.get_mut(&layer).unwrap()
+    }
+
+    pub fn palette(&mut self, layer: LayerId, key: u64) -> Option<Arc<Vec<[u8; 3]>>> {
+        match self.geo.get(&(layer, GeoStage::Palette, key))? {
+            Geo::Palette(v) => Some(v.clone()),
+            _ => None,
+        }
+    }
+
+    pub fn regions(&mut self, layer: LayerId, key: u64) -> Option<Arc<Vec<Region>>> {
+        match self.geo.get(&(layer, GeoStage::Regions, key))? {
+            Geo::Regions(v) => Some(v.clone()),
+            _ => None,
+        }
+    }
+
+    /// Regions without marking the entry most-recent, for read-only lookups
+    /// off the immutable session (the pin hit test).
+    pub fn peek_regions(&self, layer: LayerId, key: u64) -> Option<Arc<Vec<Region>>> {
+        match self.geo.peek(&(layer, GeoStage::Regions, key))? {
+            Geo::Regions(v) => Some(v.clone()),
+            _ => None,
+        }
+    }
+
+    pub fn fit(&mut self, layer: LayerId, key: u64) -> Option<Arc<LayerTrace>> {
+        match self.geo.get(&(layer, GeoStage::Fit, key))? {
+            Geo::Trace(v) => Some(v.clone()),
+            _ => None,
+        }
+    }
+
+    pub fn simplify(&mut self, layer: LayerId, key: u64) -> Option<Arc<LayerTrace>> {
+        match self.geo.get(&(layer, GeoStage::Simplify, key))? {
+            Geo::Trace(v) => Some(v.clone()),
+            _ => None,
+        }
+    }
+
+    pub fn smooth(&mut self, layer: LayerId, key: u64) -> Option<Option<Img>> {
+        match self.geo.get(&(layer, GeoStage::Smooth, key))? {
+            Geo::Smooth(v) => Some(v.clone()),
+            _ => None,
+        }
+    }
+
+    pub fn put_palette(&mut self, layer: LayerId, key: u64, v: Arc<Vec<[u8; 3]>>) {
+        self.geo.put((layer, GeoStage::Palette, key), Geo::Palette(v));
+    }
+
+    pub fn put_regions(&mut self, layer: LayerId, key: u64, v: Arc<Vec<Region>>) {
+        self.geo.put((layer, GeoStage::Regions, key), Geo::Regions(v));
+    }
+
+    pub fn put_fit(&mut self, layer: LayerId, key: u64, v: Arc<LayerTrace>) {
+        self.geo.put((layer, GeoStage::Fit, key), Geo::Trace(v));
+    }
+
+    pub fn put_simplify(&mut self, layer: LayerId, key: u64, v: Arc<LayerTrace>) {
+        self.geo.put((layer, GeoStage::Simplify, key), Geo::Trace(v));
+    }
+
+    pub fn put_smooth(&mut self, layer: LayerId, key: u64, v: Option<Img>) {
+        self.geo.put((layer, GeoStage::Smooth, key), Geo::Smooth(v));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cfg() -> Config {
+        Config::default()
+    }
+
+    #[test]
+    fn simplify_change_leaves_earlier_keys_fixed() {
+        let a = StageKeys::of(&cfg());
+        let b = StageKeys::of(&Config { simplify: 5.0, ..cfg() });
+        assert_eq!(a.fit, b.fit);
+        assert_eq!(a.regions, b.regions);
+        assert_ne!(a.simplify, b.simplify);
+    }
+
+    #[test]
+    fn detail_change_ripples_through_quant_and_below() {
+        let a = StageKeys::of(&cfg());
+        let b = StageKeys::of(&Config { detail: 9.0, ..cfg() });
+        assert_eq!(a.prep, b.prep);
+        assert_ne!(a.quant, b.quant);
+        assert_ne!(a.regions, b.regions);
+        assert_ne!(a.fit, b.fit);
+        assert_ne!(a.simplify, b.simplify);
+    }
+
+    #[test]
+    fn pins_change_fit_not_regions() {
+        let a = StageKeys::of(&cfg());
+        let b = StageKeys::of(&Config { pins: vec![[3, 4]], ..cfg() });
+        assert_eq!(a.regions, b.regions);
+        assert_ne!(a.regions_view, b.regions_view);
+        assert_ne!(a.fit, b.fit);
+    }
+
+    #[test]
+    fn pixel_cache_holds_three_layers() {
+        let mut m = Memo::default();
+        let prep = || Arc::new(crate::raster::prepare(&image::RgbaImage::new(2, 2), &cfg()));
+        for i in 0..4u32 {
+            m.put_prep(LayerId(i as usize), i as u64, prep());
+        }
+        assert!(m.prep(LayerId(0), 0).is_none());
+        assert!(m.prep(LayerId(3), 3).is_some());
+    }
+
+    #[test]
+    fn geo_cache_evicts_the_least_recent() {
+        let mut m = Memo::default();
+        let regs = || Arc::new(Vec::<Region>::new());
+        for i in 0..(GEO_ENTRIES as u64 + 5) {
+            m.put_regions(LayerId(0), i, regs());
+        }
+        assert!(m.regions(LayerId(0), 0).is_none());
+        assert!(m.regions(LayerId(0), GEO_ENTRIES as u64 + 4).is_some());
+    }
+}
