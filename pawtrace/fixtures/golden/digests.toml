@@ -48,11 +48,11 @@ fit = "d66e7ced37e2c674"
 output = "39e03fb5b3e0061e"
 
 [seff_deer_a.007]
-quant = "ee52127ef6d078bf"
-region_count = 4
-regions = "e5630486e6db852c"
-fit = "a6fb096ab35804db"
-output = "bbee0b3e0f97d82c"
+quant = "363841b800540abd"
+region_count = 5
+regions = "03749fd330536e6c"
+fit = "5fcb186f1c5d6df1"
+output = "c170e9c80fd064c0"
 
 [seff_deer_a.008]
 quant = "6ffd8293bb2ae5d1"
@@ -62,11 +62,11 @@ fit = "f89c75089c291016"
 output = "c7442a9c8125ceea"
 
 [seff_deer_a.009]
-quant = "1a14edda1584a288"
-region_count = 488
-regions = "c0543bb7c72091ee"
-fit = "3e3b159624a43423"
-output = "cbb4decb85e09f12"
+quant = "25b953d586181c8a"
+region_count = 127
+regions = "9d8020c649bda70b"
+fit = "b165055b764186ea"
+output = "2680570c7e2eef74"
 
 [seff_deer_a.010]
 quant = "1a2e3c623d725ee5"
@@ -76,39 +76,39 @@ fit = "3e3f3cdedcff75cb"
 output = "877028e5d417749b"
 
 [seff_deer_a.011]
-quant = "fcff3451c45b31e4"
-region_count = 11
-regions = "1500599afaf66341"
-fit = "31df72d1c799b60d"
-output = "d3548ce6613559cc"
+quant = "e9d633a9843083ec"
+region_count = 35
+regions = "ac3f8d8cff3a2e2e"
+fit = "9c952331a7f784d6"
+output = "5c5d4fe3d9dcc330"
 
 [seff_deer_a.012]
-quant = "85588b898ade2f2e"
-region_count = 30
-regions = "f2b81a3e4ba6a93c"
-fit = "8da0b77f81b9d0e1"
-output = "21e52ea268826546"
+quant = "4b0c4647799c80da"
+region_count = 98
+regions = "4d797f45a34f0731"
+fit = "4400e57563b5788b"
+output = "47217215f574a15c"
 
 [seff_deer_a.013]
-quant = "7f4d6e855e10d0f4"
-region_count = 14
-regions = "92c11cd5f6494d84"
-fit = "473400cb8728e1c6"
-output = "261da7ac12c5e740"
+quant = "a27b01544f53cfe7"
+region_count = 12
+regions = "859ecc96662bca99"
+fit = "d939520950c85e28"
+output = "21c73e32df77b1b1"
 
 [seff_deer_a.014]
-quant = "b13580b55893f748"
-region_count = 45
-regions = "78a1dc0cf423ed86"
-fit = "b59bcfdfc0d69680"
-output = "b04b036922f87b67"
+quant = "59336ad4799558e6"
+region_count = 67
+regions = "27bf8d774bedceb7"
+fit = "eddd48dbd6a1bdc9"
+output = "c59b53df69ba41c6"
 
 [seff_deer_a.015]
-quant = "72f8e9902a327f05"
-region_count = 8
-regions = "bcbfe99df7823c4e"
-fit = "4f6a6dbe03737ff8"
-output = "8894b1e57461f9b7"
+quant = "ff9e14c0740231ad"
+region_count = 6
+regions = "90acf6738d1b19a0"
+fit = "cf4613dbde171278"
+output = "133f67058ff4720a"
 
 [seff_deer_a.016]
 quant = "8d83f48845ef6a2d"
@@ -118,11 +118,11 @@ fit = "8a42f1c787ab2443"
 output = "f24a9bc1e4c508da"
 
 [seff_deer_a.017]
-quant = "842b15770e1b5914"
-region_count = 7
-regions = "09f9d2ce4a3b08b3"
-fit = "a5670ed55dcce335"
-output = "f2a61df8e4b15d5f"
+quant = "b589ee9c013bda3c"
+region_count = 50
+regions = "a2055851d199b478"
+fit = "414853f675e1574a"
+output = "d29fb84f8eabdfec"
 
 [seff_deer_b.000]
 quant = "d3a19ba31661e63a"
@@ -230,46 +230,46 @@ fit = "5b5f3ec95e9d9aa3"
 output = "68c7477150dfe709"
 
 [seff_deer_b.015]
-quant = "6e03db597a9b4f7b"
-region_count = 15
-regions = "543f227e1fd8e564"
-fit = "931fa45d49ee2134"
-output = "826bed303ba7eba6"
+quant = "070ad1481293e5c5"
+region_count = 1
+regions = "3555e7e8642b6861"
+fit = "e258d8f7f1e35f25"
+output = "219eccfea82d214c"
 
 [seff_deer_b.016]
-quant = "1beaa405b3ebb0c7"
-region_count = 6
-regions = "e4230ce43ad2d35d"
-fit = "cc078e57f16ff380"
-output = "beddc257f39168ca"
+quant = "f60207ae0e358511"
+region_count = 1
+regions = "14c236c4a758130d"
+fit = "de5721624159e8c9"
+output = "1770506524c820a2"
 
 [seff_deer_b.017]
-quant = "661ebf95b0b56f9f"
-region_count = 16
-regions = "583acad6a3ea0c14"
-fit = "b9c01251fd7a1d4c"
-output = "d38ded49e5219cd1"
+quant = "d8c3e645e956a98f"
+region_count = 17
+regions = "bed46ede189f45aa"
+fit = "4f14b287279eebaf"
+output = "ed714321c41692d9"
 
 [seff_deer_b.018]
-quant = "84c0660574fc5147"
-region_count = 12
-regions = "a04495b01a71e1cd"
-fit = "4769814fdc04bfa0"
-output = "d0a8d3a12533bfa1"
+quant = "2ec669531a8f3b2b"
+region_count = 19
+regions = "6325b7186216f1a3"
+fit = "0872a09d4d867455"
+output = "4688215f0eb6ed42"
 
 [seff_deer_b.019]
-quant = "2ee5850b3b8ba5c3"
-region_count = 48
-regions = "ea3a1eddeec94bda"
-fit = "7f43d9f0254f0a17"
-output = "60257cc88f3e7e25"
+quant = "a4583a9f618f9d99"
+region_count = 64
+regions = "50fb2196ea86308d"
+fit = "4a7ab42f596cb232"
+output = "25984f9c1e7bf5b5"
 
 [seff_deer_b.020]
-quant = "14b43979d3ddfaca"
-region_count = 439
-regions = "f7c22eb0fc91ce6c"
-fit = "9621f40e9b4c3581"
-output = "f7d0a3c759655492"
+quant = "cf3b7888e9c8e2ca"
+region_count = 424
+regions = "8ceac695c3626dac"
+fit = "3ba7c3a3347a7fad"
+output = "13b3cea8e50e70cd"
 
 [seff_deer_b.021]
 quant = "776c768b3a6b3bc7"
@@ -279,18 +279,18 @@ fit = "516182c80ad4dca0"
 output = "174824a0090bec24"
 
 [seff_deer_b.022]
-quant = "03079b2454fda7a0"
-region_count = 2
-regions = "3283e217511c9a13"
-fit = "9d353425f36b5e31"
-output = "19fbdf9204325847"
+quant = "a819e2745112d52a"
+region_count = 6
+regions = "0fca65970f67f87b"
+fit = "d0a3797e7690baa5"
+output = "d5bf3fe546520006"
 
 [seff_deer_b.023]
-quant = "dee3e7ed0fa95bc2"
-region_count = 49
-regions = "7bcfeb31b7c1e2b4"
-fit = "bbf285822c5a00b4"
-output = "7e8d6efff5feb94f"
+quant = "73eea228dbfb33dc"
+region_count = 18
+regions = "5dce265ddd96b180"
+fit = "bb18fb631423d854"
+output = "b962d691120a0589"
 
 [seff_deer_b.024]
 quant = "e5c2eccdc9b06e7a"
@@ -328,71 +328,71 @@ fit = "c7fbc3506e2e9dee"
 output = "51c6c44d2ef74932"
 
 [seff_deer_b.029]
-quant = "a9ff5455aea33b3e"
-region_count = 134
-regions = "fca51feed3148381"
-fit = "2698c2f5444e86fd"
-output = "fa9b6014736589e4"
+quant = "2600d0193196b094"
+region_count = 10
+regions = "c77040735f15be0d"
+fit = "641ac2d3eb54e308"
+output = "7277b9f7d678d49a"
 
 [seff_deer_b.030]
-quant = "55883a15a5e5a0a0"
-region_count = 14
-regions = "dc847b2b845b49c4"
-fit = "dfa7cf237f03f6eb"
-output = "de90def546095708"
+quant = "787757fe1f256313"
+region_count = 43
+regions = "a455c33de18d8d63"
+fit = "569ada15d96908db"
+output = "3a75ec3e27bd89e3"
 
 [seff_deer_b.031]
-quant = "e55175019d8aae82"
-region_count = 20
-regions = "f68430c65181975b"
-fit = "8e3bc3f23da1eabc"
-output = "ec5169ed4701a66d"
+quant = "6b6da2d976fa3af3"
+region_count = 47
+regions = "1fefacd1058268c6"
+fit = "c917ac6bf4bb882a"
+output = "51d9c06ad14ff209"
 
 [seff_deer_b.032]
-quant = "3287c8e4c63fcc0d"
-region_count = 185
-regions = "40d6f72835890fd8"
-fit = "391ba7db6574bfa7"
-output = "c91ed184d809ad35"
+quant = "7e99afa91f6117c1"
+region_count = 95
+regions = "20ae8184936071c9"
+fit = "52654e7b73980e4c"
+output = "ba73862d73fba6ed"
 
 [seff_deer_b.033]
-quant = "4c09433be519d51d"
-region_count = 18
-regions = "b5ca9e1d06d72797"
-fit = "37b241b15d53bafd"
-output = "c84f3c6aadc3b10a"
+quant = "b3691dd2d1e81322"
+region_count = 39
+regions = "bb36fc840760a6c0"
+fit = "89e68b42c135acb3"
+output = "303400c3ca49435a"
 
 [seff_deer_b.034]
-quant = "c4eae5b94f8c1154"
-region_count = 34
-regions = "82622f1b52537448"
-fit = "ae210a4efb823ef0"
-output = "57595cf28b5052c0"
+quant = "227f0979b972a33e"
+region_count = 96
+regions = "b9d59393d46f8e76"
+fit = "b1c00bd7d730b2cf"
+output = "0c3ad0b8f539fae2"
 
 [seff_deer_b.035]
-quant = "91d468185166e764"
-region_count = 32
-regions = "565caa33f51300af"
-fit = "36f2f7f80aad0c8d"
-output = "5bc08ac4ec2560b6"
+quant = "921a9d5c33b315ea"
+region_count = 105
+regions = "2afe2cf4f046f389"
+fit = "14ae2da80b41f719"
+output = "f3bef93999e1dec9"
 
 [seff_deer_b.036]
-quant = "5167e08914d65789"
-region_count = 26
-regions = "64e923854b5ff7ff"
-fit = "dd8db9e53e81d345"
-output = "589a35b64a13b5db"
+quant = "3c3988e4fce2faf1"
+region_count = 135
+regions = "16155a81943dd078"
+fit = "59f74c7e45e7847d"
+output = "1605467fc79f8475"
 
 [seff_deer_b.037]
-quant = "ae75877c824713bd"
-region_count = 197
-regions = "55e10148b6926b44"
-fit = "cbe3d99e751d1839"
-output = "a278ebe2ad132204"
+quant = "7a26d86fbaefd8f7"
+region_count = 167
+regions = "1f6e0b851a394d10"
+fit = "51b697ecb30bc8ef"
+output = "90ad8f184d58b512"
 
 [seff_deer_b.038]
-quant = "b7980571babcbe27"
-region_count = 186
-regions = "3c57e8c68d58ffb1"
-fit = "97ea497e3db1ed0a"
-output = "f001750b15cc475c"
+quant = "c83098fd8628ec6e"
+region_count = 183
+regions = "5ec42b798f712adb"
+fit = "24053d008124a9f7"
+output = "e5827a7df9b9f232"

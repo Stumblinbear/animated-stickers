@@ -77,7 +77,7 @@ fn run_layer(
             let prep = raster::prepare(&src, cfg);
             times.add(1, t);
             let t = Instant::now();
-            let pal = palette::extract_palette(&prep.flat, &prep.alpha, cfg, doc_dim);
+            let pal = palette::layer_palette(&src, cfg, doc_dim);
             times.add(2, t);
             let t = Instant::now();
             let quant = palette::remap(&prep.flat, &prep.alpha, &pal);

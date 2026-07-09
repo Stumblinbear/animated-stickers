@@ -16,6 +16,15 @@ const TRACKING: u32 = 1;
 /// Rendered height of one line of text, in pixels.
 pub const TEXT_H: u32 = GLYPH_H * SCALE;
 
+/// Rendered width of `text` in pixels: the width [`draw_text`] needs as its
+/// `max_w` to draw the whole string without dropping a glyph. Zero for empty.
+pub fn text_width(text: &str) -> u32 {
+    match text.chars().count() as u32 {
+        0 => 0,
+        n => (n - 1) * (GLYPH_W + TRACKING) * SCALE + GLYPH_W * SCALE,
+    }
+}
+
 /// Draws `text` in `color` with its top-left at `(x, y)`, left to right.
 /// Glyphs that would extend past `x + max_w` are dropped, so a label never
 /// spills out of its tile column.
@@ -61,6 +70,7 @@ fn glyph(c: char) -> [u8; 7] {
         'G' => [0b01110, 0b10001, 0b10000, 0b10111, 0b10001, 0b10001, 0b01110],
         'I' => [0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b11111],
         'L' => [0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b11111],
+        'M' => [0b10001, 0b11011, 0b10101, 0b10101, 0b10001, 0b10001, 0b10001],
         'N' => [0b10001, 0b11001, 0b10101, 0b10101, 0b10011, 0b10001, 0b10001],
         'O' => [0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110],
         'P' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10000, 0b10000, 0b10000],
@@ -68,6 +78,7 @@ fn glyph(c: char) -> [u8; 7] {
         'S' => [0b01110, 0b10001, 0b10000, 0b01110, 0b00001, 0b10001, 0b01110],
         'T' => [0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100],
         'U' => [0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110],
+        'Y' => [0b10001, 0b10001, 0b01010, 0b00100, 0b00100, 0b00100, 0b00100],
         _ => [0; 7],
     }
 }

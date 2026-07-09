@@ -20,6 +20,7 @@ use std::sync::Arc;
 /// The memo entries a stage run may reuse, each `None` when absent or stale.
 pub(super) struct Snapshot {
     pub prep: Option<Arc<Prepared>>,
+    pub detect: Option<Arc<palette::Detection>>,
     pub quant: Option<Arc<RgbImage>>,
     pub palette: Option<Arc<Vec<[u8; 3]>>>,
     pub regions: Option<Arc<Vec<Region>>>,
@@ -54,7 +55,8 @@ pub(super) fn pending(
     stroke_color: [u8; 3],
 ) -> [bool; STAGE_COUNT] {
     let same_layer = shown.is_some_and(|s| s.layer == layer);
-    let cur = |sel: fn(&StageKeys) -> u64| same_layer && shown.is_some_and(|s| sel(&s.keys) == sel(keys));
+    let cur =
+        |sel: fn(&StageKeys) -> u64| same_layer && shown.is_some_and(|s| sel(&s.keys) == sel(keys));
     let stroke_same =
         shown.is_some_and(|s| s.stroke_bits == stroke_bits && s.stroke_color == stroke_color);
     [
@@ -74,7 +76,16 @@ pub(super) fn stream(job: StageJob) -> Task<Msg> {
         move |mut tx: iced::futures::channel::mpsc::Sender<Msg>| async move {
             use iced::futures::SinkExt;
             let StageJob {
-                doc, generation, img, offset, doc_dim, cfg, pending, shown, snap, shape_cache,
+                doc,
+                generation,
+                img,
+                offset,
+                doc_dim,
+                cfg,
+                pending,
+                shown,
+                snap,
+                shape_cache,
             } = job;
             // A send failure means the app dropped this stream, superseded or
             // shut down. The remaining work would be wasted either way.
@@ -99,13 +110,26 @@ pub(super) fn stream(job: StageJob) -> Task<Msg> {
                 None => (Arc::new(crate::raster::prepare(&img, &cfg)), true),
             };
             if pending[1] || prep_c {
-                emit!(StagePart::Flat(rgba_img(&masked(&prep.flat, &prep.alpha)), prep.clone()));
+                emit!(StagePart::Flat(
+                    rgba_img(&masked(&prep.flat, &prep.alpha)),
+                    prep.clone()
+                ));
             }
 
             let (quant, palette, quant_c) = match (snap.quant, snap.palette) {
                 (Some(q), Some(p)) => (q, p, false),
                 _ => {
-                    let pal = palette::extract_palette(&prep.flat, &prep.alpha, &cfg, doc_dim);
+                    let detect = match snap.detect {
+                        Some(d) => d,
+                        None => {
+                            let d = Arc::new(palette::detect_features(&img, &cfg));
+                            emit!(StagePart::Detect(d.clone()));
+                            d
+                        }
+                    };
+                    let part = palette::feature_partition_from(&detect.0, &detect.1, &cfg);
+                    let groups = palette::group_features(&part.features, &cfg, doc_dim);
+                    let pal = palette::select_features(&groups, &cfg, doc_dim);
                     let mut q = palette::remap(&prep.flat, &prep.alpha, &pal);
                     if cfg.color_cleanup > 0 {
                         q = palette::label_smooth(&q, &prep.alpha, cfg.color_cleanup);
@@ -115,13 +139,21 @@ pub(super) fn stream(job: StageJob) -> Task<Msg> {
             };
             if pending[2] || quant_c {
                 let px = masked(&quant, &prep.alpha);
-                emit!(StagePart::Quant(rgba_img(&px), px, quant.clone(), palette.clone()));
+                emit!(StagePart::Quant(
+                    rgba_img(&px),
+                    px,
+                    quant.clone(),
+                    palette.clone()
+                ));
             }
 
             let pins = pipeline::scale_pins(&cfg.pins, offset, cfg.scale, img.dimensions());
             let (regs, regs_c) = match snap.regions {
                 Some(r) => (r, false),
-                None => (Arc::new(regions::segment_absorbed(&quant, &prep.alpha, &cfg)), true),
+                None => (
+                    Arc::new(regions::segment_absorbed(&quant, &prep.alpha, &cfg)),
+                    true,
+                ),
             };
             // One merge plan feeds the report, the debug contours, and the
             // trace below; each used to re-run the speckle merge and shape
@@ -134,8 +166,13 @@ pub(super) fn stream(job: StageJob) -> Task<Msg> {
             let plan = match snap.plan {
                 Some(p) => Some(p),
                 None if need_plan => {
-                    let p =
-                        Arc::new(regions::merge_plan(&regs, &prep.alpha, &cfg, doc_dim, &pins));
+                    let p = Arc::new(regions::merge_plan(
+                        &regs,
+                        &prep.alpha,
+                        &cfg,
+                        doc_dim,
+                        &pins,
+                    ));
                     emit!(StagePart::Plan(p.clone()));
                     Some(p)
                 }
@@ -155,21 +192,28 @@ pub(super) fn stream(job: StageJob) -> Task<Msg> {
             let stroke = output::stroke_of(&cfg);
             let pad = cfg.stroke_width * cfg.scale as f32 / 2.0;
             let render_paths = |colors: &LayerTrace| -> (Option<Img>, usize) {
-                let anchors = colors.iter().flat_map(|(_, ps)| ps.iter()).map(|p| p.cubics.len()).sum();
+                let anchors = colors
+                    .iter()
+                    .flat_map(|(_, ps)| ps.iter())
+                    .map(|p| p.cubics.len())
+                    .sum();
                 let svg = output::svg(
                     w,
                     h,
                     cfg.scale,
                     pad,
-                    &[output::SvgLayer { name: "layer", stroke: stroke.as_ref(), colors }],
+                    &[output::SvgLayer {
+                        name: "layer",
+                        stroke: stroke.as_ref(),
+                        colors,
+                    }],
                 );
                 (render_svg(&svg, w * 2, h * 2), anchors)
             };
 
             // One shape build serves the contour view and the trace: the
             // spanning-tree mask union is most of their cost.
-            let need_shapes =
-                snap.smooth.is_none() || (snap.fit.is_none() && !fit_shortcut);
+            let need_shapes = snap.smooth.is_none() || (snap.fit.is_none() && !fit_shortcut);
             let shapes = need_shapes
                 .then(|| pipeline::planned_shapes(plan.as_ref().unwrap(), &prep.alpha, &cfg));
 

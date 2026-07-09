@@ -8,28 +8,6 @@ pub struct Config {
     pub alpha_threshold: u8, // default 128 (50%)
     /// Palette safety cap; extraction self-terminates below it.
     pub max_colors: usize, // default 24
-    /// OKLab ΔE under which palette colors merge (perceptual). Calibrated on
-    /// the golden layers: 0.10 erased face shading, fur detail strokes, and
-    /// the eye; 0.04 still erased soft fur highlights, which sit ~0.037 from
-    /// their base fill.
-    pub merge_dist: f32, // default 0.03 (OKLab ΔE)
-    /// OKLab distance to the SEGMENT between any two kept colors under
-    /// which a candidate merges as a gradient interior. Point distance
-    /// (merge_dist) cannot catch these: a wide gradient's middle is far
-    /// from both endpoints but exactly between them, while true features
-    /// (outlines, highlights) are extrema and lie beyond every segment.
-    /// Off by default and meant per profile: deliberate soft strokes (thigh
-    /// creases, measured 0.0008..0.0028 off-segment) are geometrically
-    /// indistinguishable from gradient junk (0.0000), so collapsing is a
-    /// per-artwork choice. 0.02 collapsed the fur gradient to base, dark,
-    /// outline, and highlight.
-    pub gradient_dist: f32, // default 0 = off (OKLab ΔE)
-    /// Histogram bucket granularity, bits per channel (3..=6). Coarser
-    /// pools soft airbrushed features into candidates that clear the
-    /// palette floor; finer preserves close distinct colors. Bucket width
-    /// should stay at or below merge_dist perceptually, or bucketing
-    /// pre-merges what merge_dist is meant to decide.
-    pub hist_bits: u32, // default 4 (16-step buckets)
     /// Pre-quantization mode-filter kernel (odd, scaled px). 0 = off.
     pub mode_filter: u32, // default 0
     /// Majority-vote kernel (odd, scaled px) over the quantized colors,
@@ -66,6 +44,13 @@ pub struct Config {
     /// merge test); other candidates merge toward them. Locked from the GUI
     /// or per profile.
     pub locked: Vec<[u8; 3]>, // default empty
+    /// Representative bands a gradient family consolidates to in region-first
+    /// extraction: a run of adjacent features whose colors ramp collinearly is
+    /// kept as at most this many colors spanning it, the rest remapped to the
+    /// nearest kept band. Permissive by default because deliberate banding is a
+    /// style an artist dials up per profile, not a defect to collapse; only a
+    /// family longer than this loses bands.
+    pub gradient_bands: u32, // default 6
     /// Points in document source px. Any region containing one survives the
     /// speckle floor: a pin marks a small feature (a tooth, a glint) as
     /// deliberate, and outlives re-segmentation because whatever region
@@ -100,10 +85,8 @@ impl Default for Config {
             scale: 3,
             alpha_threshold: 128,
             max_colors: 24,
-            merge_dist: 0.03,
-            gradient_dist: 0.0,
-            hist_bits: 4,
             locked: Vec::new(),
+            gradient_bands: 6,
             pins: Vec::new(),
             mode_filter: 0,
             color_cleanup: 0,
@@ -147,16 +130,20 @@ impl Config {
 /// ALL color comparisons (palette dedup, key guard, per-pixel remap) so the
 /// whole pipeline agrees on what "different colors" means.
 pub fn srgb_to_oklab(c: [u8; 3]) -> [f32; 3] {
-    #[inline]
-    fn lin(u: u8) -> f32 {
-        let x = u as f32 / 255.0;
-        if x >= 0.04045 {
-            ((x + 0.055) / 1.055).powf(2.4)
-        } else {
-            x / 12.92
-        }
-    }
-    let (r, g, b) = (lin(c[0]), lin(c[1]), lin(c[2]));
+    // The channel input is 8-bit, so the three powf calls (most of the
+    // conversion's cost, per-pixel in feature detection and remap) fold into
+    // one 256-entry table.
+    static LIN: std::sync::LazyLock<[f32; 256]> = std::sync::LazyLock::new(|| {
+        std::array::from_fn(|u| {
+            let x = u as f32 / 255.0;
+            if x >= 0.04045 {
+                ((x + 0.055) / 1.055).powf(2.4)
+            } else {
+                x / 12.92
+            }
+        })
+    });
+    let (r, g, b) = (LIN[c[0] as usize], LIN[c[1] as usize], LIN[c[2] as usize]);
     let l = 0.412_221_46 * r + 0.536_332_55 * g + 0.051_445_995 * b;
     let m = 0.211_903_5 * r + 0.680_699_5 * g + 0.107_396_96 * b;
     let s = 0.088_302_46 * r + 0.281_718_85 * g + 0.629_978_7 * b;
@@ -168,9 +155,7 @@ pub fn srgb_to_oklab(c: [u8; 3]) -> [f32; 3] {
     ]
 }
 
-/// Perceptual color distance (OKLab ΔE). Scale differs from redmean:
-/// distances live roughly on 0..1, so merge_dist must be recalibrated
-/// (see README calibration note; expect ~0.08..0.12, not ~48).
+/// Perceptual color distance (OKLab ΔE), living roughly on 0..1.
 pub fn color_dist(a: [u8; 3], b: [u8; 3]) -> f32 {
     let (la, lb) = (srgb_to_oklab(a), srgb_to_oklab(b));
     let d0 = la[0] - lb[0];

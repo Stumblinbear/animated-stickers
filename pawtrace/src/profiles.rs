@@ -24,11 +24,9 @@ use std::collections::BTreeMap;
 pub struct Overrides {
     pub detail: Option<f32>,
     pub max_colors: Option<usize>,
-    pub merge_dist: Option<f32>,
-    pub gradient_dist: Option<f32>,
-    pub hist_bits: Option<u32>,
     /// Palette colors seeded unconditionally, as "#rrggbb" hex strings.
     pub locked: Option<Vec<String>>,
+    pub gradient_bands: Option<u32>,
     /// Speckle-floor exemption points, document source px.
     pub pins: Option<Vec<[u32; 2]>>,
     pub scale: Option<u32>,
@@ -60,17 +58,11 @@ impl Overrides {
         if let Some(v) = self.max_colors {
             c.max_colors = v;
         }
-        if let Some(v) = self.merge_dist {
-            c.merge_dist = v;
-        }
-        if let Some(v) = self.gradient_dist {
-            c.gradient_dist = v;
-        }
-        if let Some(v) = self.hist_bits {
-            c.hist_bits = v;
-        }
         if let Some(v) = &self.locked {
             c.locked = v.iter().filter_map(|s| parse_hex(s)).collect();
+        }
+        if let Some(v) = self.gradient_bands {
+            c.gradient_bands = v;
         }
         if let Some(v) = &self.pins {
             c.pins = v.clone();
@@ -434,15 +426,13 @@ pub fn diff(base: &Config, cfg: &Config) -> Overrides {
     Overrides {
         detail: d(base.detail, cfg.detail),
         max_colors: d(base.max_colors, cfg.max_colors),
-        merge_dist: d(base.merge_dist, cfg.merge_dist),
-        gradient_dist: d(base.gradient_dist, cfg.gradient_dist),
-        hist_bits: d(base.hist_bits, cfg.hist_bits),
         locked: (base.locked != cfg.locked).then(|| {
             cfg.locked
                 .iter()
                 .map(|c| format!("#{:02x}{:02x}{:02x}", c[0], c[1], c[2]))
                 .collect()
         }),
+        gradient_bands: d(base.gradient_bands, cfg.gradient_bands),
         pins: (base.pins != cfg.pins).then(|| cfg.pins.clone()),
         scale: d(base.scale, cfg.scale),
         alpha_threshold: d(base.alpha_threshold, cfg.alpha_threshold),

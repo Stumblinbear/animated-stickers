@@ -37,6 +37,9 @@ fn stage_part(app: &mut App, doc: usize, generation: u64, part: StagePart) -> Ta
                     s.memo.put_prep(layer, keys.prep, prep);
                     s.stage_pending[1] = false;
                 }
+                StagePart::Detect(detect) => {
+                    s.memo.put_detect(layer, keys.detect, detect);
+                }
                 StagePart::Plan(plan) => {
                     s.memo.put_plan(layer, keys.regions_view, plan);
                 }

@@ -229,23 +229,35 @@ pub fn counts(doc: &Document) -> (usize, usize) {
     (paths, anchors)
 }
 
-/// The five stage rasters for one layer, each at its own native size. `crop`
-/// is 1x source; the rest are at the profile's supersample scale.
+/// The seven stage rasters for one layer, each at its own native size. `crop`
+/// and `features` are 1x source; the rest are at the profile's supersample
+/// scale.
 pub struct Stages {
     pub crop: RgbaImage,
     pub flat: RgbaImage,
+    pub features: RgbaImage,
     pub quant: RgbaImage,
     pub regions: RgbaImage,
-    pub traced: RgbaImage,
+    pub fit: RgbaImage,
+    pub simplify: RgbaImage,
 }
 
 /// Replays `pipeline::run`'s stages for one layer as images: the alpha crop,
-/// the flattened supersample, the quantized labels, the segmented regions
-/// (each painted its own region color), and the final single-layer trace.
-/// `None` for a fully transparent layer. `doc_dim` is `max(doc W, H)`.
+/// the flattened supersample, the post-merge feature labels, the quantized
+/// labels, the segmented regions, and the fit and simplified single-layer
+/// traces. `None` for a fully transparent layer. `doc_dim` is `max(doc W, H)`.
+///
+/// The feature and region tiles paint each label a distinct hashed color (see
+/// [`hashed_color`]) rather than its art color, so the partition, absorption
+/// merges, and stroke merges are legible as separate patches.
 pub fn layer_stages(img: &RgbaImage, cfg: &Config, doc_dim: u32) -> Option<Stages> {
     let (src, ox, oy) = pipeline::crop_to_alpha(img, cfg)?;
     let pins = pipeline::scale_pins(&cfg.pins, (ox, oy), cfg.scale, (src.width(), src.height()));
+
+    // The feature tile shows the merged partition palette selection runs on,
+    // obtained at 1x source exactly as layer_palette does.
+    let merged = palette::feature_partition(&src, cfg);
+    let features_img = feature_image(&merged.labels);
 
     let (alpha, flat, quant_rgb, regs) =
         if let Some(color) = raster::uniform_color(&src, cfg.alpha_threshold) {
@@ -255,7 +267,11 @@ pub fn layer_stages(img: &RgbaImage, cfg: &Config, doc_dim: u32) -> Option<Stage
             (alpha, flat.clone(), flat, regs)
         } else {
             let prep = raster::prepare(&src, cfg);
-            let pal = palette::extract_palette(&prep.flat, &prep.alpha, cfg, doc_dim);
+            let pal = palette::select_features(
+                &palette::group_features(&merged.features, cfg, doc_dim),
+                cfg,
+                doc_dim,
+            );
             let mut quant = palette::remap(&prep.flat, &prep.alpha, &pal);
             if cfg.color_cleanup > 0 {
                 quant = palette::label_smooth(&quant, &prep.alpha, cfg.color_cleanup);
@@ -264,25 +280,26 @@ pub fn layer_stages(img: &RgbaImage, cfg: &Config, doc_dim: u32) -> Option<Stage
             (prep.alpha, prep.flat, quant, regs)
         };
 
-    let traced = {
-        let colors = pipeline::simplify_paths(
-            pipeline::trace_regions(&regs, &alpha, cfg, doc_dim, &pins),
-            cfg,
-        );
+    // trace_regions leaves paths in the crop's scaled space; render at that
+    // supersampled size so the tiles are as crisp as the region tile once the
+    // sheet fits them to a common height.
+    let render_trace = |colors: &[(String, Vec<TracedPath>)]| {
         let stroke = output::stroke_of(cfg);
-        let layer = SvgLayer { name: "layer", stroke: stroke.as_ref(), colors: &colors };
-        // trace_regions leaves paths in the crop's scaled space; render at that
-        // supersampled size so the tile is as crisp as the region tile once the
-        // sheet fits both to a common height.
+        let layer = SvgLayer { name: "layer", stroke: stroke.as_ref(), colors };
         rasterize_scaled(src.width(), src.height(), cfg.scale, std::slice::from_ref(&layer))
     };
+    let fit_paths = pipeline::trace_regions(&regs, &alpha, cfg, doc_dim, &pins);
+    let fit = render_trace(&fit_paths);
+    let simplify = render_trace(&pipeline::simplify_paths(fit_paths, cfg));
 
     Some(Stages {
         crop: src,
         flat: rgba_over_alpha(&flat, &alpha),
+        features: features_img,
         quant: rgba_over_alpha(&quant_rgb, &alpha),
         regions: region_image(&regs, alpha.width(), alpha.height()),
-        traced,
+        fit,
+        simplify,
     })
 }
 
@@ -299,18 +316,71 @@ fn rgba_over_alpha(rgb: &RgbImage, alpha: &GrayImage) -> RgbaImage {
     out
 }
 
-/// Paints each region its own post-segmentation color onto a transparent
-/// canvas, so the segmentation (absorption and stroke merges included) is
-/// visible independently of the quantized labels.
+/// Paints each region a distinct [`hashed_color`] keyed by its index onto a
+/// transparent canvas, so the partition, absorption merges, and stroke merges
+/// read as separate patches even where neighbors share an art color.
 fn region_image(regs: &[regions::Region], w: u32, h: u32) -> RgbaImage {
     let mut out = RgbaImage::new(w, h);
-    for r in regs {
-        let c = Rgba([r.color[0], r.color[1], r.color[2], 255]);
+    for (i, r) in regs.iter().enumerate() {
+        let c = hashed_color(i as u32);
         for &(px, py) in &r.pixels {
             out.put_pixel(r.x0 + px, r.y0 + py, c);
         }
     }
     out
+}
+
+/// Paints each post-merge feature a distinct [`hashed_color`] keyed by its
+/// index onto a transparent canvas, so the feature partition that drives
+/// palette selection is legible independently of the art colors.
+fn feature_image(labels: &palette::FeatureLabels) -> RgbaImage {
+    let mut out = RgbaImage::new(labels.w, labels.h);
+    for (i, &f) in labels.at.iter().enumerate() {
+        if f == u32::MAX {
+            continue;
+        }
+        let (x, y) = (i as u32 % labels.w, i as u32 / labels.w);
+        out.put_pixel(x, y, hashed_color(f));
+    }
+    out
+}
+
+/// A deterministic opaque color for label `idx`, spread across the hue circle
+/// so adjacent labels contrast. Byte-identical on every platform: a fixed
+/// integer avalanche picks the hue and jitters saturation and value, and the
+/// HSV conversion uses only the four basic float ops.
+fn hashed_color(idx: u32) -> Rgba<u8> {
+    // Lowbias32 finalizer: a bijective u32 avalanche, so nearby indices land
+    // on unrelated hues.
+    let mut x = idx;
+    x ^= x >> 16;
+    x = x.wrapping_mul(0x7feb_352d);
+    x ^= x >> 15;
+    x = x.wrapping_mul(0x846c_a68b);
+    x ^= x >> 16;
+    let hue = (x % 360) as f32;
+    let sat = 0.55 + (x >> 9 & 0xff) as f32 / 255.0 * 0.35;
+    let val = 0.80 + (x >> 17 & 0xff) as f32 / 255.0 * 0.20;
+    let [r, g, b] = hsv_to_rgb(hue, sat, val);
+    Rgba([r, g, b, 255])
+}
+
+/// sRGB from HSV, `h` in `0.0..360.0`, `s`/`v` in `0.0..=1.0`.
+fn hsv_to_rgb(h: f32, s: f32, v: f32) -> [u8; 3] {
+    let c = v * s;
+    let hp = h / 60.0;
+    let x = c * (1.0 - (hp % 2.0 - 1.0).abs());
+    let (r, g, b) = match hp as u32 {
+        0 => (c, x, 0.0),
+        1 => (x, c, 0.0),
+        2 => (0.0, c, x),
+        3 => (0.0, x, c),
+        4 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+    let m = v - c;
+    let to = |f: f32| ((f + m) * 255.0).round() as u8;
+    [to(r), to(g), to(b)]
 }
 
 const TILE_H: u32 = 256;
@@ -320,9 +390,11 @@ const SEP_W: u32 = 2;
 const SEP: [u8; 3] = [96, 96, 104];
 /// Label text color, chosen to read against the checkerboard.
 const LABEL: [u8; 3] = [210, 210, 215];
-/// Caption per tile, mirroring the GUI's stage names in
-/// `src/gui/view/strip.rs` (crop is shown as the Source stage), uppercased.
-const STAGE_LABELS: [&str; 5] = ["SOURCE", "FLATTEN", "PALETTE", "REGIONS", "TRACE"];
+/// Caption per tile. The sheet splits the GUI's Palette stage into the
+/// feature and quantized views and its Trace stage into fit and simplify, so
+/// it carries more stages than the GUI's five-chip strip.
+const STAGE_LABELS: [&str; 7] =
+    ["SOURCE", "FLATTEN", "FEATURES", "PALETTE", "REGIONS", "FIT", "SIMPLIFY"];
 
 /// Alpha checkerboard, mirrored from the GUI preview's
 /// `src/gui/view/checkerboard.rs` (CHECK_LIGHT / CHECK_DARK / TILE) as 8-bit.
@@ -349,27 +421,36 @@ pub fn composite_over_grid(top: &RgbaImage) -> RgbaImage {
     bg
 }
 
-/// Tiles the five stage rasters left-to-right over a transparency grid, each
+/// Tiles the seven stage rasters left-to-right over a transparency grid, each
 /// captioned and separated by a vertical rule: crop (Source), flattened,
-/// quantized (Palette), regions, final trace. A fixed label band sits above
-/// the tiles, each caption left-aligned over its tile; tiles keep their aspect
-/// ratio at a fixed height and read left-to-right in pipeline order.
+/// features, quantized (Palette), regions, fit trace, simplified trace. A
+/// fixed label band sits above the tiles, each caption left-aligned over its
+/// tile; tiles keep their aspect ratio at a fixed height and read
+/// left-to-right in pipeline order.
 pub fn contact_sheet(s: &Stages) -> RgbaImage {
-    let tiles: [&RgbaImage; 5] = [&s.crop, &s.flat, &s.quant, &s.regions, &s.traced];
+    let tiles: [&RgbaImage; 7] =
+        [&s.crop, &s.flat, &s.features, &s.quant, &s.regions, &s.fit, &s.simplify];
     let scaled: Vec<RgbaImage> = tiles.iter().map(|t| fit_height(t, TILE_H)).collect();
+    // A column is at least as wide as its caption, so a narrow tile (an iris
+    // crop) never clips its label. The tile stays left-aligned in the column.
+    let col_w: Vec<u32> = scaled
+        .iter()
+        .enumerate()
+        .map(|(i, t)| t.width().max(font::text_width(STAGE_LABELS[i])))
+        .collect();
 
     let gap = 2 * PAD + SEP_W;
-    let tiles_w: u32 = scaled.iter().map(|t| t.width()).sum();
-    let width = 2 * PAD + tiles_w + (scaled.len() as u32 - 1) * gap;
+    let cols_w: u32 = col_w.iter().sum();
+    let width = 2 * PAD + cols_w + (scaled.len() as u32 - 1) * gap;
     let tile_top = PAD + font::TEXT_H + PAD;
     let height = tile_top + TILE_H + PAD;
 
     let mut sheet = checkerboard(width, height);
     let mut x = PAD;
     for (i, tile) in scaled.iter().enumerate() {
-        font::draw_text(&mut sheet, STAGE_LABELS[i], x, PAD, tile.width(), LABEL);
+        font::draw_text(&mut sheet, STAGE_LABELS[i], x, PAD, col_w[i], LABEL);
         blit_over(&mut sheet, tile, x, tile_top);
-        x += tile.width();
+        x += col_w[i];
         if i + 1 < scaled.len() {
             fill_rect(&mut sheet, x + PAD, tile_top, SEP_W, TILE_H, SEP);
             x += gap;

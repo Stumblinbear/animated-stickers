@@ -4,9 +4,9 @@
 //! strictly against blessed baselines under `fixtures/visual/golden/<entry>/`:
 //!
 //!   - a per-limb stage sheet (`<layer>.png`) for each non-Fill layer, tiling
-//!     that layer's crop, flattened, quantized, region, and final-trace
-//!     rasters left to right over a transparency grid, each captioned with its
-//!     stage name and divided by a vertical rule; and
+//!     that layer's crop, flattened, feature-label, quantized, region, fit, and
+//!     simplified-trace rasters left to right over a transparency grid, each
+//!     captioned with its stage name and divided by a vertical rule; and
 //!   - the entry's final composite (`_final.png`), rendered over the same
 //!     transparency grid so its alpha is legible.
 //!

@@ -93,6 +93,9 @@ pub struct FullResult {
 pub enum StagePart {
     Source(Img),
     Flat(Img, Arc<crate::raster::Prepared>),
+    /// The RTV feature detection computed this run, memoized under the `detect`
+    /// key for the palette build of later palette-parameter edits.
+    Detect(Arc<crate::palette::Detection>),
     /// The merge plan computed this run, memoized under the `regions_view`
     /// key for the report, contours, and trace of later runs.
     Plan(Arc<regions::MergePlan>),
@@ -149,6 +152,7 @@ impl App {
             let m = &mut self.docs[doc_idx].session.memo;
             let snap = stages::Snapshot {
                 prep: m.prep(layer, keys.prep),
+                detect: m.detect(layer, keys.detect),
                 quant: m.quant(layer, keys.quant),
                 palette: m.palette(layer, keys.quant),
                 regions: m.regions(layer, keys.regions),

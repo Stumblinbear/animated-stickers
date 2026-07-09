@@ -133,7 +133,7 @@ fn layer_digests(img: &image::RgbaImage, cfg: &pawtrace::config::Config, doc_dim
             (alpha, regs, h.hex())
         } else {
             let prep = raster::prepare(&src, cfg);
-            let pal = palette::extract_palette(&prep.flat, &prep.alpha, cfg, doc_dim);
+            let pal = palette::layer_palette(&src, cfg, doc_dim);
             let mut quant = palette::remap(&prep.flat, &prep.alpha, &pal);
             if cfg.color_cleanup > 0 {
                 quant = palette::label_smooth(&quant, &prep.alpha, cfg.color_cleanup);

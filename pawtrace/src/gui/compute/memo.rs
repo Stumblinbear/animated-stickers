@@ -11,6 +11,7 @@
 use super::{Img, LayerTrace};
 use crate::config::Config;
 use crate::gui::ids::LayerId;
+use crate::palette::Detection;
 use crate::raster::Prepared;
 use crate::regions::{MergePlan, Region};
 use crate::trace::TracedPath;
@@ -39,6 +40,7 @@ pub(in crate::gui) type ShapeCache = Arc<Mutex<LruCache<u64, Arc<Vec<TracedPath>
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::gui) struct StageKeys {
     pub(in crate::gui) prep: u64,
+    pub(in crate::gui) detect: u64,
     pub(in crate::gui) quant: u64,
     pub(in crate::gui) regions: u64,
     /// Regions plus the pins drawn over them.
@@ -65,13 +67,14 @@ impl StageKeys {
             cfg.alpha_threshold.hash(h);
             cfg.mode_filter.hash(h);
         });
+        let detect = fold(0x9E37_79B9_7F4A_7C15, |h| {
+            cfg.alpha_threshold.hash(h);
+        });
         let quant = fold(prep, |h| {
             cfg.detail.to_bits().hash(h);
             cfg.max_colors.hash(h);
-            cfg.merge_dist.to_bits().hash(h);
-            cfg.gradient_dist.to_bits().hash(h);
-            cfg.hist_bits.hash(h);
             cfg.locked.hash(h);
+            cfg.gradient_bands.hash(h);
             cfg.color_cleanup.hash(h);
         });
         let regions = fold(quant, |h| {
@@ -91,7 +94,15 @@ impl StageKeys {
             cfg.pins.hash(h);
         });
         let simplify = fold(fit, |h| cfg.simplify.to_bits().hash(h));
-        Self { prep, quant, regions, regions_view, fit, simplify }
+        Self {
+            prep,
+            detect,
+            quant,
+            regions,
+            regions_view,
+            fit,
+            simplify,
+        }
     }
 }
 
@@ -100,6 +111,9 @@ impl StageKeys {
 #[derive(Default)]
 struct PixelSlot {
     prep: Option<(u64, Arc<Prepared>)>,
+    /// Keyed by `detect`, not `prep`: detection ignores every prep field but
+    /// `alpha_threshold`.
+    detect: Option<(u64, Arc<Detection>)>,
     quant: Option<(u64, Arc<RgbImage>)>,
     /// Keyed by `regions_view`: the plan folds the pins into the merge.
     plan: Option<(u64, Arc<MergePlan>)>,
@@ -152,6 +166,13 @@ impl Memo {
         }
     }
 
+    pub fn detect(&mut self, layer: LayerId, key: u64) -> Option<Arc<Detection>> {
+        match self.pixel.get(&layer)?.detect {
+            Some((k, ref v)) if k == key => Some(v.clone()),
+            _ => None,
+        }
+    }
+
     pub fn quant(&mut self, layer: LayerId, key: u64) -> Option<Arc<RgbImage>> {
         match self.pixel.get(&layer)?.quant {
             Some((k, ref v)) if k == key => Some(v.clone()),
@@ -173,6 +194,10 @@ impl Memo {
 
     pub fn put_prep(&mut self, layer: LayerId, key: u64, v: Arc<Prepared>) {
         self.pixel_slot(layer).prep = Some((key, v));
+    }
+
+    pub fn put_detect(&mut self, layer: LayerId, key: u64, v: Arc<Detection>) {
+        self.pixel_slot(layer).detect = Some((key, v));
     }
 
     pub fn put_quant(&mut self, layer: LayerId, key: u64, v: Arc<RgbImage>) {
@@ -236,11 +261,13 @@ impl Memo {
     }
 
     pub fn put_palette(&mut self, layer: LayerId, key: u64, v: Arc<Vec<[u8; 3]>>) {
-        self.geo.put((layer, GeoStage::Palette, key), Geo::Palette(v));
+        self.geo
+            .put((layer, GeoStage::Palette, key), Geo::Palette(v));
     }
 
     pub fn put_regions(&mut self, layer: LayerId, key: u64, v: Arc<Vec<Region>>) {
-        self.geo.put((layer, GeoStage::Regions, key), Geo::Regions(v));
+        self.geo
+            .put((layer, GeoStage::Regions, key), Geo::Regions(v));
     }
 
     pub fn put_fit(&mut self, layer: LayerId, key: u64, v: Arc<LayerTrace>) {
@@ -248,7 +275,8 @@ impl Memo {
     }
 
     pub fn put_simplify(&mut self, layer: LayerId, key: u64, v: Arc<LayerTrace>) {
-        self.geo.put((layer, GeoStage::Simplify, key), Geo::Trace(v));
+        self.geo
+            .put((layer, GeoStage::Simplify, key), Geo::Trace(v));
     }
 
     pub fn put_smooth(&mut self, layer: LayerId, key: u64, v: Option<Img>) {
@@ -267,16 +295,46 @@ mod tests {
     #[test]
     fn simplify_change_leaves_earlier_keys_fixed() {
         let a = StageKeys::of(&cfg());
-        let b = StageKeys::of(&Config { simplify: 5.0, ..cfg() });
+        let b = StageKeys::of(&Config {
+            simplify: 5.0,
+            ..cfg()
+        });
         assert_eq!(a.fit, b.fit);
         assert_eq!(a.regions, b.regions);
         assert_ne!(a.simplify, b.simplify);
     }
 
     #[test]
+    fn detect_key_holds_across_palette_edits_and_breaks_on_alpha() {
+        let base = StageKeys::of(&cfg());
+        // gradient_bands and detail are palette-selection params: detection is
+        // invariant to them, so its cache must stay valid across the edit.
+        let bands = StageKeys::of(&Config {
+            gradient_bands: cfg().gradient_bands + 1,
+            ..cfg()
+        });
+        let detail = StageKeys::of(&Config {
+            detail: cfg().detail + 1.0,
+            ..cfg()
+        });
+        assert_eq!(base.detect, bands.detect);
+        assert_eq!(base.detect, detail.detect);
+        assert_ne!(base.quant, bands.quant);
+        // alpha_threshold is detection's only input, so it must invalidate.
+        let alpha = StageKeys::of(&Config {
+            alpha_threshold: cfg().alpha_threshold.wrapping_add(1),
+            ..cfg()
+        });
+        assert_ne!(base.detect, alpha.detect);
+    }
+
+    #[test]
     fn detail_change_ripples_through_quant_and_below() {
         let a = StageKeys::of(&cfg());
-        let b = StageKeys::of(&Config { detail: 9.0, ..cfg() });
+        let b = StageKeys::of(&Config {
+            detail: 9.0,
+            ..cfg()
+        });
         assert_eq!(a.prep, b.prep);
         assert_ne!(a.quant, b.quant);
         assert_ne!(a.regions, b.regions);
@@ -287,7 +345,10 @@ mod tests {
     #[test]
     fn pins_change_fit_not_regions() {
         let a = StageKeys::of(&cfg());
-        let b = StageKeys::of(&Config { pins: vec![[3, 4]], ..cfg() });
+        let b = StageKeys::of(&Config {
+            pins: vec![[3, 4]],
+            ..cfg()
+        });
         assert_eq!(a.regions, b.regions);
         assert_ne!(a.regions_view, b.regions_view);
         assert_ne!(a.fit, b.fit);

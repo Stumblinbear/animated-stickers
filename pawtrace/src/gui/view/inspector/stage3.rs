@@ -39,58 +39,6 @@ pub fn stage3(app: &App) -> Element<'_, Msg> {
         ),
         setting(
             app,
-            "Merge distance",
-            format!("{:.3} \u{394}E", cfg.merge_dist),
-            "Colors within this perceptual distance (OKLab \u{394}E, \
-             roughly 0..1) merge into one slot. 0 keeps every distinct \
-             bucket. Too high erases soft shading and highlights; fur \
-             highlights sit around 0.037 \u{394}E from their base.",
-            Field::MergeDist,
-            slider(0.0..=0.30, cfg.merge_dist as f64, |v| {
-                Msg::Edit(EditMsg::Set(Field::MergeDist, v))
-            })
-            .step(0.005),
-        ),
-        setting(
-            app,
-            "Gradient merge",
-            format!("{:.4} \u{394}E", cfg.gradient_dist),
-            "Candidates within this perceptual distance (OKLab \u{394}E) \
-             of the line between \
-             two kept colors merge as gradient interiors, however far \
-             they are from the endpoints. Distinct features survive: \
-             outlines and highlights are extrema, beyond every segment, \
-             and deliberate mid-tones are picked before their endpoints \
-             form a segment. Soft deliberate strokes sit within ~0.003 \
-             of a segment, so useful values are tiny. 0 disables.",
-            Field::GradientDist,
-            slider(0.0..=0.05, cfg.gradient_dist as f64, |v| {
-                Msg::Edit(EditMsg::Set(Field::GradientDist, v))
-            })
-            .step(0.0005),
-        ),
-        setting(
-            app,
-            "Histogram buckets",
-            format!(
-                "{} bits ({}-step)",
-                cfg.hist_bits,
-                256u32 >> cfg.hist_bits.clamp(3, 6)
-            ),
-            "Bucket granularity for palette candidates, bits per \
-             channel. Coarser pools soft airbrushed strokes into \
-             candidates that clear the detail floor; finer keeps close \
-             distinct colors apart. Range is a hard cap: finer than 6 \
-             bits costs hundreds of MB of histogram. Keep bucket width \
-             at or below merge distance.",
-            Field::HistBits,
-            slider(3.0..=6.0, cfg.hist_bits as f64, |v| {
-                Msg::Edit(EditMsg::Set(Field::HistBits, v))
-            })
-            .step(1.0),
-        ),
-        setting(
-            app,
             "Color cleanup",
             if cfg.color_cleanup == 0 {
                 "off".into()

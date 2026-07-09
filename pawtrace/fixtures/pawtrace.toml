@@ -1,14 +1,11 @@
 [default]
 detail = 10.0
-merge_dist = 0.07999999821186066
 alphamax = 1.43
 opttolerance = 3.4
 
 [profiles."* Fill"]
 detail = 9.5
 max_colors = 24
-merge_dist = 0.05999999865889549
-hist_bits = 4
 alphamax = 2.0
 opttolerance = 3.45
 simplify = 4.0
@@ -19,8 +16,6 @@ stroke_width = 16.0
 
 [profiles.Bed]
 detail = 10.5
-merge_dist = 0.07500000298023224
-gradient_dist = 0.0020000000949949026
 absorb_dist = 0.23999999463558197
 
 [profiles."Deer *"]
@@ -34,16 +29,12 @@ absorb_dist = 0.10000000149011612
 
 [profiles."Seff *"]
 detail = 10.5
-merge_dist = 0.0
-gradient_dist = 0.0020000000949949026
 alphamax = 0.86
 opttolerance = 1.85
 seam_slack = 1.9
 absorb_dist = 0.10000000149011612
 
 [overrides."Seff Floof"]
-merge_dist = 0.05000000074505806
-gradient_dist = 0.0005000000237487257
 locked = [
     "#4a4a4a",
     "#515252",
@@ -52,7 +43,6 @@ simplify = 4.0
 
 [overrides."Seff Hair"]
 detail = 10.5
-gradient_dist = 0.0010000000474974513
 seam_slack = 1.8
 color_cleanup = 2
 
@@ -60,8 +50,6 @@ color_cleanup = 2
 simplify = 3.9000000000000004
 
 [overrides."Seff Head"]
-merge_dist = 0.02500000037252903
-gradient_dist = 0.0005000000237487257
 locked = [
     "#d6d6d6",
     "#494949",
