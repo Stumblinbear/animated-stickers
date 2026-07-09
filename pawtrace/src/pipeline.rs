@@ -440,12 +440,46 @@ fn surviving_shapes(plan: &regions::MergePlan, alpha: &GrayImage, cfg: &Config) 
             .map(|&si| {
                 let si = si as usize;
                 let (x0, y0, x1, y1) = bbox[si];
+                // Keep open any hole enclosing a survivor outside this shape's
+                // subtree: its plan mask fills such holes blind to survival, so
+                // filling would paint over a region drawn earlier in the tree.
+                // A labeled hole pixel is always out-of-subtree, since every
+                // subtree member's pixels are set here and so never lie in a
+                // hole.
+                let keep_open = |dx: u32, dy: u32| label[(dy * w + dx) as usize] != u32::MAX;
+                let bw = x1 - x0 + 3;
                 let mask = if children[si].is_empty() {
-                    // A leaf's shape is exactly its plan mask (its bbox never
-                    // folds), so cloning it skips a mask build and hole fill.
-                    plan.masks[survivors[si]].clone()
+                    let plan_mask = &plan.masks[survivors[si]];
+                    let covers_survivor = {
+                        let mraw: &[u8] = plan_mask;
+                        mraw.iter().enumerate().any(|(i, &v)| {
+                            if v == 0 {
+                                return false;
+                            }
+                            let (mx, my) = (i as u32 % bw, i as u32 / bw);
+                            let l = label[((y0 + my - 1) * w + (x0 + mx - 1)) as usize];
+                            l != u32::MAX && l != si as u32
+                        })
+                    };
+                    // A leaf's plan mask is its shape as-is, since its bbox
+                    // never folds. Rebuild from the region's own pixels with a
+                    // survivor-aware fill only when a filled hole covered
+                    // another survivor.
+                    if covers_survivor {
+                        let r = &regs[survivors[si]];
+                        let mut mask = GrayImage::new(bw, y1 - y0 + 3);
+                        {
+                            let mraw: &mut [u8] = &mut mask;
+                            for &(px, py) in &r.pixels {
+                                mraw[((py + 1) * bw + (px + 1)) as usize] = 255;
+                            }
+                        }
+                        regions::fill_holes_where(&mut mask, (x0, y0), alpha, turdsize, keep_open);
+                        mask
+                    } else {
+                        plan_mask.clone()
+                    }
                 } else {
-                    let bw = x1 - x0 + 3;
                     let mut mask = GrayImage::new(bw, y1 - y0 + 3);
                     {
                         let mraw: &mut [u8] = &mut mask;
@@ -459,7 +493,7 @@ fn surviving_shapes(plan: &regions::MergePlan, alpha: &GrayImage, cfg: &Config) 
                             }
                         }
                     }
-                    regions::fill_holes(&mut mask, (x0, y0), alpha, turdsize);
+                    regions::fill_holes_where(&mut mask, (x0, y0), alpha, turdsize, keep_open);
                     mask
                 };
                 let slack = want_slack.then(|| {
@@ -568,6 +602,86 @@ pub fn crop_to_alpha(src: &RgbaImage, cfg: &Config) -> Option<(RgbaImage, u32, u
 mod tests {
     use super::*;
     use crate::{palette, raster, regions};
+
+    /// A 24x24 opaque scene of three concentric same-scene elements: an
+    /// A-colored field enclosing a 1px M-colored moat ring (8..=15 frame),
+    /// enclosing a 6x6 S-colored block (9..=14). M is nearest S in color, so a
+    /// merging moat lands in S. Field 512 px, moat 28 px, block 36 px.
+    fn concentric_scene() -> (image::RgbImage, GrayImage) {
+        let a = [20u8, 20, 20];
+        let m = [190u8, 190, 190];
+        let s = [200u8, 200, 200];
+        let mut quant = image::RgbImage::from_pixel(24, 24, image::Rgb(a));
+        for y in 8..=15u32 {
+            for x in 8..=15u32 {
+                let c = if x == 8 || x == 15 || y == 8 || y == 15 { m } else { s };
+                quant.put_pixel(x, y, image::Rgb(c));
+            }
+        }
+        let alpha = GrayImage::from_pixel(24, 24, image::Luma([255]));
+        (quant, alpha)
+    }
+
+    #[test]
+    fn surviving_shapes_keeps_a_ring_hole_open_over_an_enclosed_survivor() {
+        let (quant, alpha) = concentric_scene();
+        // floor 112 clears the field (576) but not the moat (region_shape
+        // fills its own hole to area 64) or the block (36). Pinning the field
+        // and the block exempts them from the floor. With both of the moat's
+        // neighbors pinned it has no merge target, so it culls instead of
+        // merging into either. Culling drops the moat from the survivor
+        // labeling, so the field and block trace as separate paint components
+        // rather than a containment chain.
+        let cfg = Config { scale: 1, detail: 15.0, absorb_dist: 0.0, ..Default::default() };
+        let regs = regions::segment_absorbed(&quant, &alpha, &cfg);
+        assert_eq!(regs.len(), 3);
+        // Scan order: field, moat, block.
+        assert_eq!(regs[0].color, [20, 20, 20]);
+        assert_eq!(regs[1].color, [190, 190, 190]);
+        assert_eq!(regs[2].color, [200, 200, 200]);
+
+        let pins = [(2u32, 2u32), (11, 11)];
+        let plan = regions::merge_plan(&regs, &alpha, &cfg, 512, &pins);
+        assert_eq!(plan.floor, 112);
+        assert_eq!(
+            regions::report_of(&plan).fates,
+            vec![regions::Fate::Traced, regions::Fate::Culled, regions::Fate::Traced]
+        );
+        let on = |mask: &GrayImage| mask.pixels().filter(|p| p[0] != 0).count();
+        // The field's plan mask fills its opaque interior blind to survival,
+        // covering the moat and block.
+        assert_eq!(on(&plan.masks[0]), 576);
+
+        let shapes = surviving_shapes(&plan, &alpha, &cfg);
+        assert_eq!(shapes.len(), 2);
+        let ring = shapes.iter().find(|s| s.0 == [20, 20, 20]).unwrap();
+        let block = shapes.iter().find(|s| s.0 == [200, 200, 200]).unwrap();
+        // The leaf covers_survivor rebuild reopens the hole over the block:
+        // the field paints its own 512 pixels, not the 576 its plan mask holds.
+        assert_eq!(on(&ring.1), 512);
+        assert_eq!(on(&block.1), 36);
+    }
+
+    #[test]
+    fn surviving_shapes_fills_a_ring_hole_with_no_survivor_inside() {
+        let (quant, alpha) = concentric_scene();
+        let cfg = Config { scale: 1, detail: 15.0, absorb_dist: 0.0, ..Default::default() };
+        let regs = regions::segment_absorbed(&quant, &alpha, &cfg);
+        // Pin only the field. The moat merges into the block, and the merged
+        // interior (hole-filled area 64) stays below the floor with the field
+        // its only neighbor (pinned, no merge target), so the whole interior
+        // culls. With no survivor inside, the field's hole fills.
+        let pins = [(2u32, 2u32)];
+        let plan = regions::merge_plan(&regs, &alpha, &cfg, 512, &pins);
+        let fates = regions::report_of(&plan).fates;
+        assert_eq!(fates[0], regions::Fate::Traced);
+        assert_ne!(fates[2], regions::Fate::Traced);
+
+        let shapes = surviving_shapes(&plan, &alpha, &cfg);
+        assert_eq!(shapes.len(), 1);
+        let on = |mask: &GrayImage| mask.pixels().filter(|p| p[0] != 0).count();
+        assert_eq!(on(&shapes[0].1), 576);
+    }
 
     /// The GUI stage strip traces the whole uncropped layer while `run` (and
     /// the full render) traces the alpha crop and translates back. The memo

@@ -1019,6 +1019,21 @@ pub fn fill_holes(
     alpha: &GrayImage,
     min_hole: u64,
 ) -> u64 {
+    fill_holes_where(mask, origin, alpha, min_hole, |_, _| false)
+}
+
+/// Like [`fill_holes`], but additionally leaves open any hole containing a
+/// pixel for which `keep_open` returns `true`. `keep_open` receives the
+/// scaled-space coordinate `(x, y)` of a hole pixel. Returns the on-pixel
+/// count after filling. `mask` must carry an empty 1px border; `origin` is the
+/// position of mask pixel (1, 1) in `alpha`.
+pub fn fill_holes_where(
+    mask: &mut GrayImage,
+    origin: (u32, u32),
+    alpha: &GrayImage,
+    min_hole: u64,
+    keep_open: impl Fn(u32, u32) -> bool,
+) -> u64 {
     let (bw, bh) = mask.dimensions();
     let m: &mut [u8] = mask;
     let (aw, araw) = (alpha.width(), alpha.as_raw());
@@ -1053,6 +1068,7 @@ pub fn fill_holes(
             }
             let id = hole_keep.len() as u32;
             let mut transparent = false;
+            let mut protect = false;
             let mut size = 0u64;
             let mut q = vec![(x, y)];
             hole_id[idx(x, y)] = id;
@@ -1061,6 +1077,9 @@ pub fn fill_holes(
                 let (dx, dy) = (origin.0 + hx - 1, origin.1 + hy - 1);
                 if araw[(dy * aw + dx) as usize] == 0 {
                     transparent = true;
+                }
+                if keep_open(dx, dy) {
+                    protect = true;
                 }
                 let mut visit = |nx: u32, ny: u32, q: &mut Vec<(u32, u32)>| {
                     if hole_id[idx(nx, ny)] == 0
@@ -1076,7 +1095,7 @@ pub fn fill_holes(
                 if hx + 1 < bw { visit(hx + 1, hy, &mut q); }
                 if hy + 1 < bh { visit(hx, hy + 1, &mut q); }
             }
-            hole_keep.push(transparent && size >= min_hole);
+            hole_keep.push(protect || (transparent && size >= min_hole));
         }
     }
     let mut area = 0u64;
@@ -1095,6 +1114,104 @@ pub fn fill_holes(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A mask from an ASCII grid: `#` is on (255), any other char off. Rows
+    /// must be equal length.
+    fn mask_from(rows: &[&str]) -> GrayImage {
+        let (w, h) = (rows[0].len() as u32, rows.len() as u32);
+        let mut m = GrayImage::new(w, h);
+        for (y, row) in rows.iter().enumerate() {
+            for (x, ch) in row.bytes().enumerate() {
+                if ch == b'#' {
+                    m.put_pixel(x as u32, y as u32, Luma([255]));
+                }
+            }
+        }
+        m
+    }
+
+    fn on(m: &GrayImage) -> u64 {
+        m.pixels().filter(|p| p[0] != 0).count() as u64
+    }
+
+    #[test]
+    fn fill_holes_where_false_predicate_matches_fill_holes() {
+        let rows = [
+            ".......",
+            ".#####.",
+            ".#...#.",
+            ".#...#.",
+            ".#...#.",
+            ".#####.",
+            ".......",
+        ];
+        let alpha = GrayImage::from_pixel(16, 16, Luma([255]));
+        let mut plain = mask_from(&rows);
+        let mut whered = mask_from(&rows);
+        let a_plain = fill_holes(&mut plain, (0, 0), &alpha, 4);
+        let a_where = fill_holes_where(&mut whered, (0, 0), &alpha, 4, |_, _| false);
+        // The opaque 3x3 hole fills to a solid 5x5.
+        assert_eq!(a_plain, 25);
+        assert_eq!(a_where, a_plain);
+        assert_eq!(plain.as_raw(), whered.as_raw());
+    }
+
+    #[test]
+    fn fill_holes_where_keeps_only_the_flagged_hole_open() {
+        // Two 3x2 holes in one on-block, separated by an on-column.
+        let rows = [
+            "...........",
+            ".#########.",
+            ".#..##..##.",
+            ".#..##..##.",
+            ".#..##..##.",
+            ".#########.",
+            "...........",
+        ];
+        let alpha = GrayImage::from_pixel(16, 16, Luma([255]));
+        let pre = on(&mask_from(&rows)); // 33: block minus both holes
+
+        // Flag one pixel of the left hole. keep_open sees scaled space, and at
+        // origin (0, 0) mask (hx, hy) maps to (hx - 1, hy - 1), so mask (2, 2)
+        // is (1, 1).
+        let mut m = mask_from(&rows);
+        let area = fill_holes_where(&mut m, (0, 0), &alpha, 4, |dx, dy| (dx, dy) == (1, 1));
+        // Left hole stays open, right hole (6 px) fills: per-hole independence.
+        assert_eq!(area, pre + 6);
+        assert_eq!(m.get_pixel(2, 2)[0], 0);
+        assert_eq!(m.get_pixel(3, 4)[0], 0);
+        assert_eq!(m.get_pixel(6, 2)[0], 255);
+
+        // Without the predicate both holes close.
+        let mut both = mask_from(&rows);
+        assert_eq!(fill_holes(&mut both, (0, 0), &alpha, 4), pre + 12);
+    }
+
+    #[test]
+    fn fill_holes_keeps_a_transparent_cutout_open_regardless_of_predicate() {
+        let rows = [
+            ".......",
+            ".#####.",
+            ".#...#.",
+            ".#...#.",
+            ".#...#.",
+            ".#####.",
+            ".......",
+        ];
+        // The hole maps to alpha (1..=3, 1..=3); make it transparent.
+        let mut alpha = GrayImage::from_pixel(8, 8, Luma([255]));
+        for y in 1..=3 {
+            for x in 1..=3 {
+                alpha.put_pixel(x, y, Luma([0]));
+            }
+        }
+        let mut m = mask_from(&rows);
+        let area = fill_holes_where(&mut m, (0, 0), &alpha, 4, |_, _| false);
+        // Size 9 >= min_hole and touching transparency: a genuine cutout, left
+        // open with only the ring's 16 pixels set.
+        assert_eq!(area, 16);
+        assert_eq!(m.get_pixel(3, 3)[0], 0);
+    }
 
     /// 12x4: a top row of near-black arcs (two alternating colors, each arc
     /// well under the floor) over a solid gray fill.
