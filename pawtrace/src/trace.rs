@@ -83,8 +83,9 @@ pub fn trace_mask(mask: &GrayImage, cfg: &Config, slack: Option<&GrayImage>) -> 
 
     // The mask is one connected component by construction, so no clustering
     // pass is needed: image_to_paths walks the outer boundary and every hole
-    // directly. Raw pixel boundaries (mode None) have the uniform ~1px
-    // vertex spacing the windowed smoothing needs; the Polygon mode's
+    // directly. Mode None places vertices at boundary direction changes, dense
+    // on staircased curves and sparse on straight runs, which is why smoothing
+    // windows by arclength rather than vertex count. Polygon mode's
     // simplification keeps wobble extrema as vertices, which smoothing can't
     // average.
     let mut out = Vec::new();

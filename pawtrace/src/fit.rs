@@ -150,15 +150,22 @@ pub fn find_corners(pts: &[V], threshold: f64, arm: f64) -> Vec<usize> {
     corners
 }
 
-/// Moving-average smoothing with corners pinned: each non-corner vertex
-/// becomes the mean of vertices within `radius` steps, the window
-/// shrinking symmetrically near corners so averages never reach across
-/// one.
+/// Moving-average smoothing with corners pinned. Each non-corner vertex
+/// becomes the mean of the vertices lying within `radius` of arclength along
+/// the contour on each side, the vertex itself always included. The window
+/// shrinks symmetrically as it approaches a corner so an average never reaches
+/// across one, and corners themselves stay fixed.
+///
+/// `radius` is in the same scaled px as the contour coordinates. On a densely
+/// sampled boundary this is an ordinary moving average; on a long straight run
+/// carrying only its two endpoint vertices the window spans no interior vertex,
+/// so the run stays put.
 pub fn smooth_pinned(pts: &[V], corners: &[usize], radius: usize) -> Vec<V> {
     let n = pts.len();
     if radius == 0 || n < 3 {
         return pts.to_vec();
     }
+    let radius = radius as f64;
     let is_corner: Vec<bool> = {
         let mut v = vec![false; n];
         for &c in corners {
@@ -168,49 +175,68 @@ pub fn smooth_pinned(pts: &[V], corners: &[usize], radius: usize) -> Vec<V> {
         }
         v
     };
-    // Distance (in steps) to the nearest corner, so windows shrink as
-    // they approach one. No corners: full radius everywhere.
+    // edge[i] is the arclength from pts[i] to pts[i+1].
+    let edge: Vec<f64> = (0..n).map(|i| len(sub(pts[(i + 1) % n], pts[i]))).collect();
+    let perimeter: f64 = edge.iter().sum();
+
+    // Arclength to the nearest corner in each direction, so the window shrinks
+    // as it approaches one. A corner-free chain is shorter than the whole ring,
+    // so two relaxation passes settle the single seam wrap. No corners: the full
+    // radius everywhere.
     let mut room = vec![radius; n];
     if !corners.is_empty() {
-        let inf = usize::MAX;
-        let mut dist = vec![inf; n];
-        let mut q: std::collections::VecDeque<usize> = Default::default();
-        for &c in corners {
-            if c < n {
-                dist[c] = 0;
-                q.push_back(c);
+        let mut fwd = vec![f64::INFINITY; n];
+        let mut bwd = vec![f64::INFINITY; n];
+        for _ in 0..2 {
+            for k in (0..n).rev() {
+                fwd[k] = if is_corner[k] { 0.0 } else { fwd[k].min(edge[k] + fwd[(k + 1) % n]) };
             }
-        }
-        while let Some(i) = q.pop_front() {
-            for j in [(i + 1) % n, (i + n - 1) % n] {
-                if dist[j] == inf {
-                    dist[j] = dist[i] + 1;
-                    q.push_back(j);
-                }
+            for k in 0..n {
+                let pv = (k + n - 1) % n;
+                bwd[k] = if is_corner[k] { 0.0 } else { bwd[k].min(edge[pv] + bwd[pv]) };
             }
         }
         for i in 0..n {
-            room[i] = radius.min(dist[i]);
+            room[i] = radius.min(fwd[i].min(bwd[i]));
         }
     }
     let mut out = Vec::with_capacity(n);
     for i in 0..n {
-        if is_corner[i] || room[i] == 0 {
+        // Cap at half the perimeter so the two walks can't wrap past each other
+        // and double-count on a ring with no nearby corner.
+        let half = room[i].min(perimeter * 0.5);
+        if is_corner[i] || half <= 0.0 {
             out.push(pts[i]);
             continue;
         }
-        // Cap the window at half the ring so it never wraps onto itself:
-        // a radius wider than the contour would underflow the index below
-        // and double-count vertices.
-        let r = room[i].min((n - 1) / 2);
-        if r == 0 {
-            out.push(pts[i]);
-            continue;
+        let mut acc = pts[i];
+        let mut count = 1.0;
+        let mut d = 0.0;
+        let mut j = i;
+        loop {
+            d += edge[j];
+            if d > half {
+                break;
+            }
+            j = (j + 1) % n;
+            if j == i {
+                break;
+            }
+            acc = add(acc, pts[j]);
+            count += 1.0;
         }
-        let mut acc = (0.0, 0.0);
-        let mut count = 0.0;
-        for k in 0..=2 * r {
-            let j = (i + n + k - r) % n;
+        d = 0.0;
+        j = i;
+        loop {
+            let pv = (j + n - 1) % n;
+            d += edge[pv];
+            if d > half {
+                break;
+            }
+            j = pv;
+            if j == i {
+                break;
+            }
             acc = add(acc, pts[j]);
             count += 1.0;
         }
@@ -367,7 +393,22 @@ fn fit_cubic(
 ) {
     let n = pts.len();
     if n == 2 {
-        let d = len(sub(pts[1], pts[0])) / 3.0;
+        let chord = sub(pts[1], pts[0]);
+        let dir = norm(chord);
+        // A two-point segment has no interior points to check, so the usual
+        // heuristic handle of a third of the chord goes unbounded: with a
+        // tangent inherited from a split next to a corner it bows the curve
+        // by up to a third of the chord. The bow is at most 3/4 of the
+        // handles' perpendicular offset, so cap the handle length to keep it
+        // within tolerance.
+        let bow = (t_hat1.0 * dir.1 - t_hat1.1 * dir.0)
+            .abs()
+            .max((t_hat2.0 * dir.1 - t_hat2.1 * dir.0).abs());
+        let allow = tol2.sqrt() * slack.map_or(1.0, |s| s[0].min(s[1]));
+        let mut d = len(chord) / 3.0;
+        if 0.75 * d * bow > allow {
+            d = allow / (0.75 * bow);
+        }
         out.push((
             add(pts[0], mul(t_hat1, d)),
             add(pts[1], mul(t_hat2, d)),
@@ -509,14 +550,17 @@ fn newton_raphson(bez: &[V; 4], p: V, u: f64) -> f64 {
     }
 }
 
-/// Worst squared fit error and its point index. With `slack`, each point's
-/// error is divided by its squared multiplier, so `err_i <= (tol * slack_i)^2`
-/// becomes a single comparison of the returned max against `tol^2`. A `None`
-/// slack (or all-1.0 multipliers) leaves every error unweighted.
+/// Worst squared fit error and a split index in `1..len-1`, measured at the
+/// interior vertices and at curve samples between consecutive vertices. With
+/// `slack`, each error is divided by its squared multiplier, so
+/// `err_i <= (tol * slack_i)^2` becomes a single comparison of the returned
+/// max against `tol^2`. A `None` slack (or all-1.0 multipliers) leaves every
+/// error unweighted.
 fn max_error(pts: &[V], bez: &[V; 4], u: &[f64], slack: Option<&[f64]>) -> (f64, usize) {
+    let n = pts.len();
     let mut max_d = 0.0;
-    let mut split = pts.len() / 2;
-    for i in 1..pts.len() - 1 {
+    let mut split = n / 2;
+    for i in 1..n - 1 {
         let d = sub(bezier_point(bez, u[i]), pts[i]);
         let mut d2 = dot(d, d);
         if let Some(s) = slack {
@@ -527,7 +571,34 @@ fn max_error(pts: &[V], bez: &[V; 4], u: &[f64], slack: Option<&[f64]>) -> (f64,
             split = i;
         }
     }
+    // Vertices alone under-sample the curve: across a sparse span the two
+    // free control points can thread every interior vertex exactly while
+    // bowing far off the polyline in between. Sample the curve inside each
+    // parameter span against the chord it should hug.
+    for i in 0..n - 1 {
+        let (a, b) = (pts[i], pts[i + 1]);
+        let k = ((len(sub(b, a)) * 0.5).ceil() as usize).clamp(1, 32);
+        for j in 1..=k {
+            let t = u[i] + (u[i + 1] - u[i]) * j as f64 / (k + 1) as f64;
+            let mut d2 = dist2_to_segment(bezier_point(bez, t), a, b);
+            if let Some(s) = slack {
+                let sm = s[i].min(s[i + 1]);
+                d2 /= sm * sm;
+            }
+            if d2 > max_d {
+                max_d = d2;
+                split = (i + 1).min(n - 2);
+            }
+        }
+    }
     (max_d, split)
+}
+
+fn dist2_to_segment(p: V, a: V, b: V) -> f64 {
+    let ab = sub(b, a);
+    let t = (dot(sub(p, a), ab) / dot(ab, ab).max(1e-12)).clamp(0.0, 1.0);
+    let d = sub(p, add(a, mul(ab, t)));
+    dot(d, d)
 }
 
 #[cfg(test)]
@@ -619,6 +690,60 @@ mod tests {
             loose.cubics.len(),
             tight.cubics.len()
         );
+    }
+
+    /// Max distance from any dense sample of `path` to the closed polygon
+    /// `pts`, measured against the polygon's segments.
+    fn fit_deviation(path: &TracedPath, pts: &[V]) -> f64 {
+        let n = pts.len();
+        let seg_d = |q: V, a: V, b: V| -> f64 {
+            let ab = sub(b, a);
+            let t = (dot(sub(q, a), ab) / dot(ab, ab).max(1e-12)).clamp(0.0, 1.0);
+            len(sub(q, add(a, mul(ab, t))))
+        };
+        let mut cur = path.start;
+        let mut worst = 0.0f64;
+        for &(c1, c2, e) in &path.cubics {
+            let b = [cur, c1, c2, e];
+            for k in 0..=64 {
+                let q = bezier_point(&b, k as f64 / 64.0);
+                let d = (0..n)
+                    .map(|i| seg_d(q, pts[i], pts[(i + 1) % n]))
+                    .fold(f64::MAX, f64::min);
+                worst = worst.max(d);
+            }
+            cur = e;
+        }
+        worst
+    }
+
+    #[test]
+    fn fit_honors_tolerance_on_sparse_straight_edges() {
+        // A trapezoid ring in the shape the boundary tracer emits: the slanted
+        // top carries a vertex every 5px, the other three straight edges only
+        // their endpoints. No corners passed, as corner detection misses
+        // shallow ones. The bound must hold everywhere on the curve, not just
+        // at the vertices (regression for the bulge across sparse edges).
+        let mut pts: Vec<V> = (0..=60).map(|k| (5.0 * k as f64, 0.5 * k as f64)).collect();
+        pts.push((300.0, 150.0));
+        pts.push((0.0, 150.0));
+        let tol = 3.0;
+        let fit = fit_closed(&pts, &[], tol, None).unwrap();
+        let dev = fit_deviation(&fit, &pts);
+        assert!(dev <= tol + 0.5, "max deviation {dev} > tol {tol}");
+    }
+
+    #[test]
+    fn fit_honors_tolerance_with_corners_cut() {
+        // The same sparse ring with the true corners given as cuts.
+        let mut pts: Vec<V> = (0..=60).map(|k| (5.0 * k as f64, 0.5 * k as f64)).collect();
+        pts.push((300.0, 150.0));
+        pts.push((0.0, 150.0));
+        let corners = vec![0, 60, 61, 62];
+        let tol = 3.0;
+        let fit = fit_closed(&pts, &corners, tol, None).unwrap();
+        let dev = fit_deviation(&fit, &pts);
+        assert!(dev <= tol + 0.5, "max deviation {dev} > tol {tol}");
     }
 
     #[test]
