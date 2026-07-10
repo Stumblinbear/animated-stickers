@@ -77,10 +77,10 @@ fn run_layer(
             let prep = raster::prepare(&src, cfg);
             times.add(1, t);
             let t = Instant::now();
-            let pal = palette::layer_palette(&src, cfg, doc_dim);
+            let plan = palette::Partition::build(&src, cfg).plan(cfg, doc_dim);
             times.add(2, t);
             let t = Instant::now();
-            let quant = palette::remap(&prep.flat, &prep.alpha, &pal);
+            let quant = palette::remap_constrained(&prep.flat, &prep.alpha, &plan, cfg.scale);
             let quant = if cfg.color_cleanup > 0 {
                 palette::label_smooth(&quant, &prep.alpha, cfg.color_cleanup)
             } else {

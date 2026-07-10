@@ -26,7 +26,8 @@ pub struct Overrides {
     pub max_colors: Option<usize>,
     /// Palette colors seeded unconditionally, as "#rrggbb" hex strings.
     pub locked: Option<Vec<String>>,
-    pub gradient_bands: Option<u32>,
+    pub shade_split: Option<f32>,
+    pub shade_noise: Option<f32>,
     /// Speckle-floor exemption points, document source px.
     pub pins: Option<Vec<[u32; 2]>>,
     pub scale: Option<u32>,
@@ -61,8 +62,11 @@ impl Overrides {
         if let Some(v) = &self.locked {
             c.locked = v.iter().filter_map(|s| parse_hex(s)).collect();
         }
-        if let Some(v) = self.gradient_bands {
-            c.gradient_bands = v;
+        if let Some(v) = self.shade_split {
+            c.shade_split = v;
+        }
+        if let Some(v) = self.shade_noise {
+            c.shade_noise = v;
         }
         if let Some(v) = &self.pins {
             c.pins = v.clone();
@@ -432,7 +436,8 @@ pub fn diff(base: &Config, cfg: &Config) -> Overrides {
                 .map(|c| format!("#{:02x}{:02x}{:02x}", c[0], c[1], c[2]))
                 .collect()
         }),
-        gradient_bands: d(base.gradient_bands, cfg.gradient_bands),
+        shade_split: d(base.shade_split, cfg.shade_split),
+        shade_noise: d(base.shade_noise, cfg.shade_noise),
         pins: (base.pins != cfg.pins).then(|| cfg.pins.clone()),
         scale: d(base.scale, cfg.scale),
         alpha_threshold: d(base.alpha_threshold, cfg.alpha_threshold),

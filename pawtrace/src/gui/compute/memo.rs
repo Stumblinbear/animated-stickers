@@ -11,7 +11,7 @@
 use super::{Img, LayerTrace};
 use crate::config::Config;
 use crate::gui::ids::LayerId;
-use crate::palette::Detection;
+use crate::palette::Partition;
 use crate::raster::Prepared;
 use crate::regions::{MergePlan, Region};
 use crate::trace::TracedPath;
@@ -74,7 +74,8 @@ impl StageKeys {
             cfg.detail.to_bits().hash(h);
             cfg.max_colors.hash(h);
             cfg.locked.hash(h);
-            cfg.gradient_bands.hash(h);
+            cfg.shade_split.to_bits().hash(h);
+            cfg.shade_noise.to_bits().hash(h);
             cfg.color_cleanup.hash(h);
         });
         let regions = fold(quant, |h| {
@@ -113,7 +114,7 @@ struct PixelSlot {
     prep: Option<(u64, Arc<Prepared>)>,
     /// Keyed by `detect`, not `prep`: detection ignores every prep field but
     /// `alpha_threshold`.
-    detect: Option<(u64, Arc<Detection>)>,
+    detect: Option<(u64, Arc<Partition>)>,
     quant: Option<(u64, Arc<RgbImage>)>,
     /// Keyed by `regions_view`: the plan folds the pins into the merge.
     plan: Option<(u64, Arc<MergePlan>)>,
@@ -166,7 +167,7 @@ impl Memo {
         }
     }
 
-    pub fn detect(&mut self, layer: LayerId, key: u64) -> Option<Arc<Detection>> {
+    pub fn detect(&mut self, layer: LayerId, key: u64) -> Option<Arc<Partition>> {
         match self.pixel.get(&layer)?.detect {
             Some((k, ref v)) if k == key => Some(v.clone()),
             _ => None,
@@ -196,7 +197,7 @@ impl Memo {
         self.pixel_slot(layer).prep = Some((key, v));
     }
 
-    pub fn put_detect(&mut self, layer: LayerId, key: u64, v: Arc<Detection>) {
+    pub fn put_detect(&mut self, layer: LayerId, key: u64, v: Arc<Partition>) {
         self.pixel_slot(layer).detect = Some((key, v));
     }
 
@@ -307,10 +308,10 @@ mod tests {
     #[test]
     fn detect_key_holds_across_palette_edits_and_breaks_on_alpha() {
         let base = StageKeys::of(&cfg());
-        // gradient_bands and detail are palette-selection params: detection is
-        // invariant to them, so its cache must stay valid across the edit.
+        // shade_split and detail are consolidation/selection params: detection
+        // is invariant to them, so its cache must stay valid across the edit.
         let bands = StageKeys::of(&Config {
-            gradient_bands: cfg().gradient_bands + 1,
+            shade_split: cfg().shade_split + 0.01,
             ..cfg()
         });
         let detail = StageKeys::of(&Config {

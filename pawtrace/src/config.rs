@@ -44,13 +44,22 @@ pub struct Config {
     /// merge test); other candidates merge toward them. Locked from the GUI
     /// or per profile.
     pub locked: Vec<[u8; 3]>, // default empty
-    /// Representative bands a gradient family consolidates to in region-first
-    /// extraction: a run of adjacent features whose colors ramp collinearly is
-    /// kept as at most this many colors spanning it, the rest remapped to the
-    /// nearest kept band. Permissive by default because deliberate banding is a
-    /// style an artist dials up per profile, not a defect to collapse; only a
-    /// family longer than this loses bands.
-    pub gradient_bands: u32, // default 6
+    /// OKLab ΔE two shades must differ by to stay separate features. Feature
+    /// consolidation merges adjacent detected regions, closest colors first,
+    /// until every remaining gap reaches this; soft interiors and ramp bands
+    /// sit under it and fold, authored color steps sit over it and survive.
+    /// Lower preserves more banding in smooth gradients; higher merges shading
+    /// more aggressively. The closest deliberate step measured on the goldens
+    /// is 0.037, so the default stays under that.
+    pub shade_split: f32, // default 0.03 (OKLab ΔE)
+    /// Extra merge tolerance for tiny fragments during feature consolidation:
+    /// a pair may merge while its ΔE stays under `shade_split + shade_noise /
+    /// min(area)`. A small fragment's mean color is a noise-dominated estimate
+    /// that cannot testify to a real color boundary; fragments of one noisy
+    /// airbrush stroke measure ΔE 0.05-0.1 apart. Higher reunites noisier
+    /// brushwork; lower preserves more faint small detail. At the default a
+    /// 2 px fragment tolerates +0.07 and the boost fades past ~100 px.
+    pub shade_noise: f32, // default 0.14 (OKLab ΔE · px)
     /// Points in document source px. Any region containing one survives the
     /// speckle floor: a pin marks a small feature (a tooth, a glint) as
     /// deliberate, and outlives re-segmentation because whatever region
@@ -86,7 +95,8 @@ impl Default for Config {
             alpha_threshold: 128,
             max_colors: 24,
             locked: Vec::new(),
-            gradient_bands: 6,
+            shade_split: 0.03,
+            shade_noise: 0.14,
             pins: Vec::new(),
             mode_filter: 0,
             color_cleanup: 0,

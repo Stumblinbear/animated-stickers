@@ -20,7 +20,7 @@ use std::sync::Arc;
 /// The memo entries a stage run may reuse, each `None` when absent or stale.
 pub(super) struct Snapshot {
     pub prep: Option<Arc<Prepared>>,
-    pub detect: Option<Arc<palette::Detection>>,
+    pub detect: Option<Arc<palette::Partition>>,
     pub quant: Option<Arc<RgbImage>>,
     pub palette: Option<Arc<Vec<[u8; 3]>>>,
     pub regions: Option<Arc<Vec<Region>>>,
@@ -122,19 +122,20 @@ pub(super) fn stream(job: StageJob) -> Task<Msg> {
                     let detect = match snap.detect {
                         Some(d) => d,
                         None => {
-                            let d = Arc::new(palette::detect_features(&img, &cfg));
+                            let d = Arc::new(palette::Partition::detect(&img, &cfg));
                             emit!(StagePart::Detect(d.clone()));
                             d
                         }
                     };
-                    let part = palette::feature_partition_from(&detect.0, &detect.1, &cfg);
-                    let groups = palette::group_features(&part.features, &cfg, doc_dim);
-                    let pal = palette::select_features(&groups, &cfg, doc_dim);
-                    let mut q = palette::remap(&prep.flat, &prep.alpha, &pal);
+                    let mut part = (*detect).clone();
+                    part.merge_shades(&cfg);
+                    part.fold_residue();
+                    let plan = part.plan(&cfg, doc_dim);
+                    let mut q = palette::remap_constrained(&prep.flat, &prep.alpha, &plan, cfg.scale);
                     if cfg.color_cleanup > 0 {
                         q = palette::label_smooth(&q, &prep.alpha, cfg.color_cleanup);
                     }
-                    (Arc::new(q), Arc::new(pal), true)
+                    (Arc::new(q), Arc::new(plan.palette), true)
                 }
             };
             if pending[2] || quant_c {

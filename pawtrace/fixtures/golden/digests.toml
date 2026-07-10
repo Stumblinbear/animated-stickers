@@ -48,11 +48,11 @@ fit = "1e7edcd0002d2a26"
 output = "5e9aa362c06363fa"
 
 [seff_deer_a.007]
-quant = "363841b800540abd"
+quant = "1bc437e2c1538192"
 region_count = 5
-regions = "03749fd330536e6c"
-fit = "45f45e1ff56b9809"
-output = "114923cf9db13618"
+regions = "a9fe5d8078b86c17"
+fit = "a7325d1a195ea9e6"
+output = "77e2b750d4e56163"
 
 [seff_deer_a.008]
 quant = "6ffd8293bb2ae5d1"
@@ -62,11 +62,11 @@ fit = "d73783e8e75a8c42"
 output = "6dc4518747974471"
 
 [seff_deer_a.009]
-quant = "25b953d586181c8a"
-region_count = 127
-regions = "9d8020c649bda70b"
-fit = "eada311c905fd0a1"
-output = "83a24fd4325dcaa8"
+quant = "0461b8a1526d24d7"
+region_count = 17
+regions = "199243958b7208d4"
+fit = "533c2164b89c9874"
+output = "acedaa6dc33f0723"
 
 [seff_deer_a.010]
 quant = "1a2e3c623d725ee5"
@@ -76,39 +76,39 @@ fit = "1068d876fa622b82"
 output = "d6ea0d868b729b25"
 
 [seff_deer_a.011]
-quant = "e9d633a9843083ec"
-region_count = 35
-regions = "ac3f8d8cff3a2e2e"
-fit = "f99533a9fd15fffd"
-output = "6c605d5ab12af6e7"
+quant = "9f41f8136a0247cc"
+region_count = 8
+regions = "1bfcb833838da84e"
+fit = "f6b231da96f24452"
+output = "bcda27a29a72a2fc"
 
 [seff_deer_a.012]
-quant = "4b0c4647799c80da"
-region_count = 98
-regions = "4d797f45a34f0731"
-fit = "8c5cb638c3586699"
-output = "7b42b2376adcb3d9"
+quant = "4257f6a7df753b6b"
+region_count = 33
+regions = "38d90879c22bf233"
+fit = "8069641240abf570"
+output = "0eba4dc8bff695d4"
 
 [seff_deer_a.013]
-quant = "a27b01544f53cfe7"
-region_count = 12
-regions = "859ecc96662bca99"
-fit = "b854f18d7c56579f"
-output = "56ee499ebdffbe3a"
+quant = "ceff9fc60c288cc3"
+region_count = 6
+regions = "3c051668a97e421d"
+fit = "e33b46c593a23ac3"
+output = "6fc53c88d1948d51"
 
 [seff_deer_a.014]
-quant = "59336ad4799558e6"
-region_count = 67
-regions = "27bf8d774bedceb7"
-fit = "88f032f1a1aea09a"
-output = "02d43353e83b3aee"
+quant = "27002b7e85a23139"
+region_count = 21
+regions = "2083898e0ea87e43"
+fit = "2cd8d6a8b758667e"
+output = "29407b6163b82ba4"
 
 [seff_deer_a.015]
-quant = "ff9e14c0740231ad"
-region_count = 6
-regions = "90acf6738d1b19a0"
-fit = "c6ddf756a13f357d"
-output = "1efc29bb953183e3"
+quant = "d9659d6a493e6d77"
+region_count = 3
+regions = "4dfb407b42366465"
+fit = "448e2d428cd28615"
+output = "09f29c05827c5ad5"
 
 [seff_deer_a.016]
 quant = "8d83f48845ef6a2d"
@@ -118,11 +118,11 @@ fit = "47ca75566e92b4f9"
 output = "a7fabb3a1345d83c"
 
 [seff_deer_a.017]
-quant = "b589ee9c013bda3c"
-region_count = 50
-regions = "a2055851d199b478"
-fit = "f60b1ccde333a229"
-output = "880a860479dd0f42"
+quant = "7d8b585eaae106b5"
+region_count = 11
+regions = "aa822da0fc5c963a"
+fit = "fb781df4645d0b4e"
+output = "5ad3ef91fffd5996"
 
 [seff_deer_b.000]
 quant = "d3a19ba31661e63a"
@@ -230,11 +230,11 @@ fit = "8fdc6860073f49b7"
 output = "35a0790867b812e8"
 
 [seff_deer_b.015]
-quant = "070ad1481293e5c5"
+quant = "c701c780d28026ad"
 region_count = 1
-regions = "3555e7e8642b6861"
-fit = "b2c7f91796d1fb08"
-output = "f72e5eed1dd782f3"
+regions = "69a61afd50e619f4"
+fit = "7197ae1718bdb594"
+output = "04860d3a3bcf471f"
 
 [seff_deer_b.016]
 quant = "f60207ae0e358511"
@@ -244,32 +244,32 @@ fit = "a925f056385f6668"
 output = "8d6f749af7d869df"
 
 [seff_deer_b.017]
-quant = "d8c3e645e956a98f"
-region_count = 17
-regions = "bed46ede189f45aa"
-fit = "7c7860709341ea6e"
-output = "dad05349482fccd0"
+quant = "683ebf84b6d063f3"
+region_count = 13
+regions = "06124d4d3010bcb7"
+fit = "1187e8751bae958c"
+output = "2e8d5ae48336f66d"
 
 [seff_deer_b.018]
-quant = "2ec669531a8f3b2b"
-region_count = 19
-regions = "6325b7186216f1a3"
-fit = "6f830edf75ed35c4"
-output = "8d9a86e5166f0414"
+quant = "c531ce9d7e41ba27"
+region_count = 7
+regions = "947446561a5c90d0"
+fit = "1dbfae69400bc744"
+output = "0e6a21513f16d95a"
 
 [seff_deer_b.019]
-quant = "a4583a9f618f9d99"
-region_count = 64
-regions = "50fb2196ea86308d"
-fit = "665644871e0cb231"
-output = "d9eeee0f96350069"
+quant = "ce005d334be3a9f7"
+region_count = 9
+regions = "cd49b0af63adb129"
+fit = "e4101fe4ac39ff58"
+output = "ddd06eaa674d2586"
 
 [seff_deer_b.020]
-quant = "cf3b7888e9c8e2ca"
-region_count = 424
-regions = "8ceac695c3626dac"
-fit = "05b34a3f1055dee4"
-output = "007a06b2ad08bf3d"
+quant = "d437ee326e174a91"
+region_count = 44
+regions = "b2632232c0d0abc5"
+fit = "58ce28eedeff30ae"
+output = "7c266b23f636c922"
 
 [seff_deer_b.021]
 quant = "776c768b3a6b3bc7"
@@ -279,18 +279,18 @@ fit = "11872e9c3e324be5"
 output = "0fe57d0f2a30bcf0"
 
 [seff_deer_b.022]
-quant = "a819e2745112d52a"
-region_count = 6
-regions = "0fca65970f67f87b"
-fit = "dd7658f72bf6246c"
-output = "6032223db0725103"
+quant = "7aed2a0310cf11a1"
+region_count = 2
+regions = "ce86d9b4082d62de"
+fit = "21eee3cecc6a17c9"
+output = "b4b0001e6c027b37"
 
 [seff_deer_b.023]
-quant = "73eea228dbfb33dc"
-region_count = 18
-regions = "5dce265ddd96b180"
-fit = "d34cd07d59b6fcdf"
-output = "fb68eed9e52cc2bb"
+quant = "b45bd996448664bb"
+region_count = 9
+regions = "4717cbea31c4dd04"
+fit = "678bf395e9d3b63f"
+output = "63e39fb44dbf188b"
 
 [seff_deer_b.024]
 quant = "e5c2eccdc9b06e7a"
@@ -328,71 +328,71 @@ fit = "d15cdb98ca50a535"
 output = "44dd0cb46d0324b5"
 
 [seff_deer_b.029]
-quant = "2600d0193196b094"
-region_count = 10
-regions = "c77040735f15be0d"
-fit = "1f178a1516b19e14"
-output = "18e15a99868ff1ae"
+quant = "2372583bb402c93d"
+region_count = 7
+regions = "2bad24a5b14873fe"
+fit = "4f79717a59780f1f"
+output = "d61653ad841fafd8"
 
 [seff_deer_b.030]
-quant = "787757fe1f256313"
-region_count = 43
-regions = "a455c33de18d8d63"
-fit = "9dd162db91513ea1"
-output = "7905a48e66ba1277"
+quant = "dc6a86a175691341"
+region_count = 14
+regions = "76a12e17bc5b2954"
+fit = "770e6349fbed7460"
+output = "497b3eb6381474bf"
 
 [seff_deer_b.031]
-quant = "6b6da2d976fa3af3"
-region_count = 47
-regions = "1fefacd1058268c6"
-fit = "cd159738ae1448aa"
-output = "6c18f9c893e3772c"
+quant = "b8fd8dbb23d0976c"
+region_count = 17
+regions = "e202f4112d1ee1d9"
+fit = "4260bdfde85a9388"
+output = "199a4ce5e3d755bc"
 
 [seff_deer_b.032]
-quant = "7e99afa91f6117c1"
-region_count = 95
-regions = "20ae8184936071c9"
-fit = "821f775dc1186790"
-output = "09f684f80e320331"
+quant = "1309e047cc7d831e"
+region_count = 23
+regions = "325a56af9ab2e21d"
+fit = "898dc0902766a094"
+output = "78e308d3c89cb433"
 
 [seff_deer_b.033]
-quant = "b3691dd2d1e81322"
-region_count = 39
-regions = "bb36fc840760a6c0"
-fit = "cd75607e11e13cb6"
-output = "2293ec23203dbb80"
+quant = "bdce56d9caa2bf4d"
+region_count = 10
+regions = "aeb1e949f755f0d5"
+fit = "87c1452540db000a"
+output = "447f333ad380dfb5"
 
 [seff_deer_b.034]
-quant = "227f0979b972a33e"
-region_count = 96
-regions = "b9d59393d46f8e76"
-fit = "ba9399a45c235b3f"
-output = "823de9b40d09fefa"
+quant = "d80c52aeb247aeab"
+region_count = 29
+regions = "b2b50e1e9d4bf5aa"
+fit = "4706a8fa2f0a2df3"
+output = "cb9fac344c6eb9b7"
 
 [seff_deer_b.035]
-quant = "921a9d5c33b315ea"
-region_count = 105
-regions = "2afe2cf4f046f389"
-fit = "e3166d7176f1533a"
-output = "8becc5fbac0696b3"
+quant = "fd2ac0130c24ef91"
+region_count = 11
+regions = "e325d216e00c0d70"
+fit = "91fce2bcb15cbc6c"
+output = "01b3a521202321d0"
 
 [seff_deer_b.036]
-quant = "3c3988e4fce2faf1"
-region_count = 135
-regions = "16155a81943dd078"
-fit = "1512047dd057345a"
-output = "529db724f576be11"
+quant = "197c49c8314f5f8c"
+region_count = 20
+regions = "c459844d2e07777b"
+fit = "4fa93ff2314e5c4a"
+output = "97d4d3fa87f13a5a"
 
 [seff_deer_b.037]
-quant = "7a26d86fbaefd8f7"
-region_count = 167
-regions = "1f6e0b851a394d10"
-fit = "32ad080153c067dd"
-output = "b1f0747b90646899"
+quant = "f12822a64fc9eb40"
+region_count = 7
+regions = "3be0442e641edd53"
+fit = "41be2ca9b8a32a40"
+output = "2bf4e9f201a67679"
 
 [seff_deer_b.038]
-quant = "c83098fd8628ec6e"
-region_count = 183
-regions = "5ec42b798f712adb"
-fit = "5ae8f62f25421869"
-output = "ad94381026470d79"
+quant = "23a63a6df56d68cd"
+region_count = 8
+regions = "bb531dbd8d15453c"
+fit = "82a13acf1bcbb8cc"
+output = "e1b18c352c4700b7"

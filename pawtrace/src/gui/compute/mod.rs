@@ -95,7 +95,7 @@ pub enum StagePart {
     Flat(Img, Arc<crate::raster::Prepared>),
     /// The RTV feature detection computed this run, memoized under the `detect`
     /// key for the palette build of later palette-parameter edits.
-    Detect(Arc<crate::palette::Detection>),
+    Detect(Arc<crate::palette::Partition>),
     /// The merge plan computed this run, memoized under the `regions_view`
     /// key for the report, contours, and trace of later runs.
     Plan(Arc<regions::MergePlan>),

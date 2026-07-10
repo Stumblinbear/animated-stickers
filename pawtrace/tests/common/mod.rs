@@ -256,7 +256,7 @@ pub fn layer_stages(img: &RgbaImage, cfg: &Config, doc_dim: u32) -> Option<Stage
 
     // The feature tile shows the merged partition palette selection runs on,
     // obtained at 1x source exactly as layer_palette does.
-    let merged = palette::feature_partition(&src, cfg);
+    let merged = palette::Partition::build(&src, cfg);
     let features_img = feature_image(&merged.labels);
 
     let (alpha, flat, quant_rgb, regs) =
@@ -267,12 +267,8 @@ pub fn layer_stages(img: &RgbaImage, cfg: &Config, doc_dim: u32) -> Option<Stage
             (alpha, flat.clone(), flat, regs)
         } else {
             let prep = raster::prepare(&src, cfg);
-            let pal = palette::select_features(
-                &palette::group_features(&merged.features, cfg, doc_dim),
-                cfg,
-                doc_dim,
-            );
-            let mut quant = palette::remap(&prep.flat, &prep.alpha, &pal);
+            let plan = merged.plan(cfg, doc_dim);
+            let mut quant = palette::remap_constrained(&prep.flat, &prep.alpha, &plan, cfg.scale);
             if cfg.color_cleanup > 0 {
                 quant = palette::label_smooth(&quant, &prep.alpha, cfg.color_cleanup);
             }
@@ -336,11 +332,11 @@ fn region_image(regs: &[regions::Region], w: u32, h: u32) -> RgbaImage {
 fn feature_image(labels: &palette::FeatureLabels) -> RgbaImage {
     let mut out = RgbaImage::new(labels.w, labels.h);
     for (i, &f) in labels.at.iter().enumerate() {
-        if f == u32::MAX {
+        if f == palette::FeatureId::NONE {
             continue;
         }
         let (x, y) = (i as u32 % labels.w, i as u32 / labels.w);
-        out.put_pixel(x, y, hashed_color(f));
+        out.put_pixel(x, y, hashed_color(f.0));
     }
     out
 }

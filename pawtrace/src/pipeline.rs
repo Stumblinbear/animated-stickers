@@ -47,10 +47,10 @@ pub fn run(
         let prep = timing::PREP.time(|| raster::prepare(&src, cfg));
         // detail normalizes against the document, not the crop: a tiny layer
         // would otherwise derive a palette floor larger than itself (README).
-        let pal = timing::PALETTE
-            .time(|| palette::layer_palette(&src, cfg, doc_dim));
+        let plan = timing::PALETTE
+            .time(|| palette::Partition::build(&src, cfg).plan(cfg, doc_dim));
         let quant = timing::REMAP.time(|| {
-            let quant = palette::remap(&prep.flat, &prep.alpha, &pal);
+            let quant = palette::remap_constrained(&prep.flat, &prep.alpha, &plan, cfg.scale);
             if cfg.color_cleanup > 0 {
                 palette::label_smooth(&quant, &prep.alpha, cfg.color_cleanup)
             } else {
@@ -706,8 +706,8 @@ mod tests {
         let cropped = run(&img, &cfg, doc_dim, (0, 0)).unwrap();
 
         let prep = raster::prepare(&img, &cfg);
-        let pal = palette::layer_palette(&img, &cfg, doc_dim);
-        let mut quant = palette::remap(&prep.flat, &prep.alpha, &pal);
+        let plan = palette::Partition::build(&img, &cfg).plan(&cfg, doc_dim);
+        let mut quant = palette::remap_constrained(&prep.flat, &prep.alpha, &plan, cfg.scale);
         if cfg.color_cleanup > 0 {
             quant = palette::label_smooth(&quant, &prep.alpha, cfg.color_cleanup);
         }
