@@ -21,11 +21,18 @@ visioncortex = "0.8"
 name = "perf"
 required-features = ["preview"]
 
+[[example]]
+name = "uishot"
+required-features = ["uishot"]
+
 [features]
 default = []
 gui = ["dep:iced", "dep:iced_aw", "dep:rfd", "dep:resvg", "dep:lru", "iced/web-colors"]
 pdf = ["dep:svg2pdf", "dep:usvg"]
 preview = ["dep:resvg"]
+# Headless snapshotting of the GUI: pulls in iced_test's software renderer and
+# exposes the app state and its view tree to the `uishot` example.
+uishot = ["gui", "dep:iced_test"]
 
 [dependencies.iced]
 version = "0.14"
@@ -56,6 +63,10 @@ optional = true
 
 [dependencies.resvg]
 version = "0.45"
+optional = true
+
+[dependencies.iced_test]
+version = "0.14"
 optional = true
 
 # The full trace + rasterize pipeline is unusably slow at opt-level 0, so

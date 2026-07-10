@@ -261,6 +261,25 @@ fn folder_of(path: &Path) -> PathBuf {
 }
 
 impl App {
+    /// Builds an app with `path` opened as its only document, focused with its
+    /// top layer selected, for headless snapshotting. Runs only the synchronous
+    /// focus steps; the compute pipeline never starts, so the stage and preview
+    /// images stay empty and the panels show their loading state.
+    #[cfg(feature = "uishot")]
+    pub(super) fn with_document(path: &Path) -> anyhow::Result<Self> {
+        let doc = super::doc::load_doc(path)?;
+        let mut app = Self::default();
+        app.docs.push(doc);
+        app.ensure_project(0);
+        app.selected_doc = 0;
+        app.docs[0].session.initialized = true;
+        let top = LayerId(app.docs[0].layers.len().saturating_sub(1));
+        // Only the state mutations matter here; the returned compute Task is
+        // dropped unpolled, which the iced runtime would otherwise drive.
+        let _ = app.select_layer(top);
+        Ok(app)
+    }
+
     pub fn doc(&self) -> Option<&Doc> {
         self.docs.get(self.selected_doc)
     }

@@ -22,6 +22,11 @@ use app::App;
 use iced::Task;
 use msg::{FileMsg, Msg, UiMsg};
 
+#[cfg(feature = "uishot")]
+mod snapshot;
+#[cfg(feature = "uishot")]
+pub use snapshot::{write_snapshot, Scene};
+
 pub fn run(initial: Vec<std::path::PathBuf>) -> iced::Result {
     iced::application(
         move || (App::default(), Task::done(Msg::File(FileMsg::Opened(initial.clone())))),
