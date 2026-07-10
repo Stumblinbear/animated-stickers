@@ -255,7 +255,7 @@ pub fn layer_stages(img: &RgbaImage, cfg: &Config, doc_dim: u32) -> Option<Stage
     let pins = pipeline::scale_pins(&cfg.pins, (ox, oy), cfg.scale, (src.width(), src.height()));
 
     // The feature tile shows the merged partition palette selection runs on,
-    // obtained at 1x source exactly as layer_palette does.
+    // obtained at 1x source exactly as the pipeline does.
     let merged = palette::Partition::build(&src, cfg);
     let features_img = feature_image(&merged.labels);
 

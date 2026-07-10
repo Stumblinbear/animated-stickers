@@ -130,6 +130,7 @@ pub(super) fn stream(job: StageJob) -> Task<Msg> {
                     let mut part = (*detect).clone();
                     part.merge_shades(&cfg);
                     part.fold_residue();
+                    part.fold_rim_residue();
                     let plan = part.plan(&cfg);
                     let mut q = palette::remap_constrained(&prep.flat, &prep.alpha, &plan, cfg.scale);
                     if cfg.color_cleanup > 0 {

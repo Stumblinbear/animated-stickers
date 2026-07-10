@@ -51,6 +51,23 @@ impl Lab {
     }
 }
 
+/// Max sRGB channel under which an achromatic color counts as black ink;
+/// adjacent ink features union regardless of OKLab distance, whose cube root
+/// inflates imperceptible near-black steps to ΔE 0.05-0.13, past any workable
+/// duplicate threshold. Inner-ear strokes measure up to [30,30,30].
+pub const INK_BLACK_ZONE: u8 = 30;
+
+/// Max sRGB channel spread for a color to count as ink. Ink is dark AND
+/// neutral: a chromatic dark like the brown outline [31,9,0] (spread 22+) is
+/// authored linework in another color and must never union with black.
+pub const INK_SPREAD: u8 = 8;
+
+/// Whether `m` counts as black ink under [`INK_BLACK_ZONE`]/[`INK_SPREAD`].
+pub fn is_ink(m: [u8; 3]) -> bool {
+    let (hi, lo) = (m[0].max(m[1]).max(m[2]), m[0].min(m[1]).min(m[2]));
+    hi <= INK_BLACK_ZONE && hi - lo <= INK_SPREAD
+}
+
 /// Union-find over dense u32 ids with path halving. Unions settle the root on
 /// the LOWER member id, which keeps every consumer's output in first-encounter
 /// order deterministically.

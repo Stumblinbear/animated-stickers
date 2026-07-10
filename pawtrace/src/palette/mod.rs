@@ -10,6 +10,7 @@ mod common;
 mod detect;
 mod merge;
 mod remap;
+mod residue;
 mod select;
 
 pub use remap::{label_smooth, remap_constrained, RemapPlan};
@@ -81,13 +82,15 @@ impl Partition {
     }
 
     /// The merged partition palette selection runs on: fine detection,
-    /// cliff-bounded consolidation at `cfg.shade_split`, then indistinct
-    /// cleanup. Visualization and digest harnesses build the same partition,
-    /// so their downstream stages match the palette the pipeline builds.
+    /// cliff-bounded consolidation at `cfg.shade_split`, indistinct cleanup,
+    /// then the rim-residue fold. Visualization and digest harnesses build
+    /// the same partition, so their downstream stages match the palette the
+    /// pipeline builds.
     pub fn build(src: &RgbaImage, cfg: &Config) -> Partition {
         let mut part = Partition::detect(src, cfg);
         part.merge_shades(cfg);
         part.fold_residue();
+        part.fold_rim_residue();
         part
     }
 

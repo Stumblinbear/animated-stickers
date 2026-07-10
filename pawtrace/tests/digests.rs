@@ -110,7 +110,11 @@ fn trace_digest(colors: &[(String, Vec<pawtrace::trace::TracedPath>)]) -> String
 }
 
 /// The four digests for one layer, replicating `pipeline::run`'s stages.
-fn layer_digests(img: &image::RgbaImage, cfg: &pawtrace::config::Config, doc_dim: u32) -> LayerDigests {
+fn layer_digests(
+    img: &image::RgbaImage,
+    cfg: &pawtrace::config::Config,
+    doc_dim: u32,
+) -> LayerDigests {
     let empty = || Fnv::new().hex();
     let Some((src, ox, oy)) = pipeline::crop_to_alpha(img, cfg) else {
         return LayerDigests {

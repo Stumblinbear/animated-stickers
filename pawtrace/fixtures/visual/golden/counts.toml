@@ -23,12 +23,12 @@ paths = 122
 anchors = 1293
 
 [happy_king]
-paths = 99
-anchors = 1101
+paths = 98
+anchors = 1071
 
 [mad_king]
-paths = 99
-anchors = 1080
+paths = 98
+anchors = 1053
 
 [seff_arm]
 paths = 8

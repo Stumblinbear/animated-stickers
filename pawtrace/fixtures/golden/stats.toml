@@ -23,12 +23,12 @@ paths = 122
 cubics = 1293
 
 [happy_king]
-paths = 99
-cubics = 1101
+paths = 98
+cubics = 1071
 
 [mad_king]
-paths = 99
-cubics = 1080
+paths = 98
+cubics = 1053
 
 [seff_arm]
 paths = 8

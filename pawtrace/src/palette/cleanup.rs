@@ -1,7 +1,7 @@
 //! Indistinct cleanup: absorbs the resample and anti-alias residue the cliff
 //! merge leaves behind into an adjacent neighbor.
 
-use super::common::{absorb, boundary_edge_counts, Lab, UnionFind};
+use super::common::{absorb, boundary_edge_counts, is_ink, Lab, UnionFind};
 use super::{Feature, FeatureId, FeatureLabels, Partition};
 use std::collections::HashMap;
 
@@ -32,17 +32,6 @@ const RIBBON_END_MARGIN: f32 = 0.075;
 /// class tops out at 14 px (a 1x14 seam strip) and the kept class starts at
 /// 15 px (the smallest Bed crease).
 const RIBBON_SHELTER_FLOOR: u32 = 15;
-
-/// Max sRGB channel under which an achromatic feature counts as black ink;
-/// adjacent ink features union regardless of OKLab distance, whose cube root
-/// inflates imperceptible near-black steps to ΔE 0.05-0.13, past any workable
-/// duplicate threshold. Inner-ear strokes measure up to [30,30,30].
-const INK_BLACK_ZONE: u8 = 30;
-
-/// Max sRGB channel spread for a color to count as ink. Ink is dark AND
-/// neutral: a chromatic dark like the brown outline [31,9,0] (spread 22+) is
-/// authored linework in another color and must never union with black.
-const INK_SPREAD: u8 = 8;
 
 /// Compact-size floor: the bbox diagonal in source px below which a feature
 /// is a speck and folds into its neighbor.
@@ -81,10 +70,9 @@ impl Partition {
     ///   stripes sit at ΔE ~0.06, the cheek fur-depth highlight at ~0.037.
     ///
     /// Separately, same ink is an equivalence: every pair of ADJACENT
-    /// near-black features (each sRGB channel at most [`INK_BLACK_ZONE`],
-    /// where the cube root makes imperceptible steps read as large ΔE) unions
-    /// into one feature, so an outline network stays whole across its AA
-    /// slivers.
+    /// near-black features (dark and neutral, where the cube root makes
+    /// imperceptible steps read as large ΔE) unions into one feature, so an
+    /// outline network stays whole across its AA slivers.
     ///
     /// A feature absorbs into its salient parent: the most-similar-color
     /// adjacent neighbor of strictly greater area. Absorption therefore
@@ -122,10 +110,7 @@ fn fold(features: &[Feature], labels: &FeatureLabels) -> (Vec<Feature>, Vec<Feat
     // feature of its own.
     let mut keep = vec![false; n];
     let mut nearest = vec![FeatureId::NONE; n];
-    let dark = |m: [u8; 3]| {
-        let (hi, lo) = (m[0].max(m[1]).max(m[2]), m[0].min(m[1]).min(m[2]));
-        hi <= INK_BLACK_ZONE && hi - lo <= INK_SPREAD
-    };
+    let dark = is_ink;
     for i in 0..n {
         let (mut best, mut tgt) = (f32::MAX, FeatureId::NONE);
         for &(j, _) in &adjw[i] {
