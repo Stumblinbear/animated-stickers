@@ -267,7 +267,7 @@ pub fn layer_stages(img: &RgbaImage, cfg: &Config, doc_dim: u32) -> Option<Stage
             (alpha, flat.clone(), flat, regs)
         } else {
             let prep = raster::prepare(&src, cfg);
-            let plan = merged.plan(cfg, doc_dim);
+            let plan = merged.plan(cfg);
             let mut quant = palette::remap_constrained(&prep.flat, &prep.alpha, &plan, cfg.scale);
             if cfg.color_cleanup > 0 {
                 quant = palette::label_smooth(&quant, &prep.alpha, cfg.color_cleanup);

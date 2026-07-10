@@ -12,9 +12,10 @@ use crate::config::Config;
 /// goldens (soft fur highlight vs base, 0.037).
 const FEATURE_DEDUP: f32 = 0.015;
 
-/// A group's aggregate area must reach this many detail areas to earn a
-/// palette slot when no single member does.
-const AGGREGATE_EVIDENCE: f32 = 4.0;
+/// Area floor (source px) for a feature to join grouping at all. Purely
+/// anti-explosion: keeps degenerate slivers from blowing up the O(F*G)
+/// grouping, not an evidence gate.
+const GROUP_PRUNE: u32 = 3;
 
 /// Features of one authored color, aggregated as a palette candidate.
 #[derive(Debug, Clone)]
@@ -31,14 +32,8 @@ pub struct FeatureGroup {
 /// so a color drawn as many features (spots, stripes) pools its evidence.
 /// Groups come out in salience order: largest member desc, then aggregate
 /// desc, then color.
-pub fn group_features(features: &[Feature], cfg: &Config, dim: u32) -> Vec<FeatureGroup> {
-    let scale2 = (cfg.scale * cfg.scale).max(1) as f32;
-    let detail_src = cfg.detail_area_scaled(dim) / scale2;
-    // Slivers of a few px are resample fringe. They cannot found a palette
-    // color, and pooling tens of thousands of them would both fabricate
-    // aggregate evidence for blend colors and blow up the O(F*G) grouping.
-    let prune = (detail_src / 8.0).max(3.0);
-    let mut feats: Vec<&Feature> = features.iter().filter(|f| f.area as f32 >= prune).collect();
+pub fn group_features(features: &[Feature]) -> Vec<FeatureGroup> {
+    let mut feats: Vec<&Feature> = features.iter().filter(|f| f.area >= GROUP_PRUNE).collect();
     feats.sort_unstable_by_key(|f| (std::cmp::Reverse(f.area), f.mean));
     let mut groups: Vec<FeatureGroup> = Vec::new();
     let mut group_lab: Vec<Lab> = Vec::new();
@@ -66,29 +61,24 @@ pub fn group_features(features: &[Feature], cfg: &Config, dim: u32) -> Vec<Featu
 }
 
 /// Palette slots from grouped features: `cfg.locked` first, unconditionally,
-/// then groups in salience order until `cfg.max_colors`. A group earns a
-/// slot when its largest member covers a detail area (source px) or its
-/// aggregate covers [`AGGREGATE_EVIDENCE`] of them; kept colors dedup at
-/// [`FEATURE_DEDUP`], with no merge radius beyond it.
-pub fn select_features(groups: &[FeatureGroup], cfg: &Config, dim: u32) -> Vec<[u8; 3]> {
-    let scale2 = (cfg.scale * cfg.scale).max(1) as f32;
-    let detail_src = cfg.detail_area_scaled(dim) / scale2;
+/// then every group in salience order, deduped at [`FEATURE_DEDUP`] (a group
+/// that near-duplicates a kept color pulls from it: its regions remap there).
+/// There is no area floor: the constrained remap confines each color to its
+/// own features, so a small authored mark costs one slot and cannot bleed.
+/// Over `cfg.max_colors`, the least distinct color is evicted first: the
+/// non-locked entry with the smallest OKLab gap to its nearest surviving
+/// neighbor, whose regions then degrade onto that neighbor.
+pub fn select_features(groups: &[FeatureGroup], cfg: &Config) -> Vec<[u8; 3]> {
     let mut palette: Vec<[u8; 3]> = Vec::new();
+    let mut locked_n = 0;
     for &c in &cfg.locked {
         if !palette.contains(&c) {
             palette.push(c);
         }
     }
     let mut kept: Vec<Lab> = palette.iter().map(|&c| Lab::of(c)).collect();
+    locked_n += kept.len();
     for g in groups {
-        if palette.len() >= cfg.max_colors {
-            break;
-        }
-        if (g.largest as f32) < detail_src
-            && (g.aggregate as f32) < AGGREGATE_EVIDENCE * detail_src
-        {
-            continue;
-        }
         let l = Lab::of(g.color);
         if kept.iter().any(|&k| l.dist(k) < FEATURE_DEDUP) {
             continue;
@@ -96,11 +86,23 @@ pub fn select_features(groups: &[FeatureGroup], cfg: &Config, dim: u32) -> Vec<[
         palette.push(g.color);
         kept.push(l);
     }
-    // A layer smaller than the detail floor still needs one color to remap
-    // to, as the histogram path guarantees with its top entry.
-    if palette.is_empty() {
-        if let Some(g) = groups.first() {
-            palette.push(g.color);
+    while palette.len() > cfg.max_colors.max(locked_n) {
+        let nearest_gap = |i: usize| {
+            kept.iter()
+                .enumerate()
+                .filter(|&(j, _)| j != i)
+                .map(|(_, &k)| kept[i].dist(k))
+                .fold(f32::MAX, f32::min)
+        };
+        // Locked colors occupy the front of the vec and are never evicted.
+        let evict = (locked_n..palette.len())
+            .min_by(|&a, &b| nearest_gap(a).partial_cmp(&nearest_gap(b)).unwrap());
+        match evict {
+            Some(i) => {
+                palette.remove(i);
+                kept.remove(i);
+            }
+            None => break,
         }
     }
     palette

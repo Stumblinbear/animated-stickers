@@ -27,10 +27,14 @@ pub struct RemapPlan {
 impl Partition {
     /// Builds the palette and the source-pixel feature-color raster for
     /// [`remap_constrained`] from this merged partition (its labels pin each
-    /// 1x source pixel to a feature). `dim` = max document W/H, normalizing
-    /// the detail floor against the document.
-    pub fn plan(&self, cfg: &Config, dim: u32) -> RemapPlan {
-        let palette = select_features(&group_features(&self.features, cfg, dim), cfg, dim);
+    /// 1x source pixel to a feature).
+    pub fn plan(&self, cfg: &Config) -> RemapPlan {
+        self.plan_with(select_features(&group_features(&self.features), cfg))
+    }
+
+    /// [`Partition::plan`] with the palette supplied instead of selected, for
+    /// harnesses and overrides that choose the colors themselves.
+    pub fn plan_with(&self, palette: Vec<[u8; 3]>) -> RemapPlan {
         let pal_lab: Vec<Lab> = palette.iter().map(|&c| Lab::of(c)).collect();
         let feat_pal: Vec<u32> = self
             .features

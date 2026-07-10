@@ -77,7 +77,7 @@ fn run_layer(
             let prep = raster::prepare(&src, cfg);
             times.add(1, t);
             let t = Instant::now();
-            let plan = palette::Partition::build(&src, cfg).plan(cfg, doc_dim);
+            let plan = palette::Partition::build(&src, cfg).plan(cfg);
             times.add(2, t);
             let t = Instant::now();
             let quant = palette::remap_constrained(&prep.flat, &prep.alpha, &plan, cfg.scale);

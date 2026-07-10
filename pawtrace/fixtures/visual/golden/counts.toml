@@ -3,41 +3,41 @@ paths = 6
 anchors = 105
 
 [blushiboi]
-paths = 126
-anchors = 1495
+paths = 130
+anchors = 1521
 
 [buck_bed]
 paths = 12
 anchors = 165
 
 [buck_deer_head]
-paths = 61
-anchors = 571
+paths = 62
+anchors = 576
 
 [buck_deer_leg]
 paths = 19
-anchors = 235
+anchors = 239
 
 [fingagun]
-paths = 118
-anchors = 1275
+paths = 122
+anchors = 1293
 
 [happy_king]
 paths = 99
-anchors = 1097
+anchors = 1101
 
 [mad_king]
-paths = 98
-anchors = 1073
+paths = 99
+anchors = 1080
 
 [seff_arm]
 paths = 8
 anchors = 66
 
 [seff_face]
-paths = 55
-anchors = 549
+paths = 63
+anchors = 571
 
 [seff_head]
-paths = 79
-anchors = 1018
+paths = 92
+anchors = 1111
