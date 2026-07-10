@@ -93,7 +93,7 @@ pub struct FullResult {
 pub enum StagePart {
     Source(Img),
     Flat(Img, Arc<crate::raster::Prepared>),
-    /// The RTV feature detection computed this run, memoized under the `detect`
+    /// The feature detection computed this run, memoized under the `detect`
     /// key for the palette build of later palette-parameter edits.
     Detect(Arc<crate::palette::Partition>),
     /// The merge plan computed this run, memoized under the `regions_view`

@@ -1,5 +1,5 @@
 //! Fine feature detection: color-uniform component growing over the opaque
-//! pixels of the 1x source crop, guided by its RTV-smoothed copy.
+//! pixels of the 1x source crop.
 
 use super::common::{Lab, UnionFind};
 use super::{Feature, FeatureId, FeatureLabels, Partition};
@@ -50,18 +50,14 @@ impl Comp {
 }
 
 /// Grows the color-uniform components of [`Partition::detect`] over `src`'s
-/// opaque pixels, taking `smooth` (same dimensions as `src`) as the guide
-/// whose OKLab drives growing and each component's mean cap, while every
-/// feature's reported color is read from the real `src` pixels.
-/// [`Partition::detect`] passes the [`super::rtv_smooth`] output.
-pub(super) fn grow_features(src: &RgbaImage, smooth: &RgbaImage, cfg: &Config) -> Partition {
+/// opaque pixels.
+pub(super) fn grow_features(src: &RgbaImage, cfg: &Config) -> Partition {
     // Squared distances: the tolerance tests run up to three times per pixel,
     // and squaring the threshold once saves the sqrt in each.
     let tol2 = DETECT_TOL * DETECT_TOL;
     let (w, h) = src.dimensions();
     let (wu, hu) = (w as usize, h as usize);
     let raw = src.as_raw();
-    let sraw = smooth.as_raw();
     let mut label: Vec<u32> = vec![u32::MAX; wu * hu];
     let mut comps: Vec<Comp> = Vec::new();
     let mut uf = UnionFind::new(0);
@@ -71,11 +67,8 @@ pub(super) fn grow_features(src: &RgbaImage, smooth: &RgbaImage, cfg: &Config) -
             if raw[i * 4 + 3] < cfg.alpha_threshold {
                 continue;
             }
-            // rgb is the real source pixel that fixes the feature's reported
-            // color; lab comes from the smoothed pixel so growing and the mean
-            // it caps against ignore edge speckle.
             let rgb = [raw[i * 4], raw[i * 4 + 1], raw[i * 4 + 2]];
-            let lab = Lab::of([sraw[i * 4], sraw[i * 4 + 1], sraw[i * 4 + 2]]);
+            let lab = Lab::of(rgb);
             let mut joined: Option<u32> = None;
             for ni in [x.checked_sub(1).map(|x| y * wu + x), y.checked_sub(1).map(|y| y * wu + x)]
                 .into_iter()

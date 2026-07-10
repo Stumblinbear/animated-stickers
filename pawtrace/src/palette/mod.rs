@@ -11,11 +11,9 @@ mod detect;
 mod merge;
 mod remap;
 mod select;
-mod smooth;
 
 pub use remap::{label_smooth, remap_constrained, RemapPlan};
 pub use select::{group_features, select_features, FeatureGroup};
-pub use smooth::rtv_smooth;
 
 use crate::config::Config;
 use image::RgbaImage;
@@ -74,15 +72,12 @@ pub struct Partition {
 impl Partition {
     /// Color-uniform connected components (4-connectivity) over the opaque
     /// pixels of the 1x source crop `src`, grown under a fine tolerance.
-    /// Components come out in first-encounter scan order. Growing runs on an
-    /// RTV-smoothed copy of `src`, so compression and anti-alias fringe does
-    /// not spawn a speckle feature per artifact pixel; each feature's mean
-    /// color is taken from the original `src` pixels so authored fills stay
-    /// exact, and callers downstream of the palette keep operating on the
-    /// original pixels.
+    /// Components come out in first-encounter scan order. Deliberately
+    /// over-segmented: compression and anti-alias fringe spawns fragment
+    /// features freely, and [`Partition::merge_shades`] plus
+    /// [`Partition::fold_residue`] consolidate them.
     pub fn detect(src: &RgbaImage, cfg: &Config) -> Partition {
-        let smooth = rtv_smooth(src, cfg);
-        detect::grow_features(src, &smooth, cfg)
+        detect::grow_features(src, cfg)
     }
 
     /// The merged partition palette selection runs on: fine detection,
