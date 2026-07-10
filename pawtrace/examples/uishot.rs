@@ -3,11 +3,10 @@
 //! which renders `App::view()` through iced_test's headless renderer, then
 //! decodes each PNG to confirm it is non-trivial.
 //!
-//! Run: `cargo run --features uishot --example uishot [output_dir]`.
+//! Run: `cargo run --features gui --example uishot [output_dir]`.
 //!
-//! Two states are captured: the empty startup screen, and a document loaded
-//! from a fixture. The loaded state's panels populate but its preview and stage
-//! images stay blank; the compute pipeline is async and a headless render does
+//! Document-loaded scenes populate the panels, but their preview and stage
+//! images stay blank. The compute pipeline is async and a headless render does
 //! not drive it.
 
 use std::path::{Path, PathBuf};
@@ -19,8 +18,8 @@ use pawtrace::gui::{write_snapshot, Scene};
 /// has no fixed window size; this is a representative editing size.
 const CANVAS: (f32, f32) = (1600.0, 1000.0);
 
-/// Fixtures tried in order for the loaded-document shot; the first that exists
-/// is used, so a checkout without them still produces the empty-state shot.
+/// Fixtures tried in order for the loaded-document shots; the first that exists
+/// is used, so a checkout without them still produces the document-free shots.
 const FIXTURES: &[&str] = &["fixtures/blushiboi.psd", "fixtures/happy king.psd"];
 
 fn main() -> Result<()> {
@@ -31,15 +30,24 @@ fn main() -> Result<()> {
     std::fs::create_dir_all(&out_dir)
         .with_context(|| format!("create output dir {}", out_dir.display()))?;
 
-    let empty = write_snapshot(&out_dir, "empty", Scene::Empty, CANVAS)?;
-    verify(&empty)?;
+    for (name, scene) in [("empty", Scene::Empty), ("welcome", Scene::Welcome)] {
+        let path = write_snapshot(&out_dir, name, scene, CANVAS)?;
+        verify(&path)?;
+    }
 
     match FIXTURES.iter().map(Path::new).find(|p| p.exists()) {
         Some(fixture) => {
-            let doc = write_snapshot(&out_dir, "document", Scene::Document(fixture), CANVAS)?;
-            verify(&doc)?;
+            for (name, scene) in [
+                ("document", Scene::Document(fixture)),
+                ("phase", Scene::Phase(fixture)),
+                ("failure", Scene::Failure(fixture)),
+                ("library", Scene::Library(fixture)),
+            ] {
+                let path = write_snapshot(&out_dir, name, scene, CANVAS)?;
+                verify(&path)?;
+            }
         }
-        None => eprintln!("no fixture found; skipping the loaded-document shot"),
+        None => eprintln!("no fixture found; skipping the loaded-document shots"),
     }
 
     Ok(())

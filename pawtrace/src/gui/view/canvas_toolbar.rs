@@ -1,25 +1,13 @@
-//! The strip beneath the preview: tool group, a Trace sub-view switch, the
-//! view composition readout, and zoom controls.
+//! The slim bar below the preview: the view-composition readout and the zoom
+//! controls.
 
 use super::{icons, theme, widgets};
 use crate::gui::app::App;
-use crate::gui::msg::{Msg, StripView, Tool, TraceView, UiMsg};
-use iced::widget::{button, container, row, space, text};
+use crate::gui::msg::{Msg, StripView, UiMsg};
+use iced::widget::{button, container, row, space};
 use iced::{Alignment, Element, Length};
 
-pub fn canvas_toolbar(app: &App) -> Element<'_, Msg> {
-    let tool = app.tool;
-    let tools = row![
-        tool_button(icons::POINTER, Tool::Select, tool),
-        tool_button(icons::PIN, Tool::Pin, tool),
-    ]
-    .spacing(4);
-
-    let mut left = row![tools].spacing(14).align_y(Alignment::Center);
-    if app.session().is_some_and(|s| matches!(s.view, StripView::Stage(4))) {
-        left = left.push(trace_switch(app));
-    }
-
+pub fn zoom_bar(app: &App) -> Element<'_, Msg> {
     let readout = widgets::mono(composition(app)).size(11).color(theme::MUTED);
     let zoom_pct = app
         .session()
@@ -48,7 +36,7 @@ pub fn canvas_toolbar(app: &App) -> Element<'_, Msg> {
     .align_y(Alignment::Center);
 
     container(
-        row![left, space().width(Length::Fill), readout, space().width(16), zoom]
+        row![space().width(Length::Fill), readout, space().width(16), zoom]
             .align_y(Alignment::Center)
             .padding([5, 10]),
     )
@@ -57,38 +45,36 @@ pub fn canvas_toolbar(app: &App) -> Element<'_, Msg> {
     .into()
 }
 
-fn tool_button<'a>(glyph: char, this: Tool, active: Tool) -> Element<'a, Msg> {
-    button(icons::icon(glyph).size(13))
-        .on_press(Msg::Ui(UiMsg::Tool(this)))
-        .style(theme::tool_button(this == active))
-        .padding([4, 7])
-        .into()
-}
-
-fn trace_switch(app: &App) -> Element<'_, Msg> {
-    let tv = app.session().map(|s| s.trace_view).unwrap_or_default();
-    let seg = |label: &'static str, this: TraceView| {
-        button(text(label).size(11))
-            .on_press(Msg::Ui(UiMsg::TraceView(this)))
-            .style(theme::chip(this == tv))
-            .padding([3, 8])
-    };
-    row![
-        seg("Smooth", TraceView::Smooth),
-        seg("Fit", TraceView::Fit),
-        seg("Final", TraceView::Final),
-    ]
-    .spacing(2)
-    .align_y(Alignment::Center)
-    .into()
-}
-
+/// The current preview's composition line: document dimensions and counts on
+/// Document, or the layer, phase, shown sub-view, and a phase-fitting detail
+/// count on a phase view.
 fn composition(app: &App) -> String {
-    let Some(doc) = app.doc() else {
+    let Some(sess) = app.session() else {
         return String::new();
     };
-    let (w, h) = doc.size;
-    let shown = doc.flags.iter().filter(|f| f.visible && f.enabled).count();
-    let excluded = doc.flags.iter().filter(|f| !f.enabled).count();
-    format!("{w} × {h} · {shown} shown · {excluded} excluded")
+    match sess.view {
+        StripView::Document => {
+            let Some(doc) = app.doc() else {
+                return String::new();
+            };
+            let (w, h) = doc.size;
+            let shown = doc.inputs.values().filter(|i| i.visible && i.enabled).count();
+            let excluded = doc.inputs.values().filter(|i| !i.enabled).count();
+            format!("{w} × {h} · {shown} shown · {excluded} excluded")
+        }
+        StripView::Phase(p) => {
+            let layer = app.layer_name().unwrap_or_else(|| "-".into());
+            let sub = app.active_subview().map(|sv| sv.label()).unwrap_or("");
+            let detail = match p {
+                crate::gui::msg::Phase::Colors => {
+                    format!(" · {} colors", sess.stages.palette.len())
+                }
+                crate::gui::msg::Phase::Curves => {
+                    format!(" · {} anchors", sess.stages.simplify_anchor_count)
+                }
+                _ => String::new(),
+            };
+            format!("{layer} · {} → {sub}{detail}", p.label())
+        }
+    }
 }

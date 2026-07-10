@@ -20,8 +20,7 @@ pub(super) use full::export_doc;
 pub(in crate::gui) use memo::{Memo, StageKeys};
 
 use super::msg::Msg;
-
-pub(super) const STAGE_COUNT: usize = 7;
+use super::phases::PerStage;
 
 /// A display handle with the pixel dimensions it was built from.
 #[derive(Debug, Clone)]
@@ -48,16 +47,19 @@ pub(super) struct Shown {
 pub(super) struct StageImages {
     pub(super) source: Option<Img>,
     pub(super) flat: Option<Img>,
-    pub(super) quant: Option<Img>,
+    pub(super) remap: Option<Img>,
     /// Quantized pixels with the alpha mask applied, kept for the
     /// click-to-lock color picker.
     pub(super) quant_px: Option<RgbaImage>,
     pub(super) regions: Option<Img>,
+    /// Trace-fate tint over the segmentation, composited by the fates overlay on
+    /// the Regions view; `None` when every region survives.
+    pub(super) fate_tint: Option<Img>,
     /// Per-region trace fates and floor for the regions hover readout,
     /// aligned with the cached regions.
     pub(super) region_report: Option<regions::RegionReport>,
     /// Smoothed boundary with corner markers, pre-fit.
-    pub(super) smooth: Option<Img>,
+    pub(super) contours: Option<Img>,
     /// Fitted render, pre-simplification.
     pub(super) render: Option<Img>,
     /// Final render, after the simplify pass.
@@ -76,13 +78,23 @@ pub struct DocStats {
     pub anchors: usize,
 }
 
-/// Full-preview result: the composite image, totals, per-layer anchor counts,
-/// and the pre-transform traces newly computed this run, for the memo.
+/// A failed full render: the human-readable message and, when the failure was
+/// one layer's trace, which layer it came from. `layer` is `None` for a failure
+/// not tied to a specific layer, such as the final composite render.
+#[derive(Debug, Clone)]
+pub struct FullError {
+    pub layer: Option<super::ids::LayerId>,
+    pub msg: String,
+}
+
+/// Full-preview result: the composite image, totals, per-layer derived render
+/// outputs keyed by layer id, and the pre-transform traces newly computed this
+/// run, for the memo.
 #[derive(Debug, Clone)]
 pub struct FullResult {
     pub(super) img: Img,
     pub(super) stats: DocStats,
-    pub(super) anchors: Vec<usize>,
+    pub(super) outputs: rustc_hash::FxHashMap<super::ids::LayerId, super::doc::LayerOutputs>,
     pub(super) merges: Vec<full::FullMerge>,
 }
 
@@ -99,10 +111,15 @@ pub enum StagePart {
     /// The merge plan computed this run, memoized under the `regions_view`
     /// key for the report, contours, and trace of later runs.
     Plan(Arc<regions::MergePlan>),
-    Quant(Img, RgbaImage, Arc<image::RgbImage>, Arc<Vec<[u8; 3]>>),
-    Regions(Img, usize, regions::RegionReport, Arc<Vec<regions::Region>>),
+    Remap(Img, RgbaImage, Arc<image::RgbImage>, Arc<Vec<[u8; 3]>>),
+    /// Plain segmentation raster, region count, and the regions, memoized under
+    /// the `regions` key. Independent of pins, so a pin edit leaves it untouched.
+    Regions(Img, usize, Arc<Vec<regions::Region>>),
+    /// The fate tint (`None` when every region survives) and the region report,
+    /// refreshed whenever the merge plan changes, including on a pin edit.
+    Fates(Option<Img>, regions::RegionReport),
     /// Smoothed boundary, stored under the fit key.
-    Smooth(Option<Img>),
+    Contours(Option<Img>),
     /// Fitted render, anchor count, and the fitted paths.
     Fit(Option<Img>, usize, Arc<LayerTrace>),
     /// Always the final part: completion is detected by it. Carries the
@@ -116,40 +133,47 @@ impl App {
     /// finishes. One stream in flight at a time: further edits set the dirty
     /// latch and re-spawn on completion.
     pub(super) fn spawn_stages(&mut self) -> Task<Msg> {
-        let doc_idx = self.selected_doc;
-        let Some(doc) = self.docs.get(doc_idx) else {
+        let doc_id = self.selected_doc;
+        let Some(pos) = self.doc_pos(doc_id) else {
             return Task::none();
         };
+        let doc = &self.docs[pos];
         let layer = doc.session.selected_layer;
-        let idx = layer.index();
-        let Some(src) = doc.layers.get(idx) else {
+        let Some(src) = doc.layer(layer) else {
             return self.drain_full_queued();
         };
         let img = src.img.clone();
         let offset = src.offset;
         if doc.session.stages_running {
-            self.docs[doc_idx].session.stages_dirty = true;
+            self.docs[pos].session.stages_dirty = true;
             return Task::none();
         }
         let cfg = doc.session.cfg.clone();
-        let keys = StageKeys::of(&cfg);
+        // Pins are per-layer artist inputs (removed from `cfg`); the worker
+        // needs them for the trace and the keys must fold them in.
+        let pins = doc.inputs.get(&layer).map(|i| i.pins.clone()).unwrap_or_default();
+        let keys = StageKeys::of(&cfg, &pins);
         let stroke_bits = cfg.stroke_width.to_bits();
         let stroke_color = cfg.stroke_color;
         let doc_dim = doc.size.0.max(doc.size.1);
 
         let shown = doc.session.stages.shown.clone();
         let pending = stages::pending(shown.as_ref(), layer, &keys, stroke_bits, stroke_color);
+        // The segmentation raster keys on `regions`; the fates key additionally
+        // on pins, so a pin edit refreshes the tint and report without redrawing
+        // the raster.
+        let refresh_fates = stages::fates_stale(shown.as_ref(), layer, &keys);
         // Nothing changed against the shown images: leave them and clear any
         // stale pending flags without spawning. A full render queued behind
         // this run must still happen (a flag flip re-composites without
         // changing the strip's config), so the latch drains here.
         if pending.iter().all(|&p| !p) {
-            self.docs[doc_idx].session.stage_pending = [false; STAGE_COUNT];
+            self.docs[pos].session.stage_pending = PerStage::from_fn(|_| false);
             return self.drain_full_queued();
         }
 
         let (snap, shape_cache) = {
-            let m = &mut self.docs[doc_idx].session.memo;
+            let m = &mut self.docs[pos].session.memo;
             let snap = stages::Snapshot {
                 prep: m.prep(layer, keys.prep),
                 detect: m.detect(layer, keys.detect),
@@ -167,23 +191,25 @@ impl App {
         self.stages_gen += 1;
         let generation = self.stages_gen;
         {
-            let s = &mut self.docs[doc_idx].session;
+            let s = &mut self.docs[pos].session;
             s.stages_running = true;
             s.stage_pending = pending;
             s.stage_gen = generation;
             s.stage_keys = keys;
         }
         stages::stream(stages::StageJob {
-            doc: doc_idx,
+            doc: doc_id,
             generation,
             img,
             offset,
             doc_dim,
             cfg,
             pending,
+            refresh_fates,
             shown: Shown { layer, keys, stroke_bits, stroke_color },
             snap,
             shape_cache,
+            pins,
         })
     }
 
@@ -202,50 +228,50 @@ impl App {
     /// Recompute the full-document preview off the UI thread; same
     /// one-in-flight + dirty-latch scheme as the stage strip.
     pub(super) fn spawn_full(&mut self) -> Task<Msg> {
-        let doc_idx = self.selected_doc;
-        let Some(doc) = self.docs.get(doc_idx) else {
+        let doc_id = self.selected_doc;
+        let Some(pos) = self.doc_pos(doc_id) else {
             return Task::none();
         };
+        let doc = &self.docs[pos];
         if doc.session.full_busy {
-            self.docs[doc_idx].session.full_dirty = true;
+            self.docs[pos].session.full_dirty = true;
             return Task::none();
         }
         let layers = doc.layers.clone();
-        let flags = doc.flags.clone();
+        let inputs = doc.inputs.clone();
         let size = doc.size;
-        let profiles = self.stack(doc_idx).to_owned();
+        let profiles = self.stack(pos).to_owned();
         let doc_dim = size.0.max(size.1);
         // Snapshot each enabled layer's cached simplify trace, so an unchanged
         // layer is reused rather than re-traced.
         let snap: Vec<Option<Arc<LayerTrace>>> = {
-            let m = &mut self.docs[doc_idx].session.memo;
+            let m = &mut self.docs[pos].session.memo;
             layers
                 .iter()
-                .enumerate()
-                .map(|(i, l)| {
-                    if !flags[i].enabled {
+                .map(|l| {
+                    let inp = &inputs[&l.id];
+                    if !inp.enabled {
                         return None;
                     }
                     let cfg = profiles.resolve(&l.name).0;
-                    m.simplify(super::ids::LayerId(i), StageKeys::of(&cfg).simplify)
+                    m.simplify(l.id, StageKeys::of(&cfg, &inp.pins).simplify)
                 })
                 .collect()
         };
         self.full_gen += 1;
         let generation = self.full_gen;
         {
-            let s = &mut self.docs[doc_idx].session;
+            let s = &mut self.docs[pos].session;
             s.full_busy = true;
             s.full_gen = generation;
         }
         Task::perform(
             async move {
-                let result = full::render_full(&layers, &flags, size, &profiles, doc_dim, snap)
-                    .map_err(|e| e.to_string());
+                let result = full::render_full(&layers, &inputs, size, &profiles, doc_dim, snap);
                 (generation, result)
             },
             move |(generation, result)| {
-                Msg::Compute(super::msg::ComputeMsg::FullReady(doc_idx, generation, result))
+                Msg::Compute(super::msg::ComputeMsg::FullReady(doc_id, generation, result))
             },
         )
     }
@@ -254,36 +280,40 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::gui::doc::{Doc, Layer, LayerFlags};
-    use crate::gui::ids::LayerId;
+    use crate::gui::doc::{Doc, Layer, LayerInputs};
+    use crate::gui::ids::{DocId, LayerId};
 
     #[test]
     fn unchanged_stage_config_still_drains_a_queued_full_render() {
         let mut app = App::default();
+        let lid = LayerId::from_raw(1);
         let layer = Layer {
+            id: lid,
             name: "layer".into(),
             img: RgbaImage::new(4, 4),
             offset: (0, 0),
         };
         let mut doc = Doc {
+            id: DocId::from_raw(0),
             path: "test.png".into(),
             size: (4, 4),
             layers: Arc::new(vec![layer]),
-            flags: vec![LayerFlags::default()],
+            inputs: [(lid, LayerInputs::default())].into_iter().collect(),
             session: Default::default(),
         };
-        // The shown images already reflect the current config, so
-        // spawn_stages will take its nothing-changed early return.
+        // The shown images already reflect the current config for the selected
+        // layer, so spawn_stages will take its nothing-changed early return.
         let s = &mut doc.session;
-        let keys = StageKeys::of(&s.cfg);
+        s.selected_layer = lid;
+        let keys = StageKeys::of(&s.cfg, &[]);
         s.stages.shown = Some(Shown {
-            layer: LayerId(0),
+            layer: lid,
             keys,
             stroke_bits: s.cfg.stroke_width.to_bits(),
             stroke_color: s.cfg.stroke_color,
         });
         app.docs.push(doc);
-        app.selected_doc = 0;
+        app.selected_doc = DocId::from_raw(0);
 
         // A flag flip undone through preview_tasks: config unchanged, full
         // render queued.

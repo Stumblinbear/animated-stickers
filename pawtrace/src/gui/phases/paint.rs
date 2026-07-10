@@ -1,13 +1,19 @@
-//! Stage 2 (Supersample & flatten) settings.
+//! The Paint phase: supersample and flatten the layer into a clean raster.
+//! Owns the phase's sub-views and its inspector section (scale, alpha
+//! threshold, mode filter).
 
-use super::setting::setting;
+use super::SubView;
 use crate::gui::app::App;
 use crate::gui::fields::Field;
 use crate::gui::msg::{EditMsg, Msg};
+use crate::gui::view::inspector::setting::setting;
 use iced::widget::{column, slider};
 use iced::Element;
 
-pub fn stage2(app: &App) -> Element<'_, Msg> {
+pub const SUBVIEWS: &[SubView] = &[SubView::Flatten, SubView::Remap];
+pub const DEFAULT_SUBVIEW: SubView = SubView::Remap;
+
+pub fn inspector(app: &App) -> Element<'_, Msg> {
     let Some(sess) = app.session() else {
         return column![].into();
     };

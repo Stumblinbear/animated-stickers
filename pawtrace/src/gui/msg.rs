@@ -1,9 +1,11 @@
 //! Message types, one sub-enum per interaction domain, and the small shared
 //! enums naming what the preview shows and which tool is active.
 
-use super::compute::{FullResult, StagePart};
+use super::compute::{FullError, FullResult, StagePart};
 use super::fields::Field;
-use super::ids::LayerId;
+use super::ids::{DocId, LayerId};
+use super::phases::SubView;
+use super::tools::{Tool, ToolMsg};
 use crate::profiles::Scope;
 use iced::widget::pane_grid;
 use iced::{keyboard, Point, Vector};
@@ -19,45 +21,67 @@ pub enum Msg {
     Ui(UiMsg),
     Canvas(CanvasMsg),
     Compute(ComputeMsg),
+    Recent(RecentMsg),
     Modifiers(keyboard::Modifiers),
     /// A window frame while something is processing; carries that frame's
     /// instant, which the processing animations read as their clock.
     Tick(Instant),
 }
 
+/// The welcome screen's recent-items panel: which category is shown, the
+/// search filter, and per-item open/pin.
+#[derive(Debug, Clone)]
+pub enum RecentMsg {
+    Tab(RecentTab),
+    Search(String),
+    /// Opens the recent entry at this index in the current filtered list.
+    Open(usize),
+    /// Toggles the pinned state of the recent entry at this index.
+    Pin(usize),
+}
+
+/// The recent panel's two categories.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RecentTab {
+    #[default]
+    Files,
+    Folders,
+}
+
+/// One pipeline phase: the unit the strip switches between and the inspector
+/// groups its settings under.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Phase {
+    Colors,
+    Paint,
+    Shapes,
+    Curves,
+}
+
 /// What the preview shows: the whole-document composite, or the selected
-/// layer's output after one pipeline stage (0-based, `0` = Source).
+/// layer's output for one pipeline phase. The shown sub-view within a phase is
+/// held in [`DocState`], not here, so two `Phase` values compare equal whenever
+/// the same phase is active.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum StripView {
     #[default]
     Document,
-    Stage(usize),
-}
-
-/// The active canvas tool.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum Tool {
-    #[default]
-    Select,
-    Pin,
-}
-
-/// Which render the Trace stage's preview shows.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum TraceView {
-    Smooth,
-    Fit,
-    #[default]
-    Final,
+    Phase(Phase),
 }
 
 #[derive(Debug, Clone)]
 pub enum FileMsg {
     OpenFiles,
     OpenFolder,
+    /// Opens each path as a document and records it as a recent file.
     Opened(Vec<PathBuf>),
+    /// Records a folder as a recent, then scans and opens the art files in it.
+    OpenedFolder(PathBuf),
+    /// Focuses the document at this tab-strip position.
     SelectDoc(usize),
-    CloseDoc(usize),
+    /// Closes a document: the one with this identity, or the selected one when
+    /// `None` (the keyboard shortcut and menu, which cannot name a tab).
+    CloseDoc(Option<DocId>),
     SaveProfiles,
     ExportAll,
 }
@@ -96,7 +120,7 @@ pub enum EditMsg {
 }
 
 /// Profile assignment and library management. `key` values are profile keys;
-/// `layer` values are layer indices in the selected document.
+/// `layer` values are layer ids in the selected document.
 #[derive(Debug, Clone)]
 pub enum ProfileMsg {
     /// Toggles the chip drop-down for a layer row open or shut.
@@ -119,18 +143,32 @@ pub enum ProfileMsg {
     RenameCommit,
     Duplicate(Scope, String),
     Delete(Scope, String),
+    /// Filters the library modal's template list.
+    LibrarySearch(String),
+    /// Imports templates into the global library from a file.
+    ImportLibrary,
+    /// Exports the global library to a file.
+    ExportLibrary,
 }
 
 #[derive(Debug, Clone)]
 pub enum UiMsg {
     View(StripView),
     Tool(Tool),
-    TraceView(TraceView),
-    ExpandStage(usize),
+    /// Selects an intermediate render to show within the active phase.
+    SubView(SubView),
+    /// Clicks an inspector phase section. Toggles the accordion when the section
+    /// is editable, or jumps the view to that phase and unlocks it when it is
+    /// locked (downstream of the viewed phase).
+    ExpandSection(Phase),
     ZoomIn,
     ZoomOut,
     ZoomFit,
     PaneResized(pane_grid::ResizeEvent),
+    /// A parameter edit for the active tool's fly-out.
+    ToolMsg(ToolMsg),
+    /// Clears the current trace failure and re-runs the pipeline.
+    Retry,
 }
 
 /// Interactions published by the preview canvas. Tool points are in the shown
@@ -150,10 +188,12 @@ pub enum CanvasMsg {
     ToolRelease,
 }
 
-/// Background compute results, tagged with the document index they belong to
-/// so a late result lands in the right tab even after the selection moved.
+/// Background compute results, tagged with the [`DocId`] they were computed
+/// for so a late result lands in the right document even after the selection
+/// moved or other tabs closed and shifted, and drops when that document has
+/// itself closed.
 #[derive(Debug, Clone)]
 pub enum ComputeMsg {
-    StagePart(usize, u64, StagePart),
-    FullReady(usize, u64, Result<Box<FullResult>, String>),
+    StagePart(DocId, u64, StagePart),
+    FullReady(DocId, u64, Result<Box<FullResult>, FullError>),
 }

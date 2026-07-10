@@ -4,9 +4,11 @@
 use crate::gui::app::App;
 use crate::gui::compute;
 use crate::gui::doc;
+use crate::gui::ids::DocId;
 use crate::gui::msg::{FileMsg, Msg};
 use crate::profiles;
 use iced::Task;
+use std::path::PathBuf;
 
 pub(super) fn update(app: &mut App, msg: FileMsg) -> Task<Msg> {
     match msg {
@@ -23,53 +25,79 @@ pub(super) fn update(app: &mut App, msg: FileMsg) -> Task<Msg> {
         ),
         FileMsg::OpenFolder => Task::perform(
             async {
-                let Some(dir) = rfd::AsyncFileDialog::new().pick_folder().await else {
-                    return Vec::new();
-                };
-                doc::scan_folder(dir.path())
+                rfd::AsyncFileDialog::new()
+                    .pick_folder()
+                    .await
+                    .map(|d| d.path().to_path_buf())
             },
-            |paths| Msg::File(FileMsg::Opened(paths)),
+            |dir| match dir {
+                Some(d) => Msg::File(FileMsg::OpenedFolder(d)),
+                None => Msg::File(FileMsg::Opened(Vec::new())),
+            },
         ),
         FileMsg::Opened(paths) => {
-            for p in paths {
-                match doc::load_doc(&p) {
-                    Ok(d) => app.docs.push(d),
-                    Err(e) => app.status = format!("{}: {e}", p.display()),
-                }
-            }
-            if app.docs.is_empty() {
-                Task::none()
-            } else {
-                app.select_doc(app.docs.len() - 1)
-            }
+            let opened = load_docs(app, &paths);
+            app.remember_recents(&opened, false);
+            focus_last(app)
+        }
+        FileMsg::OpenedFolder(dir) => {
+            // The folder is the recent, not the files it holds, so batch-opening
+            // it doesn't flood the Files tab with its contents.
+            app.remember_recents(std::slice::from_ref(&dir), true);
+            let files = doc::scan_folder(&dir);
+            load_docs(app, &files);
+            focus_last(app)
         }
         FileMsg::SelectDoc(i) => app.select_doc(i),
-        FileMsg::CloseDoc(i) => close_doc(app, i),
+        FileMsg::CloseDoc(id) => close_doc(app, id),
         FileMsg::SaveProfiles => save_profiles(app),
         FileMsg::ExportAll => export_all(app),
     }
 }
 
-/// Closes document `i` and re-focuses a neighbor, initializing it if it has
-/// not been shown yet. The project tier stays loaded for other open tabs.
-/// `usize::MAX` closes the selected tab, which the keyboard shortcut cannot
-/// name directly.
-fn close_doc(app: &mut App, i: usize) -> Task<Msg> {
-    let i = if i == usize::MAX { app.selected_doc } else { i };
-    if i >= app.docs.len() {
-        return Task::none();
+/// Loads each path as a document, appending the ones that open and reporting
+/// each failure to the status line. Returns the paths that opened.
+fn load_docs(app: &mut App, paths: &[PathBuf]) -> Vec<PathBuf> {
+    let mut opened = Vec::new();
+    for p in paths {
+        match doc::load_doc(p) {
+            Ok(d) => {
+                app.docs.push(d);
+                opened.push(p.clone());
+            }
+            Err(e) => app.status = format!("{}: {e}", p.display()),
+        }
     }
+    opened
+}
+
+/// Focuses the last open document, or does nothing when none are open.
+fn focus_last(app: &mut App) -> Task<Msg> {
+    if app.docs.is_empty() {
+        Task::none()
+    } else {
+        app.select_doc(app.docs.len() - 1)
+    }
+}
+
+/// Closes the document identified by `id`, or the selected one when `None`,
+/// and re-focuses a neighbor, initializing it if it has not been shown yet.
+/// The project tier stays loaded for other open tabs. A no-op when `id` names
+/// no open document.
+fn close_doc(app: &mut App, id: Option<DocId>) -> Task<Msg> {
+    let id = id.unwrap_or(app.selected_doc);
+    let Some(i) = app.doc_pos(id) else {
+        return Task::none();
+    };
     app.docs.remove(i);
     if app.docs.is_empty() {
-        app.selected_doc = 0;
+        // `selected_doc` now resolves to no document; the welcome screen shows.
         return Task::none();
     }
-    if app.selected_doc >= app.docs.len() {
-        app.selected_doc = app.docs.len() - 1;
-    } else if app.selected_doc > i {
-        app.selected_doc -= 1;
-    }
-    app.select_doc(app.selected_doc)
+    // Re-focus: the selected document if it survived the close, otherwise the
+    // neighbor that slid into the closed tab's slot (clamped to the new last).
+    let pos = app.doc_pos(app.selected_doc).unwrap_or_else(|| i.min(app.docs.len() - 1));
+    app.select_doc(pos)
 }
 
 fn save_profiles(app: &mut App) -> Task<Msg> {
@@ -81,12 +109,9 @@ fn save_profiles(app: &mut App) -> Task<Msg> {
             Err(e) => errors.push(e.to_string()),
         }
     }
-    match profiles::global_path() {
-        Some(p) => match write_tier(&app.global_profiles, &p) {
-            Ok(()) => saved += 1,
-            Err(e) => errors.push(e.to_string()),
-        },
-        None => errors.push("no APPDATA or HOME for the global library".into()),
+    match profiles::save_global(&app.global_profiles) {
+        Ok(()) => saved += 1,
+        Err(e) => errors.push(e.to_string()),
     }
     app.status = if errors.is_empty() {
         format!("saved {saved} profile file(s)")

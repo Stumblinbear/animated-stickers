@@ -3,7 +3,7 @@
 
 use super::{theme, widgets};
 use crate::gui::app::App;
-use crate::gui::msg::{EditMsg, FileMsg, Msg, UiMsg};
+use crate::gui::msg::{EditMsg, FileMsg, Msg, ProfileMsg, UiMsg};
 use iced::widget::{button, row, space, text};
 use iced::{Element, Length, Renderer, Theme};
 use iced_aw::menu::{Item, Menu, MenuBar};
@@ -17,7 +17,7 @@ pub fn menu_bar(app: &App) -> Element<'_, Msg> {
         leaf("Open folder", "Ctrl+Shift+O", Msg::File(FileMsg::OpenFolder)),
         leaf("Export all (JSON)", "Ctrl+E", Msg::File(FileMsg::ExportAll)),
         leaf("Save profiles", "Ctrl+S", Msg::File(FileMsg::SaveProfiles)),
-        leaf("Close document", "Ctrl+W", Msg::File(FileMsg::CloseDoc(app.selected_doc))),
+        leaf("Close document", "Ctrl+W", Msg::File(FileMsg::CloseDoc(None))),
     ]);
     let undo = if app.can_undo() {
         leaf("Undo", "Ctrl+Z", Msg::Edit(EditMsg::Undo))
@@ -39,7 +39,10 @@ pub fn menu_bar(app: &App) -> Element<'_, Msg> {
         leaf("Zoom in", "Ctrl+=", Msg::Ui(UiMsg::ZoomIn)),
         leaf("Zoom out", "Ctrl+-", Msg::Ui(UiMsg::ZoomOut)),
     ]);
-    let profiles = drop_down(vec![leaf("Save profiles", "Ctrl+S", Msg::File(FileMsg::SaveProfiles))]);
+    let profiles = drop_down(vec![
+        leaf("Manage library\u{2026}", "", Msg::Profile(ProfileMsg::OpenLibrary)),
+        leaf("Save profiles", "Ctrl+S", Msg::File(FileMsg::SaveProfiles)),
+    ]);
     let help = drop_down(vec![disabled("Pawtrace editor")]);
 
     let bar = MenuBar::new(vec![

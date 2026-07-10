@@ -14,7 +14,7 @@ pub(super) fn update(app: &mut App, msg: LayerMsg) -> Task<Msg> {
         LayerMsg::ToggleVisible(i) => {
             let mut changes = Vec::new();
             if let Some(d) = app.doc_mut() {
-                if let Some(f) = d.flags.get_mut(i.index()) {
+                if let Some(f) = d.inputs_mut(i) {
                     let old = f.visible;
                     f.visible = !old;
                     changes.push(FlagChange { layer: i, kind: FlagKind::Visible, old, new: f.visible });
@@ -26,7 +26,7 @@ pub(super) fn update(app: &mut App, msg: LayerMsg) -> Task<Msg> {
         LayerMsg::ToggleEnabled(i) => {
             let mut changes = Vec::new();
             if let Some(d) = app.doc_mut() {
-                if let Some(f) = d.flags.get_mut(i.index()) {
+                if let Some(f) = d.inputs_mut(i) {
                     let old = f.enabled;
                     f.enabled = !old;
                     changes.push(FlagChange { layer: i, kind: FlagKind::Enabled, old, new: f.enabled });
@@ -40,7 +40,7 @@ pub(super) fn update(app: &mut App, msg: LayerMsg) -> Task<Msg> {
             let mut changes = Vec::new();
             if let Some(d) = app.doc_mut() {
                 for i in &sel {
-                    if let Some(f) = d.flags.get_mut(i.index()) {
+                    if let Some(f) = d.inputs_mut(*i) {
                         changes.push(FlagChange { layer: *i, kind: FlagKind::Visible, old: f.visible, new: b });
                         f.visible = b;
                     }
@@ -54,7 +54,7 @@ pub(super) fn update(app: &mut App, msg: LayerMsg) -> Task<Msg> {
             let mut changes = Vec::new();
             if let Some(d) = app.doc_mut() {
                 for i in &sel {
-                    if let Some(f) = d.flags.get_mut(i.index()) {
+                    if let Some(f) = d.inputs_mut(*i) {
                         changes.push(FlagChange { layer: *i, kind: FlagKind::Enabled, old: f.enabled, new: b });
                         f.enabled = b;
                     }
@@ -103,8 +103,17 @@ pub(super) fn click(app: &mut App, i: LayerId) -> Task<Msg> {
         focus(app, primary, sel, primary)
     } else if m.shift() {
         let anchor = sess.select_anchor;
-        let (lo, hi) = (anchor.index().min(i.index()), anchor.index().max(i.index()));
-        let sel: BTreeSet<LayerId> = (lo..=hi).map(LayerId).collect();
+        // Range select is positional: resolve both ends to paint-order slots,
+        // then store the ids that span them so the selection survives reorders.
+        let sel: BTreeSet<LayerId> = app
+            .doc()
+            .and_then(|doc| {
+                let a = doc.layer_pos(anchor)?;
+                let b = doc.layer_pos(i)?;
+                let (lo, hi) = (a.min(b), a.max(b));
+                Some((lo..=hi).filter_map(|p| doc.layers.get(p).map(|l| l.id)).collect())
+            })
+            .unwrap_or_else(|| BTreeSet::from([i]));
         focus(app, i, sel, anchor)
     } else {
         app.select_layer(i)
@@ -116,7 +125,7 @@ pub(super) fn click(app: &mut App, i: LayerId) -> Task<Msg> {
 /// while keeping `selection` and `anchor` as given.
 fn focus(app: &mut App, i: LayerId, selection: BTreeSet<LayerId>, anchor: LayerId) -> Task<Msg> {
     app.clear_stages_on_switch(i);
-    let d = app.selected_doc;
+    let d = app.selected_pos();
     let seed = app
         .layer_name_of(d, i)
         .as_deref()

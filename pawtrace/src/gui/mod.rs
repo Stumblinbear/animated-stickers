@@ -13,7 +13,11 @@ mod edit_target;
 mod fields;
 mod ids;
 mod msg;
+mod overlays;
+mod phases;
 mod profile_ops;
+mod recents;
+mod tools;
 mod undo;
 mod update;
 mod view;
@@ -22,14 +26,18 @@ use app::App;
 use iced::Task;
 use msg::{FileMsg, Msg, UiMsg};
 
-#[cfg(feature = "uishot")]
 mod snapshot;
-#[cfg(feature = "uishot")]
 pub use snapshot::{write_snapshot, Scene};
 
 pub fn run(initial: Vec<std::path::PathBuf>) -> iced::Result {
     iced::application(
-        move || (App::default(), Task::done(Msg::File(FileMsg::Opened(initial.clone())))),
+        move || {
+            let mut app = App::default();
+            // Load the persisted recents only in the real app. Snapshots build
+            // from a pure Default, so this stays out of the headless harness.
+            app.welcome.recents = recents::load();
+            (app, Task::done(Msg::File(FileMsg::Opened(initial.clone()))))
+        },
         update::update,
         view::view,
     )
@@ -85,8 +93,9 @@ fn shortcut(key: iced::keyboard::Key, m: iced::keyboard::Modifiers) -> Option<Ms
         "z" if m.shift() => Msg::Edit(msg::EditMsg::Redo),
         "z" => Msg::Edit(msg::EditMsg::Undo),
         "y" => Msg::Edit(msg::EditMsg::Redo),
-        // The subscription can't see the selected tab; the handler resolves it.
-        "w" => Msg::File(FileMsg::CloseDoc(usize::MAX)),
+        // The subscription can't see the selected tab; `None` lets the handler
+        // resolve it.
+        "w" => Msg::File(FileMsg::CloseDoc(None)),
         // "=" is the unshifted key that prints "+"; accept both so Ctrl++ works
         // whether or not shift is held.
         "=" | "+" => Msg::Ui(UiMsg::ZoomIn),

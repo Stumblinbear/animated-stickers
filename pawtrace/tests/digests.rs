@@ -9,8 +9,6 @@
 //! Re-bless: `UPDATE_GOLDENS=1 cargo test --features preview --test digests`
 //! rewrites `fixtures/golden/digests.toml`.
 
-#![cfg(feature = "preview")]
-
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -125,7 +123,7 @@ fn layer_digests(
             output: empty(),
         };
     };
-    let pins = pipeline::scale_pins(&cfg.pins, (ox, oy), cfg.scale, (src.width(), src.height()));
+    let pins = pipeline::scale_pins(&[], (ox, oy), cfg.scale, (src.width(), src.height()));
 
     let (alpha, regs, quant_digest) =
         if let Some(color) = raster::uniform_color(&src, cfg.alpha_threshold) {

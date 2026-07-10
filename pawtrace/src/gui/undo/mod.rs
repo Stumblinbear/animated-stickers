@@ -44,6 +44,19 @@ pub struct FlagChange {
     pub new: bool,
 }
 
+/// A layer's pin set before and after an edit, captured so a revert restores
+/// the exact prior set. Pins are per-layer document state, so a pin edit is its
+/// own command rather than a tier override change.
+#[derive(Debug, Clone)]
+pub struct PinChange {
+    pub layer: LayerId,
+    pub old: Vec<[u32; 2]>,
+    pub new: Vec<[u32; 2]>,
+    /// A later pin edit merges into an unsealed change (one paint-drag is one
+    /// step); pointer release seals it so the next press starts a new step.
+    sealed: bool,
+}
+
 /// An override block replaced (or created/removed, via `None`): the target and
 /// its before/after values. Boxed within [`Change`] so the large [`Overrides`]
 /// does not inflate every variant.
@@ -104,7 +117,6 @@ pub enum Coalesce {
     None,
     Field(Field),
     StrokeColor,
-    Pins,
 }
 
 impl Coalesce {
@@ -146,24 +158,26 @@ impl Edit {
 pub enum Command {
     Edit(Edit),
     Flags(Vec<FlagChange>),
+    Pins(PinChange),
 }
 
 impl Command {
-    /// Folds `other` into this command when both are same-kind coalescing
-    /// edits, returning `Ok` once absorbed or handing `other` back untouched.
+    /// Folds `other` into this command when both are coalescing edits of the
+    /// same gesture, returning `Ok` once absorbed or handing `other` back
+    /// untouched. Same-field slider drags merge; consecutive unsealed pin edits
+    /// on one layer merge.
     fn merge(&mut self, other: Command) -> Result<(), Command> {
-        let compatible = matches!(
-            (&*self, &other),
-            (Command::Edit(a), Command::Edit(b)) if a.coalesce.mergeable(b.coalesce)
-        );
-        if !compatible {
-            return Err(other);
+        match (self, other) {
+            (Command::Edit(a), Command::Edit(b)) if a.coalesce.mergeable(b.coalesce) => {
+                a.absorb(b);
+                Ok(())
+            }
+            (Command::Pins(a), Command::Pins(b)) if !a.sealed && a.layer == b.layer => {
+                a.new = b.new;
+                Ok(())
+            }
+            (_, other) => Err(other),
         }
-        let (Command::Edit(a), Command::Edit(b)) = (self, other) else {
-            unreachable!("compatibility checked above");
-        };
-        a.absorb(b);
-        Ok(())
     }
 }
 
@@ -188,9 +202,12 @@ fn push(undo: &mut Vec<Command>, redo: &mut Vec<Command>, cmd: Command, cap: usi
 /// Makes the top command of `undo` final: no later edit merges into it, so
 /// the gesture it accumulated stays one undo step.
 fn seal(undo: &mut [Command]) {
-    // Merging requires matching non-`None` tags, so retagging is enough.
-    if let Some(Command::Edit(e)) = undo.last_mut() {
-        e.coalesce = Coalesce::None;
+    // Merging requires matching non-`None` tags (edits) or an unsealed change
+    // (pins), so retagging or setting the seal flag ends the gesture.
+    match undo.last_mut() {
+        Some(Command::Edit(e)) => e.coalesce = Coalesce::None,
+        Some(Command::Pins(p)) => p.sealed = true,
+        _ => {}
     }
 }
 

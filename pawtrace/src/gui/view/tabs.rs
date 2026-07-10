@@ -11,12 +11,24 @@ use iced::{Alignment, Element, Length};
 pub fn tabs(app: &App) -> Element<'_, Msg> {
     let mut r = row![].spacing(2).align_y(Alignment::Center);
     for (i, d) in app.docs.iter().enumerate() {
-        let active = i == app.selected_doc;
+        let active = i == app.selected_pos();
+        // A red warning icon marks a document with a failed layer.
+        let failed = d.session.trace_error.is_some();
+        let (glyph, icon_color) = if failed {
+            (icons::ALERT, theme::DANGER)
+        } else {
+            (icons::FILE, theme::MUTED)
+        };
+        let name_color = if failed {
+            theme::DANGER
+        } else if active {
+            theme::TEXT
+        } else {
+            theme::MUTED
+        };
         let label = row![
-            icons::icon(icons::FILE).size(11).color(theme::MUTED),
-            text(doc::doc_label(&d.path))
-                .size(12)
-                .color(if active { theme::TEXT } else { theme::MUTED }),
+            icons::icon(glyph).size(11).color(icon_color),
+            text(doc::doc_label(&d.path)).size(12).color(name_color),
         ]
         .spacing(6)
         .align_y(Alignment::Center);
@@ -29,7 +41,7 @@ pub fn tabs(app: &App) -> Element<'_, Msg> {
                     .style(theme::flat_button)
                     .padding([4, 8]),
                 button(icons::icon(icons::CLOSE).size(10).color(theme::MUTED))
-                    .on_press(Msg::File(FileMsg::CloseDoc(i)))
+                    .on_press(Msg::File(FileMsg::CloseDoc(Some(d.id))))
                     .style(theme::flat_button)
                     .padding(3),
             ]

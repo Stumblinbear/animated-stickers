@@ -15,7 +15,7 @@ const CHIP_TIP: &str = "Governing profile. Click to reassign this layer, spin \
 
 /// The chip and its drop-down for layer `i`, named `name`.
 pub fn chip<'a>(app: &'a App, i: LayerId, name: &'a str) -> Element<'a, Msg> {
-    let stack = app.stack(app.selected_doc);
+    let stack = app.stack(app.selected_pos());
     let matched = stack.match_name(name);
     let label = matched.clone().unwrap_or_else(|| "default".into());
 
@@ -44,7 +44,7 @@ pub fn chip<'a>(app: &'a App, i: LayerId, name: &'a str) -> Element<'a, Msg> {
 }
 
 fn menu<'a>(app: &'a App, i: LayerId, current: Option<&str>) -> Element<'a, Msg> {
-    let stack = app.stack(app.selected_doc);
+    let stack = app.stack(app.selected_pos());
     let mut keys: Vec<&str> = stack.project.profiles.keys().map(String::as_str).collect();
     for k in stack.global.profiles.keys() {
         if !keys.contains(&k.as_str()) {

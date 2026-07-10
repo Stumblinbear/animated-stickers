@@ -12,8 +12,6 @@
 //! `UPDATE_GOLDENS=1 cargo test --features preview --test golden` rewrites
 //! `stats.toml`.
 
-#![cfg(feature = "preview")]
-
 mod common;
 
 use std::collections::BTreeMap;

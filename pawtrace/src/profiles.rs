@@ -28,8 +28,6 @@ pub struct Overrides {
     pub locked: Option<Vec<String>>,
     pub shade_split: Option<f32>,
     pub shade_noise: Option<f32>,
-    /// Speckle-floor exemption points, document source px.
-    pub pins: Option<Vec<[u32; 2]>>,
     pub scale: Option<u32>,
     pub alpha_threshold: Option<u8>,
     pub alphamax: Option<f64>,
@@ -37,9 +35,6 @@ pub struct Overrides {
     pub seam_slack: Option<f64>,
     pub simplify: Option<f64>,
     pub mode_filter: Option<u32>,
-    /// Aliased to the former `label_smooth` key so older pawtrace.toml
-    /// files still load.
-    #[serde(alias = "label_smooth")]
     pub color_cleanup: Option<u32>,
     pub smoothing: Option<f32>,
     pub absorb_dist: Option<f32>,
@@ -67,9 +62,6 @@ impl Overrides {
         }
         if let Some(v) = self.shade_noise {
             c.shade_noise = v;
-        }
-        if let Some(v) = &self.pins {
-            c.pins = v.clone();
         }
         if let Some(v) = self.scale {
             c.scale = v;
@@ -246,14 +238,9 @@ pub struct ProfileStack {
     pub project: Profiles,
 }
 
-/// The global library's location: %APPDATA%/pawtrace/pawtrace.toml on
-/// Windows, ~/.pawtrace.toml elsewhere.
+/// The global library's file, inside the app's [`data_dir`](crate::paths::data_dir).
 pub fn global_path() -> Option<std::path::PathBuf> {
-    std::env::var_os("APPDATA")
-        .map(|d| std::path::PathBuf::from(d).join("pawtrace").join("pawtrace.toml"))
-        .or_else(|| {
-            std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".pawtrace.toml"))
-        })
+    crate::paths::data_dir().map(|d| d.join("pawtrace.toml"))
 }
 
 /// A borrowed view over a global tier and one project tier.
@@ -355,6 +342,24 @@ pub fn load_global() -> Profiles {
         .unwrap_or_default()
 }
 
+/// Persists the global library to its current location, creating the directory
+/// if needed.
+///
+/// # Errors
+///
+/// Returns an error if no config directory can be located, or if serializing
+/// or writing the file fails.
+pub fn save_global(tier: &Profiles) -> std::io::Result<()> {
+    let path = global_path()
+        .ok_or_else(|| std::io::Error::other("no config directory for the global library"))?;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let s = toml::to_string_pretty(tier)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    std::fs::write(path, s)
+}
+
 impl ProfileStack {
     pub fn load_near(input: &std::path::Path) -> Self {
         Self {
@@ -438,7 +443,6 @@ pub fn diff(base: &Config, cfg: &Config) -> Overrides {
         }),
         shade_split: d(base.shade_split, cfg.shade_split),
         shade_noise: d(base.shade_noise, cfg.shade_noise),
-        pins: (base.pins != cfg.pins).then(|| cfg.pins.clone()),
         scale: d(base.scale, cfg.scale),
         alpha_threshold: d(base.alpha_threshold, cfg.alpha_threshold),
         alphamax: d(base.alphamax, cfg.alphamax),
@@ -463,14 +467,6 @@ pub fn diff(base: &Config, cfg: &Config) -> Overrides {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn legacy_label_smooth_key_still_loads() {
-        let ov: Overrides = toml::from_str("label_smooth = 4").unwrap();
-        assert_eq!(ov.color_cleanup, Some(4));
-        let ov: Overrides = toml::from_str("color_cleanup = 2").unwrap();
-        assert_eq!(ov.color_cleanup, Some(2));
-    }
 
     #[test]
     fn plain_key_is_an_exact_match() {

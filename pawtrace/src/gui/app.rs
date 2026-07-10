@@ -7,18 +7,57 @@
 //! global library plus one project tier per folder, both kept across tab
 //! switches so unsaved edits are not dropped.
 
-use super::compute::{DocStats, Img, Memo, StageImages, StageKeys, STAGE_COUNT};
-use super::doc::Doc;
-use super::ids::LayerId;
-use super::msg::{Msg, StripView, Tool, TraceView};
+use super::compute::{DocStats, Img, Memo, StageImages, StageKeys};
+use super::doc::{Doc, LayerOutputs};
+use super::fields::Field;
+use super::ids::{DocId, LayerId};
+use super::msg::{Msg, Phase, StripView};
+use super::phases::{PerPhase, PerStage, Stage, SubView};
+use super::recents::RecentEntry;
+use super::tools::{Tool, Tools};
 use super::undo::Command;
 use crate::config::Config;
 use crate::profiles::{Profiles, Scope, StackRef};
 use iced::widget::pane_grid;
 use iced::Task;
+use rustc_hash::FxHashMap;
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
+
+/// A layer whose trace failed, driving the coordinated red failure treatment
+/// shown across the UI.
+#[derive(Clone)]
+pub struct LayerError {
+    pub layer: LayerId,
+    /// The phase whose chip and inspector header turn red.
+    pub phase: Phase,
+    /// The human-readable cause shown large in the placeholder.
+    pub human: String,
+    /// The raw pipeline message, shown in a monospace box.
+    pub raw: String,
+    /// An optional one-click setting change offered beside Retry.
+    pub fix: Option<ErrorFix>,
+}
+
+/// A suggested one-click fix for a failed trace: a labeled button that sets one
+/// field, which re-runs the trace and clears the error if it resolves.
+#[derive(Clone)]
+pub struct ErrorFix {
+    pub label: String,
+    pub field: Field,
+    pub value: f64,
+}
+
+/// The welcome screen's recent-items panel state: the entries, the search
+/// filter, and the shown category.
+#[derive(Default)]
+pub struct WelcomeUi {
+    /// Recent files and folders, newest-first.
+    pub recents: Vec<RecentEntry>,
+    pub search: String,
+    pub tab: super::msg::RecentTab,
+}
 
 /// An in-progress profile rename in the library modal.
 pub struct LibraryRename {
@@ -37,6 +76,8 @@ pub struct ProfileUi {
     pub library_open: bool,
     /// The library row being renamed, holding its in-progress text.
     pub rename: Option<LibraryRename>,
+    /// The library modal's template-search filter.
+    pub library_search: String,
 }
 
 /// The three fixed panes of the editor.
@@ -66,9 +107,14 @@ pub struct DocState {
     /// Raw stroke-color text; cfg only updates on a valid "#rrggbb".
     pub stroke_hex: String,
     pub view: StripView,
-    pub trace_view: TraceView,
-    /// Expanded inspector section, 1-based stage number.
-    pub expanded: usize,
+    /// The sub-view each phase last showed, so switching phases restores what
+    /// that phase was last displaying.
+    pub phase_sub: PerPhase<SubView>,
+    /// The expanded inspector phase section, or `None` when the accordion is
+    /// fully collapsed.
+    pub expanded: Option<Phase>,
+    /// The selected layer's trace failure, if any.
+    pub trace_error: Option<LayerError>,
     /// Document view zoom in screen px per document px; `None` = fit.
     pub doc_zoom: Option<f32>,
     /// Document view pan, a screen-px offset from the centered position.
@@ -87,7 +133,7 @@ pub struct DocState {
     /// The stage keys of the in-flight stage run, so its streamed parts merge
     /// into the memo under the keys they were computed for.
     pub stage_keys: StageKeys,
-    pub stage_pending: [bool; STAGE_COUNT],
+    pub stage_pending: PerStage<bool>,
     pub stages_running: bool,
     pub stages_dirty: bool,
     /// Generation of this document's in-flight stage stream. A part whose
@@ -96,8 +142,10 @@ pub struct DocState {
     pub stage_gen: u64,
     pub full_preview: Option<Img>,
     pub full_stats: Option<DocStats>,
-    /// Per-layer anchor counts from the last full render.
-    pub layer_anchors: Vec<usize>,
+    /// Per-layer derived render outputs from the last full render, keyed by
+    /// layer id. The second per-layer map (the first, artist inputs, lives on
+    /// the document); both grow by lifetime, never by feature.
+    pub layer_outputs: FxHashMap<LayerId, LayerOutputs>,
     pub full_busy: bool,
     pub full_dirty: bool,
     /// Full render requested but deferred until the stage strip finishes:
@@ -122,30 +170,33 @@ pub struct DocState {
 impl Default for DocState {
     fn default() -> Self {
         Self {
-            selected_layer: LayerId(0),
+            // Placeholder identities that resolve to no layer until the first
+            // selection lands; an empty selection is a legal resting state.
+            selected_layer: LayerId::new(),
             selection: BTreeSet::new(),
-            select_anchor: LayerId(0),
+            select_anchor: LayerId::new(),
             override_layer: true,
             profile_input: String::new(),
             cfg: Config::default(),
             stroke_hex: String::new(),
             view: StripView::default(),
-            trace_view: TraceView::default(),
-            expanded: 5,
+            phase_sub: PerPhase::from_fn(Phase::default_subview),
+            expanded: Some(Phase::Colors),
+            trace_error: None,
             doc_zoom: None,
             doc_pan: iced::Vector::ZERO,
             stage_zoom: None,
             stage_pan: iced::Vector::ZERO,
             stages: StageImages::default(),
             memo: Memo::default(),
-            stage_keys: StageKeys::of(&Config::default()),
-            stage_pending: [false; STAGE_COUNT],
+            stage_keys: StageKeys::of(&Config::default(), &[]),
+            stage_pending: PerStage::from_fn(|_| false),
             stages_running: false,
             stages_dirty: false,
             stage_gen: 0,
             full_preview: None,
             full_stats: None,
-            layer_anchors: Vec::new(),
+            layer_outputs: FxHashMap::default(),
             full_busy: false,
             full_dirty: false,
             full_queued: false,
@@ -198,7 +249,7 @@ impl DocState {
 
 pub struct App {
     pub docs: Vec<Doc>,
-    pub selected_doc: usize,
+    pub selected_doc: DocId,
     /// The per-user library, shared across every project.
     pub global_profiles: Profiles,
     /// Project tier per document folder, keyed on `doc.path.parent()`.
@@ -207,7 +258,9 @@ pub struct App {
     /// When set (with the override toggle off), profile edits land in the
     /// global library instead of the project file.
     pub edit_global: bool,
-    pub tool: Tool,
+    pub tools: Tools,
+    /// The welcome screen's recents panel state.
+    pub welcome: WelcomeUi,
     pub panes: pane_grid::State<PaneKind>,
     pub status: String,
     pub profile_ui: ProfileUi,
@@ -238,12 +291,15 @@ impl Default for App {
         });
         Self {
             docs: Vec::new(),
-            selected_doc: 0,
+            // Names no open document until one is selected; every read resolves
+            // through `doc_pos`, which yields `None` for an unmatched identity.
+            selected_doc: DocId::new(),
             global_profiles: Profiles::default(),
             projects: HashMap::new(),
             modifiers: iced::keyboard::Modifiers::default(),
             edit_global: false,
-            tool: Tool::default(),
+            tools: Tools::default(),
+            welcome: WelcomeUi::default(),
             panes,
             status: String::new(),
             profile_ui: ProfileUi::default(),
@@ -265,27 +321,87 @@ impl App {
     /// top layer selected, for headless snapshotting. Runs only the synchronous
     /// focus steps; the compute pipeline never starts, so the stage and preview
     /// images stay empty and the panels show their loading state.
-    #[cfg(feature = "uishot")]
     pub(super) fn with_document(path: &Path) -> anyhow::Result<Self> {
         let doc = super::doc::load_doc(path)?;
         let mut app = Self::default();
         app.docs.push(doc);
         app.ensure_project(0);
-        app.selected_doc = 0;
+        app.selected_doc = app.docs[0].id;
         app.docs[0].session.initialized = true;
-        let top = LayerId(app.docs[0].layers.len().saturating_sub(1));
         // Only the state mutations matter here; the returned compute Task is
         // dropped unpolled, which the iced runtime would otherwise drive.
-        let _ = app.select_layer(top);
+        if let Some(top) = app.docs[0].top_layer() {
+            let _ = app.select_layer(top);
+        }
         Ok(app)
     }
 
+    /// The recent entries shown for the current tab and search filter,
+    /// newest-first. Indices into this list are what the welcome rows carry.
+    pub fn filtered_recents(&self) -> Vec<&super::recents::RecentEntry> {
+        let want_folder = self.welcome.tab == super::msg::RecentTab::Folders;
+        let q = self.welcome.search.trim().to_lowercase();
+        self.welcome
+            .recents
+            .iter()
+            .filter(|e| e.folder == want_folder)
+            .filter(|e| q.is_empty() || e.path.to_string_lossy().to_lowercase().contains(&q))
+            .collect()
+    }
+
+    /// The path of the recent entry at `i` in the current filtered list, if any.
+    pub(super) fn recent_path(&self, i: usize) -> Option<PathBuf> {
+        self.filtered_recents().get(i).map(|e| e.path.clone())
+    }
+
+    /// Toggles the pinned flag of the recent at `i` in the filtered list and
+    /// persists the change.
+    pub(super) fn toggle_recent_pin(&mut self, i: usize) {
+        let Some(path) = self.recent_path(i) else {
+            return;
+        };
+        if let Some(e) = self.welcome.recents.iter_mut().find(|e| e.path == path) {
+            e.pinned = !e.pinned;
+        }
+        self.welcome
+            .recents
+            .sort_by(|a, b| b.pinned.cmp(&a.pinned).then(b.opened.cmp(&a.opened)));
+        super::recents::save(&self.welcome.recents);
+    }
+
+    /// Records each of `paths` as just opened and persists the recents once.
+    pub(super) fn remember_recents(&mut self, paths: &[PathBuf], folder: bool) {
+        if paths.is_empty() {
+            return;
+        }
+        for p in paths {
+            super::recents::touch(&mut self.welcome.recents, p, folder);
+        }
+        super::recents::save(&self.welcome.recents);
+    }
+
+    /// The tab-strip position of the document identified by `id`, or `None`
+    /// when no open document has that identity (it was never opened, or has
+    /// since closed).
+    pub fn doc_pos(&self, id: DocId) -> Option<usize> {
+        self.docs.iter().position(|d| d.id == id)
+    }
+
+    /// The tab-strip position of the selected document. Returns a past-the-end
+    /// index when no open document is selected, so the position readers
+    /// (`docs.get`, [`stack`](Self::stack)) resolve to nothing rather than to
+    /// the wrong document.
+    pub fn selected_pos(&self) -> usize {
+        self.doc_pos(self.selected_doc).unwrap_or(self.docs.len())
+    }
+
     pub fn doc(&self) -> Option<&Doc> {
-        self.docs.get(self.selected_doc)
+        self.docs.get(self.selected_pos())
     }
 
     pub fn doc_mut(&mut self) -> Option<&mut Doc> {
-        self.docs.get_mut(self.selected_doc)
+        let pos = self.selected_pos();
+        self.docs.get_mut(pos)
     }
 
     /// The selected document's session, or `None` with no documents open.
@@ -310,7 +426,7 @@ impl App {
 
     /// The selected document's profile view.
     pub fn stack_sel(&self) -> StackRef<'_> {
-        self.stack(self.selected_doc)
+        self.stack(self.selected_pos())
     }
 
     /// The project tier for document `i`, created empty if this is the first
@@ -338,7 +454,7 @@ impl App {
         if i >= self.docs.len() {
             return Task::none();
         }
-        self.selected_doc = i;
+        self.selected_doc = self.docs[i].id;
         if !self.docs[i].session.initialized {
             return self.init_doc(i);
         }
@@ -366,11 +482,11 @@ impl App {
     /// its topmost layer, and kick off both compute passes.
     fn init_doc(&mut self, i: usize) -> Task<Msg> {
         self.ensure_project(i);
-        self.selected_doc = i;
+        self.selected_doc = self.docs[i].id;
         self.docs[i].session.initialized = true;
-        // Storage is bottom-first paint order; the top of the visual stack is
-        // the last index.
-        let top = LayerId(self.docs[i].layers.len().saturating_sub(1));
+        let Some(top) = self.docs[i].top_layer() else {
+            return self.spawn_full();
+        };
         Task::batch([self.select_layer(top), self.spawn_full()])
     }
 
@@ -388,14 +504,14 @@ impl App {
         let generation = self.stages_gen;
         let s = self.session_mut().expect("checked above");
         s.stages = StageImages::default();
-        s.stage_pending = [true; STAGE_COUNT];
+        s.stage_pending = PerStage::from_fn(|_| true);
         s.stage_gen = generation;
     }
 
     /// Selects layer `i` alone: the multi-selection collapses to it.
     pub(super) fn select_layer(&mut self, i: LayerId) -> Task<Msg> {
         self.clear_stages_on_switch(i);
-        let doc_idx = self.selected_doc;
+        let doc_idx = self.selected_pos();
         let name = self.layer_name_of(doc_idx, i);
         let seed = name
             .as_deref()
@@ -408,18 +524,20 @@ impl App {
         sess.select_anchor = i;
         sess.selection = BTreeSet::from([i]);
         sess.profile_input = seed;
+        // The failure treatment is per primary layer, so a new selection starts clean.
+        sess.trace_error = None;
         self.load_layer_into_controls();
         self.spawn_stages()
     }
 
     /// The name of layer `i` in document `d`.
     pub fn layer_name_of(&self, d: usize, i: LayerId) -> Option<String> {
-        self.docs.get(d).and_then(|doc| doc.layers.get(i.index())).map(|l| l.name.clone())
+        self.docs.get(d).and_then(|doc| doc.layer(i)).map(|l| l.name.clone())
     }
 
     /// The selected layer's name in the selected document.
     pub fn layer_name(&self) -> Option<String> {
-        let d = self.selected_doc;
+        let d = self.selected_pos();
         self.session().and_then(|s| self.layer_name_of(d, s.selected_layer))
     }
 
@@ -427,7 +545,7 @@ impl App {
     /// This is the only thing the controls ever show, so switching write
     /// mode never moves a slider.
     pub(super) fn load_layer_into_controls(&mut self) {
-        let doc_idx = self.selected_doc;
+        let doc_idx = self.selected_pos();
         let cfg = match self.layer_name() {
             Some(l) => self.stack(doc_idx).resolve(&l).0,
             None => Config::default(),
@@ -447,37 +565,42 @@ impl App {
         self.spawn_stages()
     }
 
-    /// Screen-raster pixels per source-crop pixel for the active view's image.
-    /// The stage rasters differ in density (Source is 1×, Flatten through
-    /// Regions are ×`cfg.scale`, the Trace renders are ×2); dividing a raster's
-    /// size by this factor gives the crop-space dimensions the shared stage
-    /// viewport is expressed in. Document is 1× against its own document px.
-    pub fn view_density(&self) -> f32 {
-        let Some(sess) = self.session() else {
-            return 1.0;
-        };
-        match sess.view {
-            StripView::Document | StripView::Stage(0) => 1.0,
-            StripView::Stage(1..=3) => sess.cfg.scale as f32,
-            StripView::Stage(_) => 2.0,
+    /// The phase the strip is showing, or `None` on the Document view.
+    pub fn active_phase(&self) -> Option<Phase> {
+        match self.session()?.view {
+            StripView::Document => None,
+            StripView::Phase(p) => Some(p),
         }
     }
 
-    /// The image the preview should show for the active strip view, if it
-    /// has been rendered yet.
+    /// The remembered sub-view of the active phase, or `None` on Document.
+    pub fn active_subview(&self) -> Option<SubView> {
+        let sess = self.session()?;
+        self.active_phase().map(|p| sess.phase_sub[p])
+    }
+
+    /// The pipeline stage the active phase's current sub-view resolves to, or
+    /// `None` on Document or a sub-view whose render is not produced yet.
+    pub fn active_stage(&self) -> Option<Stage> {
+        self.active_subview()?.stage()
+    }
+
+    /// Screen-raster pixels per source-crop pixel for the active view's image.
+    /// The stage rasters differ in density; dividing a raster's size by this
+    /// factor gives the crop-space dimensions the shared stage viewport is
+    /// expressed in. Document is 1x against its own document px.
+    pub fn view_density(&self) -> f32 {
+        let scale = self.session().map(|s| s.cfg.scale).unwrap_or(1);
+        self.active_stage().map(|s| s.density(scale)).unwrap_or(1.0)
+    }
+
+    /// The image the preview should show for the active view, if it has been
+    /// rendered yet.
     pub fn active_image(&self) -> Option<&Img> {
         let sess = self.session()?;
         match sess.view {
             StripView::Document => sess.full_preview.as_ref(),
-            StripView::Stage(0) => sess.stages.source.as_ref(),
-            StripView::Stage(1) => sess.stages.flat.as_ref(),
-            StripView::Stage(2) => sess.stages.quant.as_ref(),
-            StripView::Stage(3) => sess.stages.regions.as_ref(),
-            StripView::Stage(_) => match sess.trace_view {
-                TraceView::Smooth => sess.stages.smooth.as_ref(),
-                TraceView::Fit => sess.stages.render.as_ref(),
-                TraceView::Final => sess.stages.simplified.as_ref(),
-            },
+            StripView::Phase(_) => self.active_stage()?.image(&sess.stages),
         }
     }
 
@@ -491,15 +614,51 @@ impl App {
     }
 
     /// Whether the shown view is currently being recomputed, for the scan
-    /// sweep and the strip chips. Chip 5 covers smooth, fit, and simplify.
+    /// sweep and the strip chips. A phase is busy while any of its sub-views'
+    /// stages compute.
     pub fn view_busy(&self, view: StripView) -> bool {
         let Some(sess) = self.session() else {
             return false;
         };
         match view {
             StripView::Document => sess.full_busy,
-            StripView::Stage(i @ 0..=3) => sess.stage_pending[i],
-            StripView::Stage(_) => sess.stage_pending[4..7].iter().any(|&p| p),
+            StripView::Phase(p) => self.phase_busy(p),
         }
+    }
+
+    /// Whether any of phase `p`'s sub-view stages are recomputing.
+    pub fn phase_busy(&self, p: Phase) -> bool {
+        let Some(sess) = self.session() else {
+            return false;
+        };
+        p.subviews()
+            .iter()
+            .filter_map(|sv| sv.stage())
+            .any(|stage| sess.stage_pending[stage])
+    }
+
+    /// Whether `tool` is offered on the current view. `false` with no document
+    /// open, so no tool stays active over an empty preview.
+    pub fn tool_applicable(&self, tool: Tool) -> bool {
+        match self.session() {
+            Some(s) => tool.applies(s.view, self.active_subview()),
+            None => false,
+        }
+    }
+
+    /// Falls the active tool back to Select when the current view no longer
+    /// offers it, so a hidden tool is never left active (spec: tool set is a
+    /// function of the view).
+    pub(super) fn reconcile_tool(&mut self) {
+        if !self.tool_applicable(self.tools.active) {
+            self.tools.active = Tool::Select;
+        }
+    }
+
+    /// Whether inspector phase section `phase` is locked because it is
+    /// downstream of the viewed phase, so its effect can't be shown. The
+    /// Document view depends on the whole pipeline, so nothing is locked there.
+    pub fn section_locked(&self, phase: Phase) -> bool {
+        self.active_phase().is_some_and(|p| phase.index() > p.index())
     }
 }

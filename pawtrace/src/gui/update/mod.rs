@@ -7,6 +7,7 @@ mod edit;
 mod file;
 mod layer;
 mod profile;
+mod recent;
 mod ui;
 
 use super::app::App;
@@ -22,6 +23,7 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Msg> {
         Msg::Ui(m) => ui::update(app, m),
         Msg::Canvas(m) => canvas::update(app, m),
         Msg::Compute(m) => compute::update(app, m),
+        Msg::Recent(m) => recent::update(app, m),
         Msg::Modifiers(m) => {
             app.modifiers = m;
             Task::none()

@@ -4,15 +4,16 @@
 //! resolved here and published as a viewport.
 
 use super::checkerboard::checkerboard;
-use super::overlays::pin_overlay;
 use super::viewport::Viewport;
 use crate::gui::app::App;
 use crate::gui::compute::Img;
-use crate::gui::msg::{CanvasMsg, Msg, Tool};
+use crate::gui::msg::{CanvasMsg, Msg};
+use crate::gui::overlays::{self, OverlayCtx};
+use crate::gui::tools::Tool;
 use iced::advanced::image as core_image;
 use iced::mouse;
 use iced::widget::canvas::{Action, Cache, Event, Geometry, Program};
-use iced::widget::stack;
+use iced::widget::Stack;
 use iced::{Element, Length, Point, Rectangle, Size, Vector};
 use std::cell::Cell;
 
@@ -23,20 +24,28 @@ const ZOOM_MAX: f32 = 32.0;
 const CLICK_SLOP: f32 = 4.0;
 
 /// Builds the preview widget over the document's active image and viewport,
-/// with the selected layer's pins overlaid on top.
+/// with the registered state overlays composited on top in [`overlays::ALL`]
+/// order.
 pub fn preview(app: &App) -> Element<'_, Msg> {
     let program = Preview {
         img: app.active_image(),
         zoom: app.session().and_then(|s| s.zoom()),
         pan: app.session().map(|s| s.pan()).unwrap_or(Vector::ZERO),
         factor: app.view_density(),
-        tool: app.tool,
+        tool: app.tools.active,
         doc_view: app.session().is_some_and(|s| s.is_doc_view()),
     };
     let base = iced::widget::canvas(program)
         .width(Length::Fill)
         .height(Length::Fill);
-    stack![base, pin_overlay(app)].into()
+    let ctx = OverlayCtx::from_app(app);
+    let mut stack = Stack::new().push(base);
+    for overlay in overlays::ALL {
+        if let Some(element) = overlay(&ctx) {
+            stack = stack.push(element);
+        }
+    }
+    stack.into()
 }
 
 struct Preview<'a> {
@@ -167,7 +176,10 @@ impl Program<Msg> for Preview<'_> {
                     state.press = (left && self.tool == Tool::Select).then_some(pos);
                     return Some(Action::capture());
                 }
-                if left && self.tool == Tool::Pin {
+                // Pin, Lock, and the brush tools capture the press so a
+                // left-drag acts instead of panning. The brush presses are
+                // absorbed with no effect.
+                if left && matches!(self.tool, Tool::Pin | Tool::Lock | Tool::Protect | Tool::Heat) {
                     let ip = to_img(pos);
                     if ip.x >= 0.0 && ip.y >= 0.0 && ip.x < cw && ip.y < ch {
                         state.tool_active = true;
@@ -261,7 +273,7 @@ impl Program<Msg> for Preview<'_> {
         } else if cursor.is_over(bounds) {
             match self.tool {
                 Tool::Select => mouse::Interaction::Grab,
-                Tool::Pin => mouse::Interaction::Crosshair,
+                Tool::Pin | Tool::Lock | Tool::Protect | Tool::Heat => mouse::Interaction::Crosshair,
             }
         } else {
             mouse::Interaction::default()

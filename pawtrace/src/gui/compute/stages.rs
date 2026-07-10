@@ -5,10 +5,11 @@
 //! changed input), so an unchanged stage never flickers.
 
 use super::memo::{ShapeCache, StageKeys};
-use super::render::{masked, region_fates_handle, render_debug, render_svg, rgba_img};
-use super::{shape_memo, Img, LayerTrace, Shown, StagePart, STAGE_COUNT};
+use super::render::{fate_tint_handle, masked, regions_handle, render_debug, render_svg, rgba_img};
+use super::{shape_memo, Img, LayerTrace, Shown, StagePart};
 use crate::config::Config;
-use crate::gui::ids::LayerId;
+use crate::gui::ids::{DocId, LayerId};
+use crate::gui::phases::{PerStage, Stage};
 use crate::gui::msg::{ComputeMsg, Msg};
 use crate::raster::Prepared;
 use crate::regions::{MergePlan, Region};
@@ -32,42 +33,52 @@ pub(super) struct Snapshot {
 
 /// Everything one stage run needs, moved into the worker.
 pub(super) struct StageJob {
-    pub doc: usize,
+    pub doc: DocId,
     pub generation: u64,
     pub img: RgbaImage,
     pub offset: (u32, u32),
     pub doc_dim: u32,
     pub cfg: Config,
-    pub pending: [bool; STAGE_COUNT],
+    pub pending: PerStage<bool>,
+    /// The fate tint and region report are stale against the shown ones.
+    pub refresh_fates: bool,
     pub shown: Shown,
     pub snap: Snapshot,
     pub shape_cache: ShapeCache,
+    /// The selected layer's speckle-floor exemption points, document source px.
+    pub pins: Vec<[u32; 2]>,
 }
 
-/// Which stage images are stale against the ones currently shown. Source
-/// depends only on the layer; each later image on its stage's key, and the
-/// fit/simplify renders additionally on the stroke they paint.
+/// Which stage images are stale against the ones currently shown. Each stage's
+/// own rule ([`Stage::is_stale`]) decides: Source tracks only the layer, each
+/// later image its stage key, and the fit/simplify renders additionally the
+/// stroke they paint. The Regions stage keys on `regions`, not `regions_view`,
+/// so a pin edit leaves the segmentation raster valid (the tint moves to the
+/// fates overlay; see [`fates_stale`]).
 pub(super) fn pending(
     shown: Option<&Shown>,
     layer: LayerId,
     keys: &StageKeys,
     stroke_bits: u32,
     stroke_color: [u8; 3],
-) -> [bool; STAGE_COUNT] {
+) -> PerStage<bool> {
     let same_layer = shown.is_some_and(|s| s.layer == layer);
-    let cur =
-        |sel: fn(&StageKeys) -> u64| same_layer && shown.is_some_and(|s| sel(&s.keys) == sel(keys));
     let stroke_same =
         shown.is_some_and(|s| s.stroke_bits == stroke_bits && s.stroke_color == stroke_color);
-    [
-        !same_layer,
-        !cur(|k| k.prep),
-        !cur(|k| k.quant),
-        !cur(|k| k.regions_view),
-        !cur(|k| k.fit),
-        !(cur(|k| k.fit) && stroke_same),
-        !(cur(|k| k.simplify) && stroke_same),
-    ]
+    PerStage::from_fn(|stage| {
+        stage.is_stale(
+            same_layer,
+            |sel| shown.is_some_and(|s| sel(&s.keys) == sel(keys)),
+            stroke_same,
+        )
+    })
+}
+
+/// Whether the fate tint and region report are stale against the shown ones.
+/// The merge plan folds pins into the region merge, so a pin edit changes the
+/// fates and the tint without touching the segmentation raster.
+pub(super) fn fates_stale(shown: Option<&Shown>, layer: LayerId, keys: &StageKeys) -> bool {
+    !shown.is_some_and(|s| s.layer == layer && s.keys.regions_view == keys.regions_view)
 }
 
 pub(super) fn stream(job: StageJob) -> Task<Msg> {
@@ -83,9 +94,11 @@ pub(super) fn stream(job: StageJob) -> Task<Msg> {
                 doc_dim,
                 cfg,
                 pending,
+                refresh_fates,
                 shown,
                 snap,
                 shape_cache,
+                pins: layer_pins,
             } = job;
             // A send failure means the app dropped this stream, superseded or
             // shut down. The remaining work would be wasted either way.
@@ -101,7 +114,7 @@ pub(super) fn stream(job: StageJob) -> Task<Msg> {
                 };
             }
 
-            if pending[0] {
+            if pending[Stage::Source] {
                 emit!(StagePart::Source(rgba_img(&img)));
             }
 
@@ -109,7 +122,7 @@ pub(super) fn stream(job: StageJob) -> Task<Msg> {
                 Some(p) => (p, false),
                 None => (Arc::new(crate::raster::prepare(&img, &cfg)), true),
             };
-            if pending[1] || prep_c {
+            if pending[Stage::Flatten] || prep_c {
                 emit!(StagePart::Flat(
                     rgba_img(&masked(&prep.flat, &prep.alpha)),
                     prep.clone()
@@ -139,9 +152,9 @@ pub(super) fn stream(job: StageJob) -> Task<Msg> {
                     (Arc::new(q), Arc::new(plan.palette), true)
                 }
             };
-            if pending[2] || quant_c {
+            if pending[Stage::Remap] || quant_c {
                 let px = masked(&quant, &prep.alpha);
-                emit!(StagePart::Quant(
+                emit!(StagePart::Remap(
                     rgba_img(&px),
                     px,
                     quant.clone(),
@@ -149,7 +162,7 @@ pub(super) fn stream(job: StageJob) -> Task<Msg> {
                 ));
             }
 
-            let pins = pipeline::scale_pins(&cfg.pins, offset, cfg.scale, img.dimensions());
+            let pins = pipeline::scale_pins(&layer_pins, offset, cfg.scale, img.dimensions());
             let (regs, regs_c) = match snap.regions {
                 Some(r) => (r, false),
                 None => (
@@ -161,7 +174,7 @@ pub(super) fn stream(job: StageJob) -> Task<Msg> {
             // trace below; each used to re-run the speckle merge and shape
             // build for itself. Skipped when every consumer is cached.
             let fit_shortcut = snap.simplify.is_some() && cfg.simplify <= 0.0;
-            let need_plan = pending[3]
+            let need_plan = refresh_fates
                 || regs_c
                 || snap.smooth.is_none()
                 || (snap.fit.is_none() && !fit_shortcut);
@@ -180,14 +193,17 @@ pub(super) fn stream(job: StageJob) -> Task<Msg> {
                 }
                 None => None,
             };
-            if pending[3] || regs_c {
-                let report = regions::report_of(plan.as_ref().unwrap());
+            if pending[Stage::Regions] || regs_c {
                 emit!(StagePart::Regions(
-                    region_fates_handle(&regs, quant.dimensions(), &report.fates, &pins),
+                    regions_handle(&regs, quant.dimensions()),
                     regs.len(),
-                    report,
                     regs.clone(),
                 ));
+            }
+            if refresh_fates || regs_c {
+                let report = regions::report_of(plan.as_ref().unwrap());
+                let tint = fate_tint_handle(&regs, quant.dimensions(), &report.fates);
+                emit!(StagePart::Fates(tint, report));
             }
 
             let (w, h) = img.dimensions();
@@ -226,8 +242,8 @@ pub(super) fn stream(job: StageJob) -> Task<Msg> {
                     (render_debug(&contours, w, h, cfg.scale), true)
                 }
             };
-            if pending[4] || smooth_c {
-                emit!(StagePart::Smooth(smooth.clone()));
+            if pending[Stage::Contours] || smooth_c {
+                emit!(StagePart::Contours(smooth.clone()));
             }
 
             // With simplify off, the simplify pass is a no-op, so a cached
@@ -246,7 +262,7 @@ pub(super) fn stream(job: StageJob) -> Task<Msg> {
                     ),
                 },
             };
-            if pending[5] || fit_c {
+            if pending[Stage::Fit] || fit_c {
                 let (im, an) = render_paths(&fit);
                 emit!(StagePart::Fit(im, an, fit.clone()));
             }
@@ -260,4 +276,39 @@ pub(super) fn stream(job: StageJob) -> Task<Msg> {
             emit!(StagePart::Simplify(im, an, simpl.clone(), shown));
         },
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+    use crate::gui::phases::Stage;
+
+    // Pins moved out of `Config` into per-layer inputs, but the strip's dirty
+    // ripple is unchanged: a pin-only edit leaves the segmentation raster valid
+    // (keyed on `regions`, pin-independent) while the trace stages recompute and
+    // the fate tint refreshes.
+    #[test]
+    fn a_pin_edit_dirties_only_the_trace_and_the_fates() {
+        let layer = LayerId::from_raw(1);
+        let cfg = Config::default();
+        let stroke_bits = cfg.stroke_width.to_bits();
+        let stroke_color = cfg.stroke_color;
+        let before = StageKeys::of(&cfg, &[]);
+        let after = StageKeys::of(&cfg, &[[3, 4]]);
+        let shown = Shown { layer, keys: before, stroke_bits, stroke_color };
+
+        let pend = pending(Some(&shown), layer, &after, stroke_bits, stroke_color);
+        // Everything up to and including the segmentation raster is untouched.
+        assert!(!pend[Stage::Source]);
+        assert!(!pend[Stage::Flatten]);
+        assert!(!pend[Stage::Remap]);
+        assert!(!pend[Stage::Regions]);
+        // Pins gate the trace, so the contour, fit, and simplify views recompute.
+        assert!(pend[Stage::Contours]);
+        assert!(pend[Stage::Fit]);
+        assert!(pend[Stage::Simplify]);
+        // The fate tint folds pins into the merge plan, so it refreshes too.
+        assert!(fates_stale(Some(&shown), layer, &after));
+    }
 }

@@ -2,7 +2,7 @@
 //! [`Target`]'s override block, applying a whole command in either direction,
 //! and the undo/redo entry points that refresh the UI and pipeline afterward.
 
-use super::{Change, Command, FlagChange, FlagKind, Target};
+use super::{Change, Command, FlagChange, FlagKind, PinChange, Target};
 use crate::gui::app::App;
 use crate::gui::msg::Msg;
 use crate::profiles::Overrides;
@@ -20,7 +20,7 @@ impl App {
     /// Writes `val` to the override block at `target`, removing the profile or
     /// override entirely on `None` so no bare empty block lingers.
     fn put_block(&mut self, target: &Target, val: Option<Overrides>) {
-        let i = self.selected_doc;
+        let i = self.selected_pos();
         match target {
             Target::Override(l) => {
                 if let Some(tier) = self.project_tier_mut(i) {
@@ -55,7 +55,7 @@ impl App {
     }
 
     fn put_assign(&mut self, layer: &str, val: Option<String>) {
-        let i = self.selected_doc;
+        let i = self.selected_pos();
         if let Some(tier) = self.project_tier_mut(i) {
             match val {
                 Some(v) => {
@@ -69,11 +69,22 @@ impl App {
     }
 
     fn set_flag(&mut self, change: &FlagChange, on: bool) {
-        if let Some(f) = self.doc_mut().and_then(|d| d.flags.get_mut(change.layer.index())) {
+        if let Some(f) = self.doc_mut().and_then(|d| d.inputs_mut(change.layer)) {
             match change.kind {
                 FlagKind::Visible => f.visible = on,
                 FlagKind::Enabled => f.enabled = on,
             }
+        }
+    }
+
+    /// Overwrites layer `change.layer`'s pins with the `dir`-appropriate set.
+    fn set_pins(&mut self, change: &PinChange, dir: Dir) {
+        let pins = match dir {
+            Dir::Forward => change.new.clone(),
+            Dir::Revert => change.old.clone(),
+        };
+        if let Some(inp) = self.doc_mut().and_then(|d| d.inputs_mut(change.layer)) {
+            inp.pins = pins;
         }
     }
 
@@ -102,6 +113,7 @@ impl App {
                     self.set_flag(f, on);
                 }
             }
+            Command::Pins(change) => self.set_pins(change, dir),
         }
     }
 

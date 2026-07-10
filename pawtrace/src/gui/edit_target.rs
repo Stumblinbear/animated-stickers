@@ -62,7 +62,7 @@ impl App {
 
     /// The overrides map the current target writes into, created if absent.
     fn target_ov(&mut self) -> Option<&mut Overrides> {
-        let i = self.selected_doc;
+        let i = self.selected_pos();
         match self.edit_target() {
             EditTarget::Override(layer) => Some(
                 self.project_tier_mut(i)?
@@ -121,7 +121,7 @@ impl App {
 
     /// Whether `field` is overridden on the selected layer itself.
     pub fn field_overridden(&self, field: Field) -> bool {
-        let i = self.selected_doc;
+        let i = self.selected_pos();
         self.layer_name()
             .and_then(|l| {
                 self.stack(i)
@@ -135,7 +135,7 @@ impl App {
 
     /// How many fields the selected layer's override sets.
     pub fn override_count(&self) -> usize {
-        let i = self.selected_doc;
+        let i = self.selected_pos();
         self.layer_name()
             .and_then(|l| {
                 self.stack(i).project.overrides.get(&l).map(|ov| {
@@ -151,7 +151,7 @@ impl App {
     /// Clears the current layer's override of `field` (profile mode only), so
     /// a profile edit is not shadowed by an existing per-layer override.
     fn clear_layer_field(&mut self, field: Field) {
-        let i = self.selected_doc;
+        let i = self.selected_pos();
         if let Some(layer) = self.layer_name() {
             if let Some(tier) = self.project_tier_mut(i) {
                 if let Some(o) = tier.overrides.get_mut(&layer) {
@@ -186,7 +186,7 @@ impl App {
                 fields::clear(ov, field);
             }
             if let EditTarget::Override(layer) = app.edit_target() {
-                let i = app.selected_doc;
+                let i = app.selected_pos();
                 if let Some(tier) = app.project_tier_mut(i) {
                     if tier.overrides.get(&layer) == Some(&Overrides::default()) {
                         tier.overrides.remove(&layer);
@@ -224,19 +224,6 @@ impl App {
                 .unwrap_or_default();
             if let Some(ov) = app.target_ov() {
                 ov.locked = Some(hexes);
-            }
-        });
-    }
-
-    /// Writes the current pin set to the edit target.
-    pub(super) fn write_pins(&mut self) {
-        self.record(Coalesce::Pins, |app| {
-            let pins = app
-                .session()
-                .map(|s| s.cfg.pins.clone())
-                .unwrap_or_default();
-            if let Some(ov) = app.target_ov() {
-                ov.pins = Some(pins);
             }
         });
     }

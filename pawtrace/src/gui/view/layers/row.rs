@@ -20,13 +20,15 @@ const EXCLUDED_TIP: &str = "Excluded from processing and export. Click to \
 /// Builds the row for layer `i`. The caller guarantees a document is open.
 pub fn layer_row(app: &App, i: LayerId) -> Element<'_, Msg> {
     let doc = app.doc().expect("layer row needs an open document");
-    let flags = doc.flags[i.index()];
-    let name = &doc.layers[i.index()].name;
+    let layer = doc.layer(i).expect("layer row is built from a live layer id");
+    let flags = &doc.inputs[&i];
+    let name = &layer.name;
     let sess = app.session().expect("layer row needs a session");
     let selected = sess.selection.contains(&i);
     // The primary is meaningless with an empty selection, so no row is primary.
     let primary = !sess.selection.is_empty() && sess.selected_layer == i;
     let dimmed = !flags.visible || !flags.enabled;
+    let failed = sess.trace_error.as_ref().is_some_and(|e| e.layer == i);
 
     let eye_glyph = if flags.visible { icons::EYE } else { icons::EYE_OFF };
     let eye = widgets::help(
@@ -49,11 +51,20 @@ pub fn layer_row(app: &App, i: LayerId) -> Element<'_, Msg> {
         border: iced::border::rounded(4),
         ..Default::default()
     });
-    let name_text = text(name.as_str())
-        .size(13)
-        .color(if dimmed { theme::MUTED } else { theme::TEXT })
-        .width(Length::Fill);
-    let tail = tail(sess, app.anim_now, flags.enabled, i, primary);
+    let name_color = if failed {
+        theme::DANGER
+    } else if dimmed {
+        theme::MUTED
+    } else {
+        theme::TEXT
+    };
+    let name_text = text(name.as_str()).size(13).color(name_color).width(Length::Fill);
+    let tail = if failed {
+        // A warning icon replaces the anchor count on a failed layer.
+        icons::icon(icons::ALERT).size(13).color(theme::DANGER).into()
+    } else {
+        tail(sess, app.anim_now, flags.enabled, i, primary)
+    };
 
     let inner = button(
         row![thumb, name_text, chip::chip(app, i, name), tail]
@@ -91,15 +102,15 @@ fn tail<'a>(
     }
     // The strip traces only the selected layer. A full render with no counts
     // yet is tracing every enabled layer for the first time.
-    let tracing = (primary && sess.stages_running) || (sess.full_busy && sess.layer_anchors.is_empty());
+    let tracing = (primary && sess.stages_running) || (sess.full_busy && sess.layer_outputs.is_empty());
     if tracing {
         return spinner::spinner(now, 14.0);
     }
-    let anchors = sess.layer_anchors.get(i.index()).copied().unwrap_or(0);
+    let anchors = sess.layer_outputs.get(&i).map(|o| o.anchors).unwrap_or(0);
     if anchors == 0 {
         return space().width(0).into();
     }
-    let max = sess.layer_anchors.iter().copied().max().unwrap_or(1).max(1);
+    let max = sess.layer_outputs.values().map(|o| o.anchors).max().unwrap_or(1).max(1);
     let color = ramp(anchors as f32 / max as f32);
     row![
         widgets::dot(color, 6.0),

@@ -29,6 +29,21 @@ pub const TRASH: char = '\u{e18d}'; // trash
 pub const CIRCLE: char = '\u{e076}'; // circle
 pub const CIRCLE_DOT: char = '\u{e345}'; // circle-dot
 pub const LIBRARY: char = '\u{e100}'; // library
+pub const PAINTBRUSH: char = '\u{e2e7}'; // paintbrush (protect brush tool)
+pub const PIPETTE: char = '\u{e13b}'; // pipette (palette lock tool)
+pub const FLAME: char = '\u{e0d2}'; // flame (heat brush, warm)
+pub const SNOWFLAKE: char = '\u{e165}'; // snowflake (heat brush, cool)
+pub const ERASER: char = '\u{e28f}'; // eraser (protect erase)
+pub const ARROW_RIGHT: char = '\u{e049}'; // arrow-right (sub-view breadcrumb)
+pub const ALERT: char = '\u{e193}'; // alert-triangle (failures)
+pub const FOLDER: char = '\u{e0d7}'; // folder (open folder, recent folders)
+pub const FOLDER_OPEN: char = '\u{e247}'; // folder-open
+pub const FILE_PLUS: char = '\u{e0c9}'; // file-plus (open files)
+pub const UPLOAD: char = '\u{e19e}'; // upload (drop zone)
+pub const DOWNLOAD: char = '\u{e0b2}'; // download (import templates)
+pub const SEARCH: char = '\u{e151}'; // search (recents / library)
+pub const STAR: char = '\u{e176}'; // star (pin a recent)
+pub const LAYERS: char = '\u{e52a}'; // layers-2 (Document view)
 
 /// An icon glyph as a `Text` widget, ready to size and color.
 pub fn icon<'a>(code: char) -> Text<'a> {

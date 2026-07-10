@@ -61,7 +61,7 @@ fn run_layer(
     let Some((src, ox, oy)) = cropped else {
         return Vec::new();
     };
-    let pins = pipeline::scale_pins(&cfg.pins, (ox, oy), cfg.scale, (src.width(), src.height()));
+    let pins = pipeline::scale_pins(&[], (ox, oy), cfg.scale, (src.width(), src.height()));
 
     let (alpha, regs): (GrayImage, Vec<regions::Region>) =
         if let Some(color) = raster::uniform_color(&src, cfg.alpha_threshold) {
@@ -139,7 +139,7 @@ fn main() {
             let (cfg, _) = profiles.resolve(name);
             let mut times = Times::default();
             let mine = run_layer(img, &cfg, w.max(h), &mut times);
-            let real = pipeline::run(img, &cfg, w.max(h), (0, 0)).unwrap();
+            let real = pipeline::run(img, &cfg, w.max(h), (0, 0), &[]).unwrap();
             assert_eq!(format!("{mine:?}"), format!("{real:?}"), "harness diverged on {name}");
         }
 

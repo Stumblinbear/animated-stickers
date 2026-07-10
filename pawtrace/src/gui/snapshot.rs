@@ -11,7 +11,11 @@ use iced::Size;
 use iced_test::core::Settings;
 use iced_test::Simulator;
 
-use super::app::App;
+use super::app::{App, ErrorFix, LayerError};
+use super::fields::Field;
+use super::msg::{Phase, StripView};
+use super::tools::Tool;
+use super::recents::{RecentEntry, Timestamp};
 use super::view::theme::theme;
 use super::view::view;
 
@@ -23,11 +27,101 @@ const LUCIDE: &[u8] = include_bytes!("../../assets/lucide.ttf");
 pub enum Scene<'a> {
     /// The empty startup screen, no document open.
     Empty,
+    /// The welcome screen with a seeded recents list, so the panel is populated
+    /// without touching the user's real recents file.
+    Welcome,
     /// A document loaded from `path`, focused with its top layer selected. Only
     /// the synchronous focus steps run, so the panels populate but the preview
     /// and stage images stay blank; the compute pipeline needs the iced
     /// runtime, which a headless render does not drive.
     Document(&'a Path),
+    /// A document on the Colors phase view with the sub-view panel open and the
+    /// Heat brush fly-out showing.
+    Phase(&'a Path),
+    /// A document with a synthetic trace failure on its top layer, for the
+    /// coordinated red failure treatment.
+    Failure(&'a Path),
+    /// A document with the profile-library modal open over it.
+    Library(&'a Path),
+}
+
+/// Builds the app state for `scene`.
+fn build(scene: Scene) -> Result<App> {
+    Ok(match scene {
+        Scene::Empty => App::default(),
+        Scene::Welcome => {
+            let mut app = App::default();
+            app.welcome.recents = sample_recents();
+            app
+        }
+        Scene::Document(path) => load(path)?,
+        Scene::Phase(path) => {
+            let mut app = load(path)?;
+            app.tools.active = Tool::Heat;
+            if let Some(s) = app.session_mut() {
+                s.view = StripView::Phase(Phase::Colors);
+                s.expanded = Some(Phase::Colors);
+            }
+            app
+        }
+        Scene::Failure(path) => {
+            let mut app = load(path)?;
+            let layer = app.session().map(|s| s.selected_layer).unwrap_or_else(super::ids::LayerId::new);
+            if let Some(s) = app.session_mut() {
+                s.view = StripView::Phase(Phase::Curves);
+                s.expanded = Some(Phase::Curves);
+                s.trace_error = Some(LayerError {
+                    layer,
+                    phase: Phase::Curves,
+                    human: "The region fit produced no valid geometry \u{2014} likely too few \
+                            opaque pixels after the alpha threshold."
+                        .into(),
+                    raw: "pipeline: fit stage returned 0 paths (alpha_threshold=128)".into(),
+                    fix: Some(ErrorFix {
+                        label: "Lower alpha threshold".into(),
+                        field: Field::AlphaThreshold,
+                        value: 96.0,
+                    }),
+                });
+            }
+            app
+        }
+        Scene::Library(path) => {
+            let mut app = load(path)?;
+            // Seed a few global templates so the modal is not empty, then open it.
+            let g = &mut app.global_profiles;
+            for (k, hex) in [("sylvie", "c88a4a"), ("lineart", "8a8a94"), ("flat-cel", "4a6ad0"), ("rex-scales", "5a9a4a")] {
+                let ov = crate::profiles::Overrides {
+                    locked: Some(vec![format!("#{hex}")]),
+                    ..Default::default()
+                };
+                g.profiles.insert(k.to_string(), ov);
+            }
+            app.profile_ui.library_open = true;
+            app
+        }
+    })
+}
+
+fn load(path: &Path) -> Result<App> {
+    App::with_document(path).with_context(|| format!("load fixture {}", path.display()))
+}
+
+/// A few made-up recent entries so the welcome snapshot is not empty.
+fn sample_recents() -> Vec<RecentEntry> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let hour = 3600;
+    let at = |h: u64| Timestamp::from_unix(now - h * hour);
+    vec![
+        RecentEntry { path: "~/art/sylvie_set".into(), folder: true, opened: at(2), pinned: true },
+        RecentEntry { path: "~/art/sylvie_set/sylvie_ref.psd".into(), folder: false, opened: at(3), pinned: false },
+        RecentEntry { path: "~/art/sylvie_set/hero_pose.psd".into(), folder: false, opened: at(30), pinned: false },
+        RecentEntry { path: "~/art/sylvie_set/tail_swish.png".into(), folder: false, opened: at(32), pinned: false },
+        RecentEntry { path: "~/commissions/rex/rex_turnaround.psd".into(), folder: false, opened: at(74), pinned: false },
+    ]
 }
 
 /// Renders `scene` at `size` logical pixels and writes a PNG into `dir`.
@@ -41,11 +135,7 @@ pub enum Scene<'a> {
 /// Returns an error if `scene` is a document that fails to load, if the
 /// headless renderer cannot be created, or if the PNG cannot be written.
 pub fn write_snapshot(dir: &Path, name: &str, scene: Scene, size: (f32, f32)) -> Result<PathBuf> {
-    let app = match scene {
-        Scene::Empty => App::default(),
-        Scene::Document(path) => App::with_document(path)
-            .with_context(|| format!("load fixture {}", path.display()))?,
-    };
+    let app = build(scene)?;
 
     let settings = Settings {
         fonts: vec![Cow::Borrowed(LUCIDE)],

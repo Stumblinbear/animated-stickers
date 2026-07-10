@@ -14,13 +14,14 @@ use image::{GrayImage, RgbaImage};
 /// `doc_dim` is max(document width, height). Pass the document's dimension,
 /// never the layer's own. `doc_offset` is where `src`'s origin sits in the
 /// document, in source px: (0, 0) for a document-sized layer, the crop
-/// origin for a pre-cropped one. It anchors `cfg.pins`, which are document
-/// coordinates.
+/// origin for a pre-cropped one. It anchors `pins`, the layer's speckle-floor
+/// exemption points in document source px.
 pub fn run(
     src: &RgbaImage,
     cfg: &Config,
     doc_dim: u32,
     doc_offset: (u32, u32),
+    pins: &[[u32; 2]],
 ) -> Result<Vec<(String, Vec<TracedPath>)>> {
     // PSD layers arrive document-sized with tight art, so tracing the full
     // canvas wastes nearly all the work on transparent pixels. Trace the crop
@@ -29,7 +30,7 @@ pub fn run(
         return Ok(Vec::new()); // fully transparent layer
     };
     let pins = scale_pins(
-        &cfg.pins,
+        pins,
         (doc_offset.0 + ox, doc_offset.1 + oy),
         cfg.scale,
         (src.width(), src.height()),
@@ -243,7 +244,6 @@ pub(crate) type Shape = ([u8; 3], GrayImage, Option<GrayImage>, (u32, u32));
 
 /// The shapes [`trace_planned`] traces, in paint order, for callers that fit
 /// them shape by shape (the GUI's per-shape trace memo).
-#[cfg(feature = "gui")]
 pub(crate) fn planned_shapes(
     plan: &regions::MergePlan,
     alpha: &GrayImage,
@@ -703,7 +703,7 @@ mod tests {
         let cfg = Config { scale: 3, detail: 1.0, ..Default::default() };
         let doc_dim = 40;
 
-        let cropped = run(&img, &cfg, doc_dim, (0, 0)).unwrap();
+        let cropped = run(&img, &cfg, doc_dim, (0, 0), &[]).unwrap();
 
         let prep = raster::prepare(&img, &cfg);
         let plan = palette::Partition::build(&img, &cfg).plan(&cfg);
@@ -711,7 +711,7 @@ mod tests {
         if cfg.color_cleanup > 0 {
             quant = palette::label_smooth(&quant, &prep.alpha, cfg.color_cleanup);
         }
-        let pins = scale_pins(&cfg.pins, (0, 0), cfg.scale, img.dimensions());
+        let pins = scale_pins(&[], (0, 0), cfg.scale, img.dimensions());
         let regs = regions::segment_absorbed(&quant, &prep.alpha, &cfg);
         let uncropped = simplify_paths(trace_regions(&regs, &prep.alpha, &cfg, doc_dim, &pins), &cfg);
 

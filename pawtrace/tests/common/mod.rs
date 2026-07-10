@@ -168,7 +168,7 @@ pub fn trace(r: &Resolved) -> Document {
         .layers
         .par_iter()
         .map(|l| {
-            let mut colors = pipeline::run(&l.img, &l.cfg, doc_dim, (0, 0)).unwrap();
+            let mut colors = pipeline::run(&l.img, &l.cfg, doc_dim, (0, 0), &[]).unwrap();
             let ratio = r.scale as f64 / l.cfg.scale as f64;
             if ratio != 1.0 {
                 for (_, paths) in &mut colors {
@@ -252,7 +252,7 @@ pub struct Stages {
 /// merges, and stroke merges are legible as separate patches.
 pub fn layer_stages(img: &RgbaImage, cfg: &Config, doc_dim: u32) -> Option<Stages> {
     let (src, ox, oy) = pipeline::crop_to_alpha(img, cfg)?;
-    let pins = pipeline::scale_pins(&cfg.pins, (ox, oy), cfg.scale, (src.width(), src.height()));
+    let pins = pipeline::scale_pins(&[], (ox, oy), cfg.scale, (src.width(), src.height()));
 
     // The feature tile shows the merged partition palette selection runs on,
     // obtained at 1x source exactly as the pipeline does.

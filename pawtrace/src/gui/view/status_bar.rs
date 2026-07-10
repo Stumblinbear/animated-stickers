@@ -1,7 +1,7 @@
 //! The bottom bar: whole-document totals and transient status on the left,
 //! the active document's name and position on the right.
 
-use super::{theme, widgets};
+use super::{icons, theme, widgets};
 use crate::gui::app::App;
 use crate::gui::doc;
 use crate::gui::msg::Msg;
@@ -9,29 +9,51 @@ use iced::widget::{container, row, space, text};
 use iced::{Alignment, Element, Length};
 
 pub fn status_bar(app: &App) -> Element<'_, Msg> {
-    let stats = app
-        .session()
-        .and_then(|s| s.full_stats)
-        .map(|s| {
-            format!(
-                "{} shapes · {} anchors",
-                widgets::thousands(s.shapes),
-                widgets::thousands(s.anchors)
-            )
-        })
-        .unwrap_or_default();
-    let left = row![
-        widgets::mono(stats).size(11).color(theme::MUTED),
-        text(app.status.clone()).size(11).color(theme::MUTED),
-    ]
-    .spacing(16)
-    .align_y(Alignment::Center);
+    let error = app.session().and_then(|s| s.trace_error.as_ref());
+    let left: Element<'_, Msg> = if let Some(err) = error {
+        let name = app
+            .layer_name_of(app.selected_pos(), err.layer)
+            .unwrap_or_else(|| "layer".into());
+        row![
+            icons::icon(icons::ALERT).size(11).color(theme::DANGER),
+            text(format!("1 layer failed to trace \u{2014} \u{201c}{name}\u{201d}"))
+                .size(11)
+                .color(theme::DANGER),
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center)
+        .into()
+    } else {
+        let stats = app
+            .session()
+            .and_then(|s| s.full_stats)
+            .map(|s| {
+                format!(
+                    "{} shapes · {} anchors",
+                    widgets::thousands(s.shapes),
+                    widgets::thousands(s.anchors)
+                )
+            })
+            .unwrap_or_default();
+        let ready = if app.docs.is_empty() && app.status.is_empty() {
+            "Ready".to_string()
+        } else {
+            app.status.clone()
+        };
+        row![
+            widgets::mono(stats).size(11).color(theme::MUTED),
+            text(ready).size(11).color(theme::MUTED),
+        ]
+        .spacing(16)
+        .align_y(Alignment::Center)
+        .into()
+    };
 
     let name = app.doc().map(|d| doc::doc_label(&d.path)).unwrap_or_default();
     let position = if app.docs.is_empty() {
-        String::new()
+        "No document open".to_string()
     } else {
-        format!("{} / {} docs", app.selected_doc + 1, app.docs.len())
+        format!("{} / {} docs", app.selected_pos() + 1, app.docs.len())
     };
     let right = row![
         text(name).size(12).color(theme::TEXT),

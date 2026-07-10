@@ -22,8 +22,6 @@
 //! Re-bless: `PAWTRACE_BLESS=1 cargo test --features preview --test visual`
 //! rewrites every golden and `counts.toml`, then passes.
 
-#![cfg(feature = "preview")]
-
 mod common;
 
 use std::collections::BTreeMap;

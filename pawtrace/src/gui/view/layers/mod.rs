@@ -6,7 +6,6 @@ mod chip;
 mod rows;
 
 use crate::gui::app::App;
-use crate::gui::ids::LayerId;
 use crate::gui::msg::{LayerMsg, Msg, ProfileMsg};
 use crate::gui::view::{icons, theme};
 use iced::widget::{button, column, container, row, rule, scrollable, text};
@@ -27,8 +26,8 @@ pub fn layers(app: &App) -> Element<'_, Msg> {
     });
     if let Some(doc) = app.doc() {
         // Topmost layer first; storage is bottom-first paint order.
-        for i in (0..doc.layers.len()).rev() {
-            list = list.push(rows::layer_row(app, LayerId(i)));
+        for layer in doc.layers.iter().rev() {
+            list = list.push(rows::layer_row(app, layer.id));
         }
     }
     let body = column![
@@ -63,7 +62,7 @@ fn context_menu(app: &App) -> Element<'_, Msg> {
 /// The "Assign profile" heading and, indented beneath it, one entry per
 /// profile key that pins the whole selection to it.
 fn assign_group(app: &App) -> Element<'_, Msg> {
-    let stack = app.stack(app.selected_doc);
+    let stack = app.stack(app.selected_pos());
     let mut keys: Vec<&str> = stack.project.profiles.keys().map(String::as_str).collect();
     for k in stack.global.profiles.keys() {
         if !keys.contains(&k.as_str()) {

@@ -1,78 +1,129 @@
-//! The pipeline strip: a `Document` chip then the five numbered stage chips.
-//! A chip carries the accent when its view is active; while its stage
-//! recomputes an indeterminate bar sweeps its bottom edge.
+//! The pipeline strip: a `◆ Document` chip set apart by a divider, then the
+//! four phase pills. Beneath the strip a darker inset sub-panel exposes the
+//! active phase's intermediate renders as a breadcrumb of steps; Document has
+//! no sub-views, so it hides the panel.
+//!
+//! A pill carries the accent when its phase is viewed and a small eye cue so
+//! "what I'm viewing" stays distinct from "what I'm editing". While a
+//! phase recomputes, an indeterminate bar sweeps the pill's bottom edge.
 
-use super::{theme, widgets};
+use super::{icons, theme, widgets};
 use crate::gui::app::App;
-use crate::gui::msg::{Msg, StripView, UiMsg};
+use crate::gui::msg::{Msg, Phase, StripView, UiMsg};
+use crate::gui::phases::SubView;
 use iced::mouse;
 use iced::widget::canvas::{Frame, Geometry, Path, Program};
-use iced::widget::{button, canvas, container, row, space, stack, text};
+use iced::widget::{button, canvas, column, container, row, space, stack, text};
 use iced::{Alignment, Color, Element, Length, Point, Rectangle, Size};
 use std::time::Instant;
 
-const STAGES: [&str; 5] = ["Source", "Flatten", "Palette", "Regions", "Trace"];
-
 pub fn strip(app: &App) -> Element<'_, Msg> {
     let view = app.session().map(|s| s.view).unwrap_or_default();
-
     let doc_active = view == StripView::Document;
-    let doc_chip = chip(
-        app,
-        text("Document").size(12).into(),
-        StripView::Document,
-        doc_active,
-    );
-    // A fixed-height divider: a bare vertical rule stretches the row to fill
-    // the whole pane.
+
+    let doc_label = row![
+        icons::icon(icons::LAYERS).size(13),
+        text("Document").size(12),
+    ]
+    .spacing(6)
+    .align_y(Alignment::Center);
+    let doc_chip = chip(app, doc_label.into(), StripView::Document, doc_active, false);
+
     let divider = container(space().width(1).height(18)).style(|_| container::Style {
         background: Some(iced::Background::Color(theme::BORDER)),
         ..Default::default()
     });
-    let mut r = row![doc_chip, divider]
+    let mut pills = row![doc_chip, divider]
         .spacing(10)
         .align_y(Alignment::Center);
 
-    for (i, name) in STAGES.iter().enumerate() {
-        let sv = StripView::Stage(i);
+    let failed = app.session().and_then(|s| s.trace_error.as_ref()).map(|e| e.phase);
+    for p in crate::gui::phases::PHASES {
+        let sv = StripView::Phase(p);
         let active = view == sv;
-        let number = container(
-            widgets::mono(format!("{}", i + 1))
-                .size(10)
-                .color(if active { theme::BG } else { theme::MUTED }),
-        )
-        .style(move |_| container::Style {
-            background: Some(iced::Background::Color(if active {
-                theme::ACCENT
-            } else {
-                theme::BORDER
-            })),
-            border: iced::border::rounded(3),
-            ..Default::default()
-        })
-        .padding([1, 5]);
-        let label = row![number, text(*name).size(12)]
-            .spacing(6)
-            .align_y(Alignment::Center);
-        r = r.push(chip(app, label.into(), sv, active));
+        let label = text(p.label()).size(12).into();
+        pills = pills.push(chip(app, label, sv, active, failed == Some(p)));
     }
 
-    container(r)
+    let pill_bar = container(pills)
         .style(theme::panel)
         .width(Length::Fill)
-        .padding([6, 10])
+        .padding([6, 10]);
+
+    match view {
+        StripView::Document => pill_bar.into(),
+        StripView::Phase(p) => column![pill_bar, sub_panel(app, p)].into(),
+    }
+}
+
+/// The sub-view panel: the phase's tag then its intermediate renders as
+/// breadcrumb steps separated by arrows. The selected step is accented; a step
+/// with no render yet is dimmed and disabled with an explanatory tooltip.
+fn sub_panel(app: &App, phase: Phase) -> Element<'_, Msg> {
+    let selected = app.active_subview();
+    let tag = widgets::mono(phase.label().to_uppercase()).size(9).color(theme::MUTED);
+
+    let mut steps = row![tag].spacing(10).align_y(Alignment::Center);
+    for (i, &sv) in phase.subviews().iter().enumerate() {
+        if i > 0 {
+            steps = steps.push(
+                icons::icon(icons::ARROW_RIGHT).size(9).color(theme::BORDER),
+            );
+        }
+        steps = steps.push(step(sv, Some(sv) == selected));
+    }
+
+    container(steps)
+        .style(theme::inset)
+        .width(Length::Fill)
+        .padding([5, 12])
+        .into()
+}
+
+/// One breadcrumb step. A sub-view with no render yet is dimmed and unclickable.
+fn step<'a>(sv: SubView, selected: bool) -> Element<'a, Msg> {
+    if sv.stage().is_none() {
+        let dim = button(text(sv.label()).size(11).color(theme::BORDER))
+            .style(theme::flat_button)
+            .padding([2, 6]);
+        return widgets::help(dim, "This intermediate render is not available yet.");
+    }
+    let color = if selected { theme::ACCENT } else { theme::MUTED };
+    button(text(sv.label()).size(11).color(color))
+        .on_press(Msg::Ui(UiMsg::SubView(sv)))
+        .style(theme::flat_button)
+        .padding([2, 6])
         .into()
 }
 
 /// One strip chip: `label` clickable to show `view`, accented while `active`,
-/// carrying the processing bottom bar while its stage recomputes.
-fn chip<'a>(app: &App, label: Element<'a, Msg>, view: StripView, active: bool) -> Element<'a, Msg> {
+/// red while `failed`, with an eye cue on the viewed phase and the processing
+/// bottom bar while its phase recomputes.
+fn chip<'a>(
+    app: &App,
+    label: Element<'a, Msg>,
+    view: StripView,
+    active: bool,
+    failed: bool,
+) -> Element<'a, Msg> {
     let busy = app.view_busy(view);
-    let content = row![label].spacing(6).align_y(Alignment::Center);
-    let chip = button(content)
+    let mut content = row![label].spacing(6).align_y(Alignment::Center);
+    // The viewing cue distinguishes the viewed phase (strip) from the edited
+    // section (inspector), which can differ.
+    if active && matches!(view, StripView::Phase(_)) {
+        content = content.push(icons::icon(icons::EYE).size(10).color(theme::ACCENT));
+    }
+    let base = button(content)
         .on_press(Msg::Ui(UiMsg::View(view)))
-        .style(theme::chip(active))
         .padding([4, 10]);
+    // The danger style is a plain fn item and the active style an opaque
+    // closure, so pick the concrete Button in each branch rather than unifying
+    // the style values.
+    let chip = if failed {
+        base.style(theme::chip_danger)
+    } else {
+        base.style(theme::chip(active))
+    };
     if !busy {
         return chip.into();
     }

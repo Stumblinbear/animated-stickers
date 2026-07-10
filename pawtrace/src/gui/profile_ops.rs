@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 impl App {
     /// Pins layer `name` in the selected document to profile `key`.
     pub(super) fn assign_layer(&mut self, name: String, key: String) {
-        let i = self.selected_doc;
+        let i = self.selected_pos();
         if let Some(tier) = self.project_tier_mut(i) {
             tier.assign.insert(name, key);
         }
@@ -20,7 +20,7 @@ impl App {
     /// Pins every layer in the current selection to profile `key`.
     pub(super) fn assign_selection(&mut self, key: String) {
         let names = self.selected_layer_names();
-        let i = self.selected_doc;
+        let i = self.selected_pos();
         if let Some(tier) = self.project_tier_mut(i) {
             for n in names {
                 tier.assign.insert(n, key.clone());
@@ -34,7 +34,7 @@ impl App {
     /// `diff(profile_base, resolved)`, the layer's full deviation from the
     /// tier defaults, so the layer resolves identically afterward.
     pub(super) fn new_profile_from_layer(&mut self, name: String) -> Option<String> {
-        let i = self.selected_doc;
+        let i = self.selected_pos();
         let stack = self.stack(i);
         // Diff against the tier defaults, not override_base: the assignment
         // replaces the layer's old glob profile, so the new profile must also
@@ -89,7 +89,7 @@ impl App {
             // Only this project's assignments name this tier's key; another
             // project's same-named key is a different profile.
             Scope::Project => {
-                if let Some(tier) = self.project_tier_mut(self.selected_doc) {
+                if let Some(tier) = self.project_tier_mut(self.selected_pos()) {
                     repoint(tier, old, new);
                 }
             }
@@ -124,7 +124,7 @@ impl App {
                 // An assignment whose key the global tier also holds still
                 // resolves there, so it survives the project deletion.
                 let global_has = self.global_profiles.profiles.contains_key(key);
-                if let Some(tier) = self.project_tier_mut(self.selected_doc) {
+                if let Some(tier) = self.project_tier_mut(self.selected_pos()) {
                     tier.profiles.remove(key);
                     if !global_has {
                         tier.assign.retain(|_, v| v != key);
@@ -144,30 +144,18 @@ impl App {
         }
     }
 
-    /// How many layers across all open documents currently resolve to `key`.
-    pub fn profile_usage(&self, key: &str) -> usize {
-        self.docs
-            .iter()
-            .enumerate()
-            .flat_map(|(d, doc)| {
-                let stack = self.stack(d);
-                doc.layers.iter().filter(move |l| stack.match_name(&l.name).as_deref() == Some(key))
-            })
-            .count()
-    }
-
     /// The tier a library edit at `scope` writes into: the global library, or
     /// the selected document's project tier.
     pub(super) fn tier_mut(&mut self, scope: Scope) -> Option<&mut Profiles> {
         match scope {
             Scope::Global => Some(&mut self.global_profiles),
-            Scope::Project => self.project_tier_mut(self.selected_doc),
+            Scope::Project => self.project_tier_mut(self.selected_pos()),
         }
     }
 
     /// The names of every layer in the current selection.
     fn selected_layer_names(&self) -> Vec<String> {
-        let d = self.selected_doc;
+        let d = self.selected_pos();
         self.session()
             .map(|s| s.selection.iter().filter_map(|&i| self.layer_name_of(d, i)).collect())
             .unwrap_or_default()

@@ -2,7 +2,7 @@
 //! built from it. Colors are monochrome plus one warm accent that carries
 //! every kind of state: selection, activity, processing, and protection.
 
-use iced::widget::{button, container, slider};
+use iced::widget::{button, container, slider, text_input};
 use iced::{border, Background, Color, Theme};
 
 const fn rgb8(r: u8, g: u8, b: u8) -> Color {
@@ -22,6 +22,12 @@ pub const TEXT: Color = rgb8(0xd8, 0xd8, 0xde);
 pub const MUTED: Color = rgb8(0x8a, 0x8a, 0x94);
 pub const ACCENT: Color = rgb8(0xe8, 0xa3, 0x3d);
 pub const ACCENT_DIM: Color = rgb8(0x8f, 0x6a, 0x2f);
+/// Darker than [`BG`], for the sub-view panel inset beneath the strip.
+pub const INSET: Color = rgb8(0x0f, 0x0f, 0x12);
+/// The one non-amber hue, reserved exclusively for errors and failures.
+pub const DANGER: Color = rgb8(0xd0, 0x50, 0x40);
+/// A dim red for failure borders and backing tints.
+pub const DANGER_DIM: Color = rgb8(0x6e, 0x30, 0x2a);
 
 /// The window theme: a custom dark palette with the amber accent as primary.
 pub fn theme() -> Theme {
@@ -44,6 +50,27 @@ pub fn panel(_: &Theme) -> container::Style {
         background: Some(Background::Color(SURFACE)),
         text_color: Some(TEXT),
         border: border::width(1.0).color(BORDER),
+        ..Default::default()
+    }
+}
+
+/// The sub-view panel: a darker inset that reads as nested under the strip.
+pub fn inset(_: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Background::Color(INSET)),
+        text_color: Some(TEXT),
+        border: border::width(1.0).color(BORDER),
+        ..Default::default()
+    }
+}
+
+/// A pipeline chip carrying the reserved red: a failed phase.
+pub fn chip_danger(_: &Theme, status: button::Status) -> button::Style {
+    let hovered = matches!(status, button::Status::Hovered);
+    button::Style {
+        background: Some(Background::Color(if hovered { BORDER } else { SURFACE2 })),
+        text_color: DANGER,
+        border: border::rounded(6).width(1.0).color(DANGER_DIM),
         ..Default::default()
     }
 }
@@ -175,6 +202,47 @@ pub fn setting_slider(modified: bool) -> impl Fn(&Theme, slider::Status) -> slid
                 border_color: Color::TRANSPARENT,
             },
         }
+    }
+}
+
+/// A text input with no surface of its own, sitting inside a styled container:
+/// the search fields in the welcome recents panel and the library modal.
+pub fn transparent_input(_: &Theme, _: text_input::Status) -> text_input::Style {
+    text_input::Style {
+        background: Background::Color(Color::TRANSPARENT),
+        border: border::rounded(0),
+        icon: MUTED,
+        placeholder: MUTED,
+        value: TEXT,
+        selection: ACCENT_DIM,
+    }
+}
+
+/// A solid amber call-to-action button with `radius` corners, dimming slightly
+/// on hover.
+pub fn accent_button_style(status: button::Status, radius: f32) -> button::Style {
+    let hovered = matches!(status, button::Status::Hovered);
+    button::Style {
+        background: Some(Background::Color(if hovered {
+            Color { a: 0.9, ..ACCENT }
+        } else {
+            ACCENT
+        })),
+        text_color: BG,
+        border: border::rounded(radius),
+        ..Default::default()
+    }
+}
+
+/// A bordered neutral-surface button with `radius` corners, lifting to the
+/// hover surface on hover.
+pub fn bordered_button_style(status: button::Status, radius: f32) -> button::Style {
+    let hovered = matches!(status, button::Status::Hovered);
+    button::Style {
+        background: Some(Background::Color(if hovered { SURFACE2 } else { SURFACE })),
+        text_color: TEXT,
+        border: border::rounded(radius).width(1.0).color(BORDER),
+        ..Default::default()
     }
 }
 

@@ -4,8 +4,9 @@
 //! underlying helper reached them (a profile write that also clears a promoted
 //! field from a layer override records both).
 
-use super::{Change, Coalesce, Command, Edit, FlagChange, Target};
+use super::{Change, Coalesce, Command, Edit, FlagChange, PinChange, Target};
 use crate::gui::app::App;
+use crate::gui::ids::LayerId;
 use crate::profiles::{Overrides, Scope};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -23,7 +24,7 @@ struct Snapshot {
 impl App {
     fn tier_snapshot(&self) -> Snapshot {
         let g = &self.global_profiles;
-        let p = self.stack(self.selected_doc).project;
+        let p = self.stack(self.selected_pos()).project;
         Snapshot {
             global_default: g.default.clone(),
             global_profiles: g.profiles.clone(),
@@ -54,6 +55,20 @@ impl App {
         let changes: Vec<FlagChange> = changes.into_iter().filter(|c| c.old != c.new).collect();
         if !changes.is_empty() {
             self.push_command(Command::Flags(changes));
+        }
+    }
+
+    /// Records a pin edit on `layer` from `old` to `new`. Consecutive edits
+    /// within one paint-drag coalesce into a single undo step; a no-op when the
+    /// set is unchanged.
+    pub(in crate::gui) fn record_pins(
+        &mut self,
+        layer: LayerId,
+        old: Vec<[u32; 2]>,
+        new: Vec<[u32; 2]>,
+    ) {
+        if old != new {
+            self.push_command(Command::Pins(PinChange { layer, old, new, sealed: false }));
         }
     }
 }

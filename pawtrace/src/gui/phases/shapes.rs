@@ -1,14 +1,20 @@
-//! Stage 4 (Regions & absorption) settings and the region count readout.
+//! The Shapes phase: segment the remap into regions and absorb thin bands.
+//! Owns the phase's sub-views and its inspector section (absorption, the
+//! stroke-merge settings, and the region count readout).
 
-use super::setting::setting;
+use super::SubView;
 use crate::gui::app::App;
 use crate::gui::fields::Field;
 use crate::gui::msg::{EditMsg, Msg};
+use crate::gui::view::inspector::setting::setting;
 use crate::gui::view::{theme, widgets};
 use iced::widget::{column, slider};
 use iced::Element;
 
-pub fn stage4(app: &App) -> Element<'_, Msg> {
+pub const SUBVIEWS: &[SubView] = &[SubView::Regions, SubView::Fates, SubView::Stack];
+pub const DEFAULT_SUBVIEW: SubView = SubView::Regions;
+
+pub fn inspector(app: &App) -> Element<'_, Msg> {
     let Some(sess) = app.session() else {
         return column![].into();
     };
@@ -73,7 +79,9 @@ pub fn stage4(app: &App) -> Element<'_, Msg> {
         widgets::mono(format!(
             "{} regions, {} pinned",
             sess.stages.region_count,
-            cfg.pins.len()
+            app.doc()
+                .and_then(|d| d.inputs.get(&sess.selected_layer))
+                .map_or(0, |i| i.pins.len())
         ))
         .size(11)
         .color(theme::MUTED),

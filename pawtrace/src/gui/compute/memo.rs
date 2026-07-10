@@ -58,10 +58,13 @@ fn fold(prev: u64, f: impl FnOnce(&mut DefaultHasher)) -> u64 {
 }
 
 impl StageKeys {
-    /// The stage keys for `cfg`. Every field a stage reads is hashed here and
-    /// nowhere else. Floats hash by bit pattern; `Vec` fields hash
-    /// element-wise.
-    pub(in crate::gui) fn of(cfg: &Config) -> Self {
+    /// The stage keys for `cfg` and the layer's `pins`. Every field a stage
+    /// reads is hashed here and nowhere else. Floats hash by bit pattern;
+    /// slices hash element-wise. Pins are the layer's own speckle-floor
+    /// exemption points (document source px), folded into the same
+    /// `regions_view` and `fit` keys the removed `cfg.pins` covered, so a pin
+    /// edit invalidates exactly the merge plan and the trace, nothing earlier.
+    pub(in crate::gui) fn of(cfg: &Config, pins: &[[u32; 2]]) -> Self {
         let prep = fold(0x9E37_79B9_7F4A_7C15, |h| {
             cfg.scale.hash(h);
             cfg.alpha_threshold.hash(h);
@@ -84,7 +87,7 @@ impl StageKeys {
             cfg.stroke_merge_dist.to_bits().hash(h);
             cfg.stroke_merge_width.to_bits().hash(h);
         });
-        let regions_view = fold(regions, |h| cfg.pins.hash(h));
+        let regions_view = fold(regions, |h| pins.hash(h));
         // Pins gate which sub-floor regions get traced, so they belong to the
         // fit key even though the regions themselves are unchanged.
         let fit = fold(regions, |h| {
@@ -92,7 +95,7 @@ impl StageKeys {
             cfg.opttolerance.to_bits().hash(h);
             cfg.seam_slack.to_bits().hash(h);
             cfg.smoothing.to_bits().hash(h);
-            cfg.pins.hash(h);
+            pins.hash(h);
         });
         let simplify = fold(fit, |h| cfg.simplify.to_bits().hash(h));
         Self {
@@ -295,11 +298,11 @@ mod tests {
 
     #[test]
     fn simplify_change_leaves_earlier_keys_fixed() {
-        let a = StageKeys::of(&cfg());
+        let a = StageKeys::of(&cfg(), &[]);
         let b = StageKeys::of(&Config {
             simplify: 5.0,
             ..cfg()
-        });
+        }, &[]);
         assert_eq!(a.fit, b.fit);
         assert_eq!(a.regions, b.regions);
         assert_ne!(a.simplify, b.simplify);
@@ -307,17 +310,17 @@ mod tests {
 
     #[test]
     fn detect_key_holds_across_palette_edits_and_breaks_on_alpha() {
-        let base = StageKeys::of(&cfg());
+        let base = StageKeys::of(&cfg(), &[]);
         // shade_split and detail are consolidation/selection params: detection
         // is invariant to them, so its cache must stay valid across the edit.
         let bands = StageKeys::of(&Config {
             shade_split: cfg().shade_split + 0.01,
             ..cfg()
-        });
+        }, &[]);
         let detail = StageKeys::of(&Config {
             detail: cfg().detail + 1.0,
             ..cfg()
-        });
+        }, &[]);
         assert_eq!(base.detect, bands.detect);
         assert_eq!(base.detect, detail.detect);
         assert_ne!(base.quant, bands.quant);
@@ -325,17 +328,17 @@ mod tests {
         let alpha = StageKeys::of(&Config {
             alpha_threshold: cfg().alpha_threshold.wrapping_add(1),
             ..cfg()
-        });
+        }, &[]);
         assert_ne!(base.detect, alpha.detect);
     }
 
     #[test]
     fn detail_change_ripples_through_quant_and_below() {
-        let a = StageKeys::of(&cfg());
+        let a = StageKeys::of(&cfg(), &[]);
         let b = StageKeys::of(&Config {
             detail: 9.0,
             ..cfg()
-        });
+        }, &[]);
         assert_eq!(a.prep, b.prep);
         assert_ne!(a.quant, b.quant);
         assert_ne!(a.regions, b.regions);
@@ -345,11 +348,8 @@ mod tests {
 
     #[test]
     fn pins_change_fit_not_regions() {
-        let a = StageKeys::of(&cfg());
-        let b = StageKeys::of(&Config {
-            pins: vec![[3, 4]],
-            ..cfg()
-        });
+        let a = StageKeys::of(&cfg(), &[]);
+        let b = StageKeys::of(&cfg(), &[[3, 4]]);
         assert_eq!(a.regions, b.regions);
         assert_ne!(a.regions_view, b.regions_view);
         assert_ne!(a.fit, b.fit);
@@ -360,10 +360,10 @@ mod tests {
         let mut m = Memo::default();
         let prep = || Arc::new(crate::raster::prepare(&image::RgbaImage::new(2, 2), &cfg()));
         for i in 0..=PIXEL_LAYERS {
-            m.put_prep(LayerId(i), i as u64, prep());
+            m.put_prep(LayerId::from_raw(i as u128), i as u64, prep());
         }
-        assert!(m.prep(LayerId(0), 0).is_none());
-        assert!(m.prep(LayerId(PIXEL_LAYERS), PIXEL_LAYERS as u64).is_some());
+        assert!(m.prep(LayerId::from_raw(0), 0).is_none());
+        assert!(m.prep(LayerId::from_raw(PIXEL_LAYERS as u128), PIXEL_LAYERS as u64).is_some());
     }
 
     #[test]
@@ -371,9 +371,9 @@ mod tests {
         let mut m = Memo::default();
         let regs = || Arc::new(Vec::<Region>::new());
         for i in 0..(GEO_ENTRIES as u64 + 5) {
-            m.put_regions(LayerId(0), i, regs());
+            m.put_regions(LayerId::from_raw(0), i, regs());
         }
-        assert!(m.regions(LayerId(0), 0).is_none());
-        assert!(m.regions(LayerId(0), GEO_ENTRIES as u64 + 4).is_some());
+        assert!(m.regions(LayerId::from_raw(0), 0).is_none());
+        assert!(m.regions(LayerId::from_raw(0), GEO_ENTRIES as u64 + 4).is_some());
     }
 }

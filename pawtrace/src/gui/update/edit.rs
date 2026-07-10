@@ -56,7 +56,7 @@ pub(super) fn update(app: &mut App, msg: EditMsg) -> Task<Msg> {
         }
         EditMsg::ResetLayer => {
             app.record(crate::gui::undo::Coalesce::None, |app| {
-                let i = app.selected_doc;
+                let i = app.selected_pos();
                 if let Some(layer) = app.layer_name() {
                     if let Some(tier) = app.project_tier_mut(i) {
                         tier.overrides.remove(&layer);

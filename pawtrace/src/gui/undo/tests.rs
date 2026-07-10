@@ -135,28 +135,48 @@ fn a_sealed_step_does_not_absorb_a_re_drag_of_the_same_slider() {
 
 #[test]
 fn pin_painting_merges_within_a_gesture_and_splits_across_releases() {
-    let target = Target::Override("Deer L Hand".into());
-    let pin_edit = |old: Option<Overrides>, new: Option<Overrides>| {
-        Command::Edit(Edit {
-            changes: vec![Change::ov(target.clone(), old, new)],
-            coalesce: Coalesce::Pins,
-        })
+    let layer = LayerId::from_raw(7);
+    let pin_edit = |old: Vec<[u32; 2]>, new: Vec<[u32; 2]>| {
+        Command::Pins(PinChange { layer, old, new, sealed: false })
     };
     let (mut undo, mut redo) = (Vec::new(), Vec::new());
     // One paint-drag: a press plus drags, no release between.
-    push(&mut undo, &mut redo, pin_edit(None, Some(ov(1.0))), UNDO_CAP);
-    push(&mut undo, &mut redo, pin_edit(Some(ov(1.0)), Some(ov(2.0))), UNDO_CAP);
+    push(&mut undo, &mut redo, pin_edit(vec![], vec![[1, 1]]), UNDO_CAP);
+    push(&mut undo, &mut redo, pin_edit(vec![[1, 1]], vec![[1, 1], [2, 2]]), UNDO_CAP);
     assert_eq!(undo.len(), 1, "a paint-drag is one step");
-    // Release, then a separate press.
+    // The merged step spans the whole drag: the original start, the latest end.
+    let Command::Pins(p) = &undo[0] else { panic!("expected a Pins command") };
+    assert!(p.old.is_empty(), "keeps the drag's starting set");
+    assert_eq!(p.new, vec![[1, 1], [2, 2]], "advances to the latest set");
+    // Release, then a separate press: sealing splits the step.
     seal(&mut undo);
-    push(&mut undo, &mut redo, pin_edit(Some(ov(2.0)), Some(ov(3.0))), UNDO_CAP);
+    push(&mut undo, &mut redo, pin_edit(vec![[1, 1], [2, 2]], vec![[1, 1]]), UNDO_CAP);
     assert_eq!(undo.len(), 2, "separate pin presses are separate steps");
+}
+
+#[test]
+fn a_pin_edit_on_another_layer_does_not_merge() {
+    // A pin edit targeting a different layer seals the step rather than folding
+    // another layer's pins into this layer's command.
+    let mut top = Command::Pins(PinChange {
+        layer: LayerId::from_raw(1),
+        old: vec![],
+        new: vec![[1, 1]],
+        sealed: false,
+    });
+    let other = Command::Pins(PinChange {
+        layer: LayerId::from_raw(2),
+        old: vec![],
+        new: vec![[2, 2]],
+        sealed: false,
+    });
+    assert!(top.merge(other).is_err());
 }
 
 #[test]
 fn a_flag_toggle_is_self_inverse() {
     let old = true;
-    let change = FlagChange { layer: LayerId(0), kind: FlagKind::Visible, old, new: !old };
+    let change = FlagChange { layer: LayerId::from_raw(0), kind: FlagKind::Visible, old, new: !old };
     // Redo sets `new`, undo sets `old`, and the two are opposites.
     assert_eq!(change.new, !change.old);
 }

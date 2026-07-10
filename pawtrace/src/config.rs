@@ -60,11 +60,6 @@ pub struct Config {
     /// brushwork; lower preserves more faint small detail. At the default a
     /// 2 px fragment tolerates +0.07 and the boost fades past ~100 px.
     pub shade_noise: f32, // default 0.14 (OKLab ΔE · px)
-    /// Points in document source px. Any region containing one survives the
-    /// speckle floor: a pin marks a small feature (a tooth, a glint) as
-    /// deliberate, and outlives re-segmentation because whatever region
-    /// holds the point is what gets kept.
-    pub pins: Vec<[u32; 2]>, // default empty
     /// Curve smoothing ("Simplify"): corner threshold; 4/3 = no corners.
     pub alphamax: f64, // default 1.15
     pub opttolerance: f64,   // default 0.4 (saturates quickly; alphamax is the lever)
@@ -97,7 +92,6 @@ impl Default for Config {
             locked: Vec::new(),
             shade_split: 0.03,
             shade_noise: 0.14,
-            pins: Vec::new(),
             mode_filter: 0,
             color_cleanup: 0,
             smoothing: 1.0,

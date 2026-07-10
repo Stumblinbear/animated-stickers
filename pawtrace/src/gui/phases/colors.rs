@@ -1,15 +1,22 @@
-//! Stage 3 (Palette & remap) settings, plus the palette swatches with their
-//! nearest-neighbor distance and click-to-lock.
+//! The Colors phase: source pixels through feature merge to the extracted
+//! palette and its remap. Owns the phase's sub-views and its inspector section
+//! (detail, palette cap, color cleanup, and the palette swatches with their
+//! nearest-neighbor distance and click-to-lock).
 
-use super::setting::setting;
+use super::SubView;
 use crate::gui::app::App;
 use crate::gui::fields::Field;
 use crate::gui::msg::{EditMsg, Msg};
 use crate::gui::view::icons;
+use crate::gui::view::inspector::setting::setting;
 use iced::widget::{button, column, container, row, slider, text};
 use iced::{Alignment, Background, Color, Element};
 
-pub fn stage3(app: &App) -> Element<'_, Msg> {
+pub const SUBVIEWS: &[SubView] =
+    &[SubView::Source, SubView::Features, SubView::Merged, SubView::Palette];
+pub const DEFAULT_SUBVIEW: SubView = SubView::Palette;
+
+pub fn inspector(app: &App) -> Element<'_, Msg> {
     let Some(sess) = app.session() else {
         return column![].into();
     };

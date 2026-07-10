@@ -3,15 +3,13 @@
 //! target, and a reset.
 
 mod section;
-mod setting;
-mod stage2;
-mod stage3;
-mod stage4;
-mod stage5;
+pub(in crate::gui) mod setting;
 
 use crate::gui::app::{App, DocState};
-use crate::gui::msg::{EditMsg, Msg, StripView};
+use crate::gui::msg::{EditMsg, Msg, Phase};
+use crate::gui::phases::PHASES;
 use crate::gui::view::{icons, theme, widgets};
+use section::Section;
 use iced::widget::{button, checkbox, column, container, row, scrollable, space, text, text_input};
 use iced::{Alignment, Element, Length};
 
@@ -33,11 +31,14 @@ pub fn inspector(app: &App) -> Element<'_, Msg> {
         return no_selection();
     }
     let layer_name = app.layer_name().unwrap_or_else(|| "-".into());
+    let failed = sess.trace_error.is_some();
 
     let mut header = row![
         text("INSPECTOR").size(11).color(theme::MUTED),
         space().width(Length::Fill),
-        text(layer_name.clone()).size(13),
+        text(layer_name.clone())
+            .size(13)
+            .color(if failed { theme::DANGER } else { theme::TEXT }),
     ]
     .spacing(8)
     .align_y(Alignment::Center);
@@ -55,14 +56,10 @@ pub fn inspector(app: &App) -> Element<'_, Msg> {
 
     let e = sess.expanded;
     let now = app.anim_now;
-    let sections = column![
-        section::section(1, "Source", busy(app, 1), now, e == 1, source_body()),
-        section::section(2, "Supersample & flatten", busy(app, 2), now, e == 2, stage2::stage2(app)),
-        section::section(3, "Palette & remap", busy(app, 3), now, e == 3, stage3::stage3(app)),
-        section::section(4, "Regions & absorption", busy(app, 4), now, e == 4, stage4::stage4(app)),
-        section::section(5, "Trace", busy(app, 5), now, e == 5, stage5::stage5(app)),
-    ]
-    .spacing(0);
+    let mut sections = column![].spacing(0);
+    for phase in PHASES {
+        sections = sections.push(phase_section(app, phase, e, now));
+    }
 
     let body = column![
         header,
@@ -104,16 +101,25 @@ fn no_selection<'a>() -> Element<'a, Msg> {
         .into()
 }
 
-/// Whether the stage feeding inspector section `n` is recomputing.
-fn busy(app: &App, n: usize) -> bool {
-    app.view_busy(StripView::Stage(n - 1))
-}
-
-fn source_body<'a>() -> Element<'a, Msg> {
-    text("The layer as painted, cropped to its art. Nothing to configure here.")
-        .size(12)
-        .color(theme::MUTED)
-        .into()
+/// Builds one phase's inspector section, gated and failure-marked against the
+/// current view and any trace error. The body is the phase's own settings.
+fn phase_section<'a>(
+    app: &'a App,
+    phase: Phase,
+    expanded: Option<Phase>,
+    now: std::time::Instant,
+) -> Element<'a, Msg> {
+    let failed = app.session().and_then(|s| s.trace_error.as_ref()).is_some_and(|e| e.phase == phase);
+    section::section(Section {
+        phase,
+        name: phase.label(),
+        busy: app.phase_busy(phase),
+        locked: app.section_locked(phase),
+        failed,
+        now,
+        expanded: expanded == Some(phase),
+        body: phase.inspector(app),
+    })
 }
 
 fn footer<'a>(app: &'a App, sess: &'a DocState, layer_name: &str) -> Element<'a, Msg> {

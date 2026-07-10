@@ -1,15 +1,20 @@
-//! Stage 5 (Trace) settings: smoothing, fit, simplify, and the sticker
-//! stroke, with the anchor readouts.
+//! The Curves phase: trace region boundaries into fitted, simplified paths.
+//! Owns the phase's sub-views and its inspector section (smoothing, fit,
+//! simplify, the sticker stroke, and the anchor readouts).
 
-use super::setting::setting;
+use super::SubView;
 use crate::gui::app::App;
 use crate::gui::fields::Field;
 use crate::gui::msg::{EditMsg, Msg};
+use crate::gui::view::inspector::setting::setting;
 use crate::gui::view::{theme, widgets};
 use iced::widget::{column, row, slider, text, text_input};
 use iced::{Alignment, Element};
 
-pub fn stage5(app: &App) -> Element<'_, Msg> {
+pub const SUBVIEWS: &[SubView] = &[SubView::Contours, SubView::Fit, SubView::Simplify];
+pub const DEFAULT_SUBVIEW: SubView = SubView::Simplify;
+
+pub fn inspector(app: &App) -> Element<'_, Msg> {
     let Some(sess) = app.session() else {
         return column![].into();
     };

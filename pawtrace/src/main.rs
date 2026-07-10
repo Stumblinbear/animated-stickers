@@ -5,7 +5,7 @@ use pawtrace::{config::Config, output, pipeline, profiles::ProfileStack, psd_imp
 #[derive(Parser)]
 #[command(about = "PSD/PNG -> traced vectors (Tailmovin JSON / SVG)")]
 struct Cli {
-    /// Omit to open the GUI (requires the "gui" build).
+    /// Omit to open the GUI.
     input: Option<std::path::PathBuf>,
     #[arg(short, long)]
     output: Option<std::path::PathBuf>,
@@ -15,23 +15,16 @@ struct Cli {
     detail: f32,
     #[arg(long, default_value_t = 1.15)]
     alphamax: f64,
-    #[cfg(feature = "gui")]
     #[arg(long)]
     gui: bool,
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    #[cfg(feature = "gui")]
-    {
-        let want_gui = cli.gui || cli.input.is_none();
-        if want_gui {
-            return pawtrace::gui::run(cli.input.iter().cloned().collect()).map_err(Into::into);
-        }
+    if cli.gui || cli.input.is_none() {
+        return pawtrace::gui::run(cli.input.iter().cloned().collect()).map_err(Into::into);
     }
-    let Some(input) = cli.input.clone() else {
-        anyhow::bail!("input file required (GUI builds open a window instead: --features gui)");
-    };
+    let input = cli.input.clone().expect("input present when not opening the GUI");
 
     let profiles = ProfileStack::load_near(&input);
     // CLI flags override profiles only when explicitly passed — clap doesn't
@@ -73,7 +66,7 @@ fn main() -> Result<()> {
                 "tracing layer: {name}  [profile: {}]",
                 matched.as_deref().unwrap_or("default")
             );
-            let mut colors = pipeline::run(img, &layer_cfg, w.max(h), (0, 0))?;
+            let mut colors = pipeline::run(img, &layer_cfg, w.max(h), (0, 0), &[])?;
             // Layers trace in their own scale space; output assembles in the
             // document's. A per-layer scale override needs converting or it
             // lands displaced and mis-sized.

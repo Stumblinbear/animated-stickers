@@ -6,12 +6,13 @@
 
 use super::memo::StageKeys;
 use super::render::render_svg;
-use super::{DocStats, FullResult, LayerTrace};
+use super::{DocStats, FullError, FullResult, LayerTrace};
 use crate::config::Config;
-use crate::gui::doc::{Doc, Layer, LayerFlags};
+use crate::gui::doc::{Doc, Layer, LayerInputs, LayerOutputs};
 use crate::gui::ids::LayerId;
 use crate::{output, pipeline, profiles};
-use anyhow::{anyhow, Result};
+use anyhow::Result;
+use rustc_hash::FxHashMap;
 use std::sync::Arc;
 
 /// A newly computed layer trace to fold into the memo. `fit_key` is set only
@@ -54,8 +55,14 @@ fn place(pre: &LayerTrace, cfg: &Config, doc_scale: u32, offset: (u32, u32)) -> 
 }
 
 /// One layer through the pipeline, positioned in document space.
-fn trace_layer(l: &Layer, cfg: &Config, doc_scale: u32, doc_dim: u32) -> Result<LayerTrace> {
-    let pre = pipeline::run(&l.img, cfg, doc_dim, l.offset)?;
+fn trace_layer(
+    l: &Layer,
+    cfg: &Config,
+    doc_scale: u32,
+    doc_dim: u32,
+    pins: &[[u32; 2]],
+) -> Result<LayerTrace> {
+    let pre = pipeline::run(&l.img, cfg, doc_dim, l.offset, pins)?;
     Ok(place(&pre, cfg, doc_scale, l.offset))
 }
 
@@ -65,37 +72,43 @@ fn trace_layer(l: &Layer, cfg: &Config, doc_scale: u32, doc_dim: u32) -> Result<
 /// unchanged, so a profile edit re-traces only that profile's layers.
 pub(super) fn render_full(
     layers: &[Layer],
-    flags: &[LayerFlags],
+    inputs: &FxHashMap<LayerId, LayerInputs>,
     size: (u32, u32),
     profiles: &profiles::ProfileStack,
     doc_dim: u32,
     snap: Vec<Option<Arc<LayerTrace>>>,
-) -> Result<Box<FullResult>> {
+) -> std::result::Result<Box<FullResult>, FullError> {
     let doc_scale = profiles.resolve("").0.scale;
     use rayon::prelude::*;
     let entries: Vec<Option<Entry>> = layers
         .par_iter()
         .enumerate()
         .map(|(i, l)| {
-            if !flags[i].enabled {
+            if !inputs[&l.id].enabled {
                 return Ok(None);
             }
             let cfg = profiles.resolve(&l.name).0;
             let (pre, computed) = match &snap[i] {
                 Some(t) => (t.clone(), false),
-                None => (Arc::new(pipeline::run(&l.img, &cfg, doc_dim, l.offset)?), true),
+                None => {
+                    // Tag a trace failure with its layer so the UI can mark the
+                    // right row red; the composite loses this in the collect.
+                    let traced = pipeline::run(&l.img, &cfg, doc_dim, l.offset, &inputs[&l.id].pins)
+                        .map_err(|e| FullError { layer: Some(l.id), msg: e.to_string() })?;
+                    (Arc::new(traced), true)
+                }
             };
             Ok(Some(Entry { idx: i, cfg, pre, computed }))
         })
-        .collect::<Result<Vec<_>>>()?;
+        .collect::<std::result::Result<Vec<_>, FullError>>()?;
 
     // Counts come from the layer-local trace: the document transform is a
     // scale and translate, so it leaves path and anchor counts unchanged.
-    let mut anchors = vec![0usize; layers.len()];
+    let mut outputs: FxHashMap<LayerId, LayerOutputs> = FxHashMap::default();
     let (mut shapes, mut total) = (0usize, 0usize);
     for e in entries.iter().flatten() {
         let a: usize = e.pre.iter().flat_map(|(_, ps)| ps.iter()).map(|p| p.cubics.len()).sum();
-        anchors[e.idx] = a;
+        outputs.insert(layers[e.idx].id, LayerOutputs { anchors: a });
         total += a;
         shapes += e.pre.iter().map(|(_, ps)| ps.len()).sum::<usize>();
     }
@@ -108,7 +121,7 @@ pub(super) fn render_full(
         .collect();
     let svg_layers: Vec<output::SvgLayer> = placed
         .iter()
-        .filter(|(i, _, _)| flags[*i].visible)
+        .filter(|(i, _, _)| inputs[&layers[*i].id].visible)
         .map(|(i, colors, stroke)| output::SvgLayer {
             name: &layers[*i].name,
             stroke: stroke.as_ref(),
@@ -116,16 +129,17 @@ pub(super) fn render_full(
         })
         .collect();
     let svg = output::svg(size.0, size.1, doc_scale, 0.0, &svg_layers);
-    let img = render_svg(&svg, size.0, size.1).ok_or_else(|| anyhow!("full preview render failed"))?;
+    let img = render_svg(&svg, size.0, size.1)
+        .ok_or_else(|| FullError { layer: None, msg: "full preview render failed".into() })?;
 
     let merges = entries
         .iter()
         .flatten()
         .filter(|e| e.computed)
         .map(|e| {
-            let k = StageKeys::of(&e.cfg);
+            let k = StageKeys::of(&e.cfg, &inputs[&layers[e.idx].id].pins);
             FullMerge {
-                layer: LayerId(e.idx),
+                layer: layers[e.idx].id,
                 simplify_key: k.simplify,
                 fit_key: (e.cfg.simplify <= 0.0).then_some(k.fit),
                 trace: e.pre.clone(),
@@ -133,7 +147,7 @@ pub(super) fn render_full(
         })
         .collect();
 
-    Ok(Box::new(FullResult { img, stats, anchors, merges }))
+    Ok(Box::new(FullResult { img, stats, outputs, merges }))
 }
 
 /// Batch export: Tailmovin JSON next to each document. Excluded layers are
@@ -148,9 +162,7 @@ pub(crate) fn export_doc(
     let included: Vec<&Layer> = doc
         .layers
         .iter()
-        .zip(&doc.flags)
-        .filter(|(_, f)| f.enabled)
-        .map(|(l, _)| l)
+        .filter(|l| doc.inputs[&l.id].enabled)
         .collect();
     let traced: Vec<(String, Option<output::Stroke>, LayerTrace)> = included
         .par_iter()
@@ -159,7 +171,7 @@ pub(crate) fn export_doc(
             Ok((
                 l.name.clone(),
                 output::stroke_of(&cfg),
-                trace_layer(l, &cfg, doc_scale, doc_dim)?,
+                trace_layer(l, &cfg, doc_scale, doc_dim, &doc.inputs[&l.id].pins)?,
             ))
         })
         .collect::<Result<Vec<_>>>()?;

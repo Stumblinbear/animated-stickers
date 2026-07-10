@@ -21,7 +21,7 @@ pub(super) fn update(app: &mut App, msg: ProfileMsg) -> Task<Msg> {
         ProfileMsg::Assign(i, key) => {
             app.profile_ui.chip_open = None;
             app.record(Coalesce::None, move |app| {
-                if let Some(name) = app.layer_name_of(app.selected_doc, i) {
+                if let Some(name) = app.layer_name_of(app.selected_pos(), i) {
                     app.assign_layer(name, key);
                 }
             });
@@ -34,7 +34,7 @@ pub(super) fn update(app: &mut App, msg: ProfileMsg) -> Task<Msg> {
         ProfileMsg::NewFromLayer(i) => {
             app.profile_ui.chip_open = None;
             app.record(Coalesce::None, move |app| {
-                if let Some(name) = app.layer_name_of(app.selected_doc, i) {
+                if let Some(name) = app.layer_name_of(app.selected_pos(), i) {
                     app.new_profile_from_layer(name);
                 }
             });
@@ -84,6 +84,20 @@ pub(super) fn update(app: &mut App, msg: ProfileMsg) -> Task<Msg> {
             }
             app.record(Coalesce::None, move |app| app.delete_profile(scope, &key));
             reassess(app)
+        }
+        ProfileMsg::LibrarySearch(s) => {
+            app.profile_ui.library_search = s;
+            Task::none()
+        }
+        // Import and export are not wired to a file dialog yet, so they only
+        // report the intent in the status line.
+        ProfileMsg::ImportLibrary => {
+            app.status = "Library import is not available yet.".into();
+            Task::none()
+        }
+        ProfileMsg::ExportLibrary => {
+            app.status = "Library export is not available yet.".into();
+            Task::none()
         }
     }
 }
