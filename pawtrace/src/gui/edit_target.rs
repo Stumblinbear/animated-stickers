@@ -2,6 +2,7 @@
 //! default, or the selected layer's own override) and the [`App`] helpers
 //! that read and write through that target.
 
+use crate::color::Srgb;
 use super::app::App;
 use super::fields::{self, Field};
 use super::msg::Msg;
@@ -204,7 +205,7 @@ impl App {
                 .map(|s| s.cfg.stroke_color)
                 .unwrap_or_default();
             if let Some(ov) = app.target_ov() {
-                ov.stroke_color = Some(format!("#{:02x}{:02x}{:02x}", c[0], c[1], c[2]));
+                ov.stroke_color = Some(c.to_hex());
             }
         });
     }
@@ -218,7 +219,7 @@ impl App {
                     s.cfg
                         .locked
                         .iter()
-                        .map(|c| format!("#{:02x}{:02x}{:02x}", c[0], c[1], c[2]))
+                        .map(|c| c.to_hex())
                         .collect()
                 })
                 .unwrap_or_default();
@@ -228,7 +229,7 @@ impl App {
         });
     }
 
-    pub(super) fn toggle_lock(&mut self, c: [u8; 3]) -> Task<Msg> {
+    pub(super) fn toggle_lock(&mut self, c: Srgb) -> Task<Msg> {
         if let Some(sess) = self.session_mut() {
             if let Some(i) = sess.cfg.locked.iter().position(|&l| l == c) {
                 sess.cfg.locked.remove(i);

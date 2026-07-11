@@ -598,9 +598,7 @@ impl App {
             None => Config::default(),
         };
 
-        let c = cfg.stroke_color;
-
-        let hex = format!("#{:02x}{:02x}{:02x}", c[0], c[1], c[2]);
+        let hex = cfg.stroke_color.to_hex();
 
         if let Some(sess) = self.session_mut() {
             sess.cfg = cfg;
@@ -706,7 +704,7 @@ impl App {
     /// function of the view).
     pub(super) fn reconcile_tool(&mut self) {
         if !self.tool_applicable(self.tools.active) {
-            self.tools.active = Tool::Select;
+            self.tools.active = Tool::default();
         }
     }
 

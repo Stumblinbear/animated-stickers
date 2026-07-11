@@ -15,6 +15,7 @@
 //! (characters and layer overrides), the project winning a specificity tie.
 //! File: pawtrace.toml, searched next to the input file, then cwd.
 
+use crate::color::Srgb;
 use crate::config::Config;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -48,64 +49,88 @@ pub struct Overrides {
 
 impl Overrides {
     pub fn apply(&self, mut c: Config) -> Config {
-        if let Some(v) = self.detail {
+        // Destructured with no `..` so a field added to Overrides but not
+        // applied here is a compile error, never a silently ignored setting.
+        let Overrides {
+            detail,
+            max_colors,
+            locked,
+            shade_split,
+            shade_noise,
+            scale,
+            alpha_threshold,
+            alphamax,
+            opttolerance,
+            seam_slack,
+            simplify,
+            mode_filter,
+            color_cleanup,
+            smoothing,
+            absorb_dist,
+            absorb_aggr,
+            stroke_merge_dist,
+            stroke_merge_width,
+            stroke_width,
+            stroke_color,
+        } = self;
+        if let Some(v) = *detail {
             c.detail = v;
         }
-        if let Some(v) = self.max_colors {
+        if let Some(v) = *max_colors {
             c.max_colors = v;
         }
-        if let Some(v) = &self.locked {
-            c.locked = v.iter().filter_map(|s| parse_hex(s)).collect();
+        if let Some(v) = locked {
+            c.locked = v.iter().filter_map(|s| Srgb::from_hex(s)).collect();
         }
-        if let Some(v) = self.shade_split {
+        if let Some(v) = *shade_split {
             c.shade_split = v;
         }
-        if let Some(v) = self.shade_noise {
+        if let Some(v) = *shade_noise {
             c.shade_noise = v;
         }
-        if let Some(v) = self.scale {
+        if let Some(v) = *scale {
             c.scale = v;
         }
-        if let Some(v) = self.alpha_threshold {
+        if let Some(v) = *alpha_threshold {
             c.alpha_threshold = v;
         }
-        if let Some(v) = self.alphamax {
+        if let Some(v) = *alphamax {
             c.alphamax = v;
         }
-        if let Some(v) = self.opttolerance {
+        if let Some(v) = *opttolerance {
             c.opttolerance = v;
         }
-        if let Some(v) = self.seam_slack {
+        if let Some(v) = *seam_slack {
             c.seam_slack = v;
         }
-        if let Some(v) = self.simplify {
+        if let Some(v) = *simplify {
             c.simplify = v;
         }
-        if let Some(v) = self.mode_filter {
+        if let Some(v) = *mode_filter {
             c.mode_filter = v;
         }
-        if let Some(v) = self.color_cleanup {
+        if let Some(v) = *color_cleanup {
             c.color_cleanup = v;
         }
-        if let Some(v) = self.smoothing {
+        if let Some(v) = *smoothing {
             c.smoothing = v;
         }
-        if let Some(v) = self.absorb_dist {
+        if let Some(v) = *absorb_dist {
             c.absorb_dist = v;
         }
-        if let Some(v) = self.absorb_aggr {
+        if let Some(v) = *absorb_aggr {
             c.absorb_aggr = v;
         }
-        if let Some(v) = self.stroke_merge_dist {
+        if let Some(v) = *stroke_merge_dist {
             c.stroke_merge_dist = v;
         }
-        if let Some(v) = self.stroke_merge_width {
+        if let Some(v) = *stroke_merge_width {
             c.stroke_merge_width = v;
         }
-        if let Some(v) = self.stroke_width {
+        if let Some(v) = *stroke_width {
             c.stroke_width = v;
         }
-        if let Some(v) = self.stroke_color.as_deref().and_then(parse_hex) {
+        if let Some(v) = stroke_color.as_deref().and_then(Srgb::from_hex) {
             c.stroke_color = v;
         }
         c
@@ -156,16 +181,6 @@ pub fn key_matches(key: &str, layer_name: &str) -> bool {
 fn specificity(key: &str) -> (usize, bool, usize) {
     let literals = key.chars().filter(|&c| c != '*').count();
     (literals, key.starts_with('*'), key.len())
-}
-
-/// "#rrggbb" or "rrggbb" -> color; `None` on anything malformed.
-pub fn parse_hex(s: &str) -> Option<[u8; 3]> {
-    let s = s.trim_start_matches('#');
-    if s.len() != 6 {
-        return None;
-    }
-    let v = u32::from_str_radix(s, 16).ok()?;
-    Some([(v >> 16) as u8, (v >> 8) as u8, v as u8])
 }
 
 #[derive(Serialize, Deserialize, Default, Clone, Debug)]
@@ -435,12 +450,8 @@ pub fn diff(base: &Config, cfg: &Config) -> Overrides {
     Overrides {
         detail: d(base.detail, cfg.detail),
         max_colors: d(base.max_colors, cfg.max_colors),
-        locked: (base.locked != cfg.locked).then(|| {
-            cfg.locked
-                .iter()
-                .map(|c| format!("#{:02x}{:02x}{:02x}", c[0], c[1], c[2]))
-                .collect()
-        }),
+        locked: (base.locked != cfg.locked)
+            .then(|| cfg.locked.iter().map(|c| c.to_hex()).collect()),
         shade_split: d(base.shade_split, cfg.shade_split),
         shade_noise: d(base.shade_noise, cfg.shade_noise),
         scale: d(base.scale, cfg.scale),
@@ -457,10 +468,8 @@ pub fn diff(base: &Config, cfg: &Config) -> Overrides {
         stroke_merge_dist: d(base.stroke_merge_dist, cfg.stroke_merge_dist),
         stroke_merge_width: d(base.stroke_merge_width, cfg.stroke_merge_width),
         stroke_width: d(base.stroke_width, cfg.stroke_width),
-        stroke_color: (base.stroke_color != cfg.stroke_color).then(|| {
-            let c = cfg.stroke_color;
-            format!("#{:02x}{:02x}{:02x}", c[0], c[1], c[2])
-        }),
+        stroke_color: (base.stroke_color != cfg.stroke_color)
+            .then(|| cfg.stroke_color.to_hex()),
     }
 }
 
@@ -701,7 +710,7 @@ mod tests {
         let base = Config::default();
         let mut cfg = base.clone();
         cfg.detail = 9.0;
-        cfg.locked = vec![[1, 2, 3]];
+        cfg.locked = vec![Srgb([1, 2, 3])];
         let ov = diff(&base, &cfg);
         assert_eq!(ov.detail, Some(9.0));
         assert_eq!(ov.locked.as_deref(), Some(&["#010203".to_string()][..]));

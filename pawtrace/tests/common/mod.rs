@@ -14,11 +14,12 @@ mod font;
 
 use std::path::{Path, PathBuf};
 
-use image::{GrayImage, Rgb, RgbImage, Rgba, RgbaImage};
+use image::{GrayImage, RgbImage, Rgba, RgbaImage};
 use rayon::prelude::*;
 use resvg::{tiny_skia, usvg};
 use serde::Deserialize;
 
+use pawtrace::color::Srgb;
 use pawtrace::config::Config;
 use pawtrace::output::{self, Stroke, SvgLayer};
 use pawtrace::profiles::ProfileStack;
@@ -303,7 +304,7 @@ pub fn layer_stages(img: &RgbaImage, cfg: &Config, doc_dim: u32) -> Option<Stage
         raster::uniform_color(&src, cfg.alpha_threshold)
     {
         let alpha = raster::scale_alpha(&src, cfg);
-        let flat = RgbImage::from_pixel(alpha.width(), alpha.height(), Rgb(color));
+        let flat = RgbImage::from_pixel(alpha.width(), alpha.height(), color.into());
         let regs = regions::from_mask(&alpha, color);
         (alpha, flat.clone(), flat, regs)
     } else {
@@ -422,12 +423,12 @@ fn hashed_color(idx: u32) -> Rgba<u8> {
     let hue = (x % 360) as f32;
     let sat = 0.55 + (x >> 9 & 0xff) as f32 / 255.0 * 0.35;
     let val = 0.80 + (x >> 17 & 0xff) as f32 / 255.0 * 0.20;
-    let [r, g, b] = hsv_to_rgb(hue, sat, val);
+    let [r, g, b] = hsv_to_rgb(hue, sat, val).0;
     Rgba([r, g, b, 255])
 }
 
 /// sRGB from HSV, `h` in `0.0..360.0`, `s`/`v` in `0.0..=1.0`.
-fn hsv_to_rgb(h: f32, s: f32, v: f32) -> [u8; 3] {
+fn hsv_to_rgb(h: f32, s: f32, v: f32) -> Srgb {
     let c = v * s;
     let hp = h / 60.0;
     let x = c * (1.0 - (hp % 2.0 - 1.0).abs());
@@ -441,16 +442,16 @@ fn hsv_to_rgb(h: f32, s: f32, v: f32) -> [u8; 3] {
     };
     let m = v - c;
     let to = |f: f32| ((f + m) * 255.0).round() as u8;
-    [to(r), to(g), to(b)]
+    Srgb([to(r), to(g), to(b)])
 }
 
 const TILE_H: u32 = 256;
 const PAD: u32 = 8;
 const SEP_W: u32 = 2;
 /// Divider rule color, chosen to read against the checkerboard.
-const SEP: [u8; 3] = [96, 96, 104];
+const SEP: Srgb = Srgb([96, 96, 104]);
 /// Label text color, chosen to read against the checkerboard.
-const LABEL: [u8; 3] = [210, 210, 215];
+const LABEL: Srgb = Srgb([210, 210, 215]);
 /// Caption per tile. The sheet splits the GUI's Palette stage into the
 /// feature and quantized views and its Trace stage into fit and simplify, so
 /// it carries more stages than the GUI's five-chip strip.
@@ -460,8 +461,8 @@ const STAGE_LABELS: [&str; 7] = [
 
 /// Alpha checkerboard, mirrored from the GUI preview's
 /// `src/gui/view/checkerboard.rs` (CHECK_LIGHT / CHECK_DARK / TILE) as 8-bit.
-const CHECK_LIGHT: [u8; 3] = [41, 41, 46];
-const CHECK_DARK: [u8; 3] = [28, 28, 33];
+const CHECK_LIGHT: Srgb = Srgb([41, 41, 46]);
+const CHECK_DARK: Srgb = Srgb([28, 28, 33]);
 const CHECK_TILE: u32 = 8;
 
 /// An opaque `w`x`h` transparency-grid raster: the two-tone alpha checker the
@@ -475,7 +476,7 @@ fn checkerboard(w: u32, h: u32) -> RgbaImage {
         } else {
             CHECK_LIGHT
         };
-        *p = Rgba([c[0], c[1], c[2], 255]);
+        *p = c.into();
     }
 
     img
@@ -543,8 +544,8 @@ pub fn contact_sheet(s: &Stages) -> RgbaImage {
 }
 
 /// Paints an opaque `color` rectangle, clipped to the image bounds.
-fn fill_rect(dst: &mut RgbaImage, x: u32, y: u32, w: u32, h: u32, color: [u8; 3]) {
-    let px = Rgba([color[0], color[1], color[2], 255]);
+fn fill_rect(dst: &mut RgbaImage, x: u32, y: u32, w: u32, h: u32, color: Srgb) {
+    let px: Rgba<u8> = color.into();
 
     for yy in y..(y + h).min(dst.height()) {
         for xx in x..(x + w).min(dst.width()) {

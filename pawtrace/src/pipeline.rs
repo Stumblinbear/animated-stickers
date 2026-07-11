@@ -3,6 +3,7 @@
 //! transition-band absorption + region segmentation (regions), then one
 //! traced shape per region (trace + fit), painted as an outside-in stack.
 
+use crate::color::Srgb;
 use crate::trace::{ContourParams, FitParams, TracedPath};
 use crate::{config::Config, palette, raster, regions, timing, trace};
 use anyhow::Result;
@@ -204,7 +205,7 @@ pub fn trace_planned(
     let contour = ContourParams::of(cfg);
     let fit = FitParams::of(cfg);
 
-    let traced: Vec<([u8; 3], Vec<TracedPath>)> = timing::TRACE.time(|| {
+    let traced: Vec<(Srgb, Vec<TracedPath>)> = timing::TRACE.time(|| {
         shapes
             .par_iter()
             .map(|(color, mask, slack, (bx, by))| {
@@ -228,7 +229,7 @@ pub fn trace_planned(
 /// output format wants: adjacent shapes of one color join a single entry,
 /// empty traces drop out.
 pub(crate) fn group_traced(
-    traced: Vec<([u8; 3], Vec<TracedPath>)>,
+    traced: Vec<(Srgb, Vec<TracedPath>)>,
 ) -> Vec<(String, Vec<TracedPath>)> {
     let mut out: Vec<(String, Vec<TracedPath>)> = Vec::new();
 
@@ -237,7 +238,7 @@ pub(crate) fn group_traced(
             continue;
         }
 
-        let hex = format!("#{:02x}{:02x}{:02x}", c[0], c[1], c[2]);
+        let hex = c.to_hex();
 
         match out.last_mut() {
             Some((last_hex, last_paths)) if *last_hex == hex => last_paths.append(&mut paths),
@@ -251,7 +252,7 @@ pub(crate) fn group_traced(
 /// A paintable shape in paint order: `(region color, shape mask, seam-slack
 /// mask, mask bbox origin)`. The seam-slack mask is `None` when seam slack is
 /// off.
-pub(crate) type Shape = ([u8; 3], GrayImage, Option<GrayImage>, (u32, u32));
+pub(crate) type Shape = (Srgb, GrayImage, Option<GrayImage>, (u32, u32));
 
 /// The shapes [`trace_planned`] traces, in paint order, for callers that fit
 /// them shape by shape (the GUI's per-shape trace memo).
@@ -587,7 +588,7 @@ fn surviving_shapes(plan: &regions::MergePlan, alpha: &GrayImage, cfg: &ShapePar
 fn slack_mask(
     mask: &GrayImage,
     origin: (u32, u32),
-    own: [u8; 3],
+    own: Srgb,
     label: &[u32],
     survivors: &[usize],
     regs: &[regions::Region],
@@ -598,7 +599,7 @@ fn slack_mask(
 
     let lc: Vec<bool> = survivors
         .iter()
-        .map(|&ri| crate::config::color_dist(own, regs[ri].color) < thresh)
+        .map(|&ri| own.dist(regs[ri].color) < thresh)
         .collect();
 
     let low_contrast = |o: u32| -> bool { o != u32::MAX && lc[o as usize] };
@@ -750,9 +751,9 @@ mod tests {
 
         assert_eq!(regs.len(), 3);
         // Scan order: field, moat, block.
-        assert_eq!(regs[0].color, [20, 20, 20]);
-        assert_eq!(regs[1].color, [190, 190, 190]);
-        assert_eq!(regs[2].color, [200, 200, 200]);
+        assert_eq!(regs[0].color, Srgb([20, 20, 20]));
+        assert_eq!(regs[1].color, Srgb([190, 190, 190]));
+        assert_eq!(regs[2].color, Srgb([200, 200, 200]));
 
         let pins = [(2u32, 2u32), (11, 11)];
         let plan = regions::merge_plan(&regs, &alpha, &regions::PlanParams::of(&cfg), 512, &pins);
@@ -776,8 +777,8 @@ mod tests {
         let shapes = surviving_shapes(&plan, &alpha, &ShapeParams::of(&cfg));
         assert_eq!(shapes.len(), 2);
 
-        let ring = shapes.iter().find(|s| s.0 == [20, 20, 20]).unwrap();
-        let block = shapes.iter().find(|s| s.0 == [200, 200, 200]).unwrap();
+        let ring = shapes.iter().find(|s| s.0 == Srgb([20, 20, 20])).unwrap();
+        let block = shapes.iter().find(|s| s.0 == Srgb([200, 200, 200])).unwrap();
         // The leaf covers_survivor rebuild reopens the hole over the block:
         // the field paints its own 512 pixels, not the 576 its plan mask holds.
         assert_eq!(on(&ring.1), 512);
@@ -922,8 +923,8 @@ mod tests {
         // 12x12, three vertical bands, light to dark left to right. Every
         // band touches the canvas edge (depth 0 for all), so luminance
         // orders the stack.
-        let colors = [[240u8, 240, 240], [128, 128, 128], [16, 16, 16]];
-        let quant = image::RgbImage::from_fn(12, 12, |x, _| image::Rgb(colors[(x / 4) as usize]));
+        let colors = [Srgb([240, 240, 240]), Srgb([128, 128, 128]), Srgb([16, 16, 16])];
+        let quant = image::RgbImage::from_fn(12, 12, |x, _| colors[(x / 4) as usize].into());
         let alpha = GrayImage::from_pixel(12, 12, image::Luma([255]));
         let cfg = Config {
             scale: 1,
@@ -951,19 +952,19 @@ mod tests {
         // A near-identical disk enclosed by a fill: the disk's whole boundary
         // is a low-contrast seam, so slackening the fit there can only drop
         // anchors, never add them. The fill's silhouette is unaffected.
-        let fill = [96u8, 96, 96];
-        let disk = [120u8, 120, 120];
+        let fill = Srgb([96, 96, 96]);
+        let disk = Srgb([120, 120, 120]);
         let thresh = 2.0 * Config::default().stroke_merge_dist;
         assert!(
-            crate::config::color_dist(fill, disk) < thresh,
+            fill.dist(disk) < thresh,
             "colors must read as a low-contrast seam"
         );
 
-        let mut quant = image::RgbImage::from_pixel(32, 32, image::Rgb(fill));
+        let mut quant = image::RgbImage::from_pixel(32, 32, fill.into());
         for y in 0..32i32 {
             for x in 0..32i32 {
                 if (x - 16).pow(2) + (y - 16).pow(2) <= 49 {
-                    quant.put_pixel(x as u32, y as u32, image::Rgb(disk));
+                    quant.put_pixel(x as u32, y as u32, disk.into());
                 }
             }
         }

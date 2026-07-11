@@ -11,6 +11,10 @@ use iced::widget::{column, container, row, slider, text, toggler};
 use iced::{Alignment, Color, Element, Length};
 
 pub const ICON: char = icons::FLAME;
+/// The brush press is absorbed with no effect yet, but capturing it keeps a
+/// left-drag from panning.
+pub const CAPTURES_PRESS: bool = true;
+pub const CURSOR: iced::mouse::Interaction = iced::mouse::Interaction::Crosshair;
 
 /// The heat brush parameters.
 pub struct State {

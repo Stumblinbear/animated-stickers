@@ -1,9 +1,9 @@
 //! Setting edits and the write-mode toggles that redirect where they land.
 
+use crate::color::Srgb;
 use crate::gui::app::App;
 use crate::gui::fields;
 use crate::gui::msg::{EditMsg, Msg};
-use crate::profiles;
 use iced::Task;
 
 pub(super) fn update(app: &mut App, msg: EditMsg) -> Task<Msg> {
@@ -23,7 +23,7 @@ pub(super) fn update(app: &mut App, msg: EditMsg) -> Task<Msg> {
             if let Some(s) = app.session_mut() {
                 s.stroke_hex = text.clone();
             }
-            let Some(c) = profiles::parse_hex(&text) else {
+            let Some(c) = Srgb::from_hex(&text) else {
                 return Task::none();
             };
             if app.session().map(|s| s.cfg.stroke_color) == Some(c) {

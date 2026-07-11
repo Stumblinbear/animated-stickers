@@ -1,55 +1,8 @@
 //! Color and geometry helpers shared by the palette stages.
 
+use crate::color::Srgb;
 use super::{Feature, FeatureId, FeatureLabels};
-use crate::config::srgb_to_oklab;
 use std::collections::HashMap;
-
-/// A color in OKLab, the space every palette comparison runs in. Wrapping the
-/// triple keeps an sRGB byte color from entering a ΔE comparison unconverted.
-#[derive(Clone, Copy, PartialEq, Debug)]
-pub struct Lab(pub [f32; 3]);
-
-impl Lab {
-    /// Converts an sRGB color.
-    pub fn of(srgb: [u8; 3]) -> Lab {
-        Lab(srgb_to_oklab(srgb))
-    }
-
-    /// Euclidean ΔE to `o`.
-    pub fn dist(self, o: Lab) -> f32 {
-        self.dist2(o).sqrt()
-    }
-
-    /// Squared ΔE to `o`, saving the sqrt where only comparisons happen.
-    pub fn dist2(self, o: Lab) -> f32 {
-        let (d0, d1, d2) = (self.0[0] - o.0[0], self.0[1] - o.0[1], self.0[2] - o.0[2]);
-        d0 * d0 + d1 * d1 + d2 * d2
-    }
-
-    /// Distance to the segment between `a` and `b`.
-    pub fn seg_dev(self, a: Lab, b: Lab) -> f32 {
-        let ab = [b.0[0] - a.0[0], b.0[1] - a.0[1], b.0[2] - a.0[2]];
-        let ap = [self.0[0] - a.0[0], self.0[1] - a.0[1], self.0[2] - a.0[2]];
-        let len2 = ab[0] * ab[0] + ab[1] * ab[1] + ab[2] * ab[2];
-        let t = if len2 > 0.0 {
-            ((ap[0] * ab[0] + ap[1] * ab[1] + ap[2] * ab[2]) / len2).clamp(0.0, 1.0)
-        } else {
-            0.0
-        };
-        let on = Lab([a.0[0] + t * ab[0], a.0[1] + t * ab[1], a.0[2] + t * ab[2]]);
-        self.dist(on)
-    }
-
-    /// Whether this color reads as an anti-alias mixture of `a` and `b`:
-    /// within `dev` of the segment between them and at least `jnd` away from
-    /// each endpoint, so a mark sharing an endpoint's color never matches.
-    pub fn blend_between(self, a: Lab, b: Lab, jnd: f32, dev: f32) -> bool {
-        if self.dist(a) <= jnd || self.dist(b) <= jnd {
-            return false;
-        }
-        self.seg_dev(a, b) < dev
-    }
-}
 
 /// Max sRGB channel under which an achromatic color counts as black ink;
 /// adjacent ink features union regardless of OKLab distance, whose cube root
@@ -63,8 +16,9 @@ pub const INK_BLACK_ZONE: u8 = 30;
 pub const INK_SPREAD: u8 = 8;
 
 /// Whether `m` counts as black ink under [`INK_BLACK_ZONE`]/[`INK_SPREAD`].
-pub fn is_ink(m: [u8; 3]) -> bool {
-    let (hi, lo) = (m[0].max(m[1]).max(m[2]), m[0].min(m[1]).min(m[2]));
+pub fn is_ink(m: Srgb) -> bool {
+    let [r, g, b] = m.0;
+    let (hi, lo) = (r.max(g).max(b), r.min(g).min(b));
     hi <= INK_BLACK_ZONE && hi - lo <= INK_SPREAD
 }
 

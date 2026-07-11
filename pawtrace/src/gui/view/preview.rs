@@ -168,18 +168,17 @@ impl Program<Msg> for Preview<'_> {
             Event::Mouse(mouse::Event::ButtonPressed(button)) => {
                 let mid = matches!(button, mouse::Button::Middle);
                 let left = matches!(button, mouse::Button::Left);
-                if mid || (left && self.tool == Tool::Select) {
+                let captures = left && self.tool.captures_press();
+                if mid || (left && !captures) {
                     state.panning = true;
                     state.last = Some(pos);
-                    // Only a left Select press can become a click; a middle-button
-                    // pan leaves `press` clear so its release never selects.
-                    state.press = (left && self.tool == Tool::Select).then_some(pos);
+                    // Only a left non-capturing press can become a click; a
+                    // middle-button pan leaves `press` clear so its release
+                    // never selects.
+                    state.press = (left && !captures).then_some(pos);
                     return Some(Action::capture());
                 }
-                // Pin, Lock, and the brush tools capture the press so a
-                // left-drag acts instead of panning. The brush presses are
-                // absorbed with no effect.
-                if left && matches!(self.tool, Tool::Pin | Tool::Lock | Tool::Protect | Tool::Heat) {
+                if captures {
                     let ip = to_img(pos);
                     if ip.x >= 0.0 && ip.y >= 0.0 && ip.x < cw && ip.y < ch {
                         state.tool_active = true;
@@ -271,10 +270,7 @@ impl Program<Msg> for Preview<'_> {
         if state.panning {
             mouse::Interaction::Grabbing
         } else if cursor.is_over(bounds) {
-            match self.tool {
-                Tool::Select => mouse::Interaction::Grab,
-                Tool::Pin | Tool::Lock | Tool::Protect | Tool::Heat => mouse::Interaction::Crosshair,
-            }
+            self.tool.cursor()
         } else {
             mouse::Interaction::default()
         }

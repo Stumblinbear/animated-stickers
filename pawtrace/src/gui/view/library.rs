@@ -135,8 +135,8 @@ fn swatch_color(ov: &Overrides) -> Color {
         .as_ref()
         .and_then(|v| v.first())
         .or(ov.stroke_color.as_ref());
-    match hex.and_then(|s| profiles::parse_hex(s)) {
-        Some(c) => Color::from_rgb8(c[0], c[1], c[2]),
+    match hex.and_then(|s| crate::color::Srgb::from_hex(s)) {
+        Some(c) => c.into(),
         None => theme::SURFACE2,
     }
 }

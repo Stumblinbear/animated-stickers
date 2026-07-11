@@ -28,7 +28,7 @@ pub(super) fn regions_handle(regs: &[Region], (w, h): (u32, u32)) -> Img {
         for &(px, py) in &r.pixels {
             let idx = (((r.y0 + py) * w + (r.x0 + px)) * 4) as usize;
 
-            bytes[idx..idx + 3].copy_from_slice(&r.color);
+            bytes[idx..idx + 3].copy_from_slice(&r.color.0);
             bytes[idx + 3] = 255;
         }
     }

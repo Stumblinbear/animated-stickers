@@ -1,7 +1,7 @@
 //! Palette selection over the merged partition: grouping features of one
 //! authored color, then greedy salience-ordered slot assignment.
 
-use super::common::Lab;
+use crate::color::{Lab, Srgb};
 use super::{Feature, SelectParams};
 
 /// OKLab distance under which feature means count as one authored color.
@@ -20,7 +20,7 @@ const GROUP_PRUNE: u32 = 3;
 #[derive(Debug, Clone)]
 pub struct FeatureGroup {
     /// Group color: the mean of its largest member, sRGB.
-    pub color: [u8; 3],
+    pub color: Srgb,
     /// Largest member area, source px.
     pub largest: u32,
     /// Total member area, source px.
@@ -39,7 +39,7 @@ pub fn group_features(features: &[Feature]) -> Vec<FeatureGroup> {
     let mut group_lab: Vec<Lab> = Vec::new();
 
     for f in feats {
-        let l = Lab::of(f.mean);
+        let l = Lab::from(f.mean);
 
         // The founding (largest) member fixes the group color and its lab
         // anchor: an exact fill stays exact instead of drifting with every
@@ -77,8 +77,8 @@ pub fn group_features(features: &[Feature]) -> Vec<FeatureGroup> {
 /// Over `cfg.max_colors`, the least distinct color is evicted first: the
 /// non-locked entry with the smallest OKLab gap to its nearest surviving
 /// neighbor, whose regions then degrade onto that neighbor.
-pub fn select_features(groups: &[FeatureGroup], cfg: &SelectParams) -> Vec<[u8; 3]> {
-    let mut palette: Vec<[u8; 3]> = Vec::new();
+pub fn select_features(groups: &[FeatureGroup], cfg: &SelectParams) -> Vec<Srgb> {
+    let mut palette: Vec<Srgb> = Vec::new();
     let mut locked_n = 0;
 
     for &c in &cfg.locked {
@@ -87,11 +87,11 @@ pub fn select_features(groups: &[FeatureGroup], cfg: &SelectParams) -> Vec<[u8; 
         }
     }
 
-    let mut kept: Vec<Lab> = palette.iter().map(|&c| Lab::of(c)).collect();
+    let mut kept: Vec<Lab> = palette.iter().map(|&c| Lab::from(c)).collect();
     locked_n += kept.len();
 
     for g in groups {
-        let l = Lab::of(g.color);
+        let l = Lab::from(g.color);
 
         if kept.iter().any(|&k| l.dist(k) < FEATURE_DEDUP) {
             continue;

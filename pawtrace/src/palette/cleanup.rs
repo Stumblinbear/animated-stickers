@@ -1,7 +1,8 @@
 //! Indistinct cleanup: absorbs the resample and anti-alias residue the cliff
 //! merge leaves behind into an adjacent neighbor.
 
-use super::common::{absorb, boundary_edge_counts, is_ink, Lab, UnionFind};
+use super::common::{absorb, boundary_edge_counts, is_ink, UnionFind};
+use crate::color::Lab;
 use super::{Feature, FeatureId, FeatureLabels, Partition};
 use std::collections::HashMap;
 
@@ -93,7 +94,7 @@ impl Partition {
 
 fn fold(features: &[Feature], labels: &FeatureLabels) -> (Vec<Feature>, Vec<FeatureId>) {
     let n = features.len();
-    let lab: Vec<Lab> = features.iter().map(|f| Lab::of(f.mean)).collect();
+    let lab: Vec<Lab> = features.iter().map(|f| Lab::from(f.mean)).collect();
     // Adjacency with shared-boundary lengths: the ribbon test needs each
     // feature's two DOMINANT neighbors (most shared edges), not just any two.
     let mut adjw: Vec<Vec<(FeatureId, u32)>> = vec![Vec::new(); n];
@@ -317,6 +318,7 @@ fn feature_perimeters(labels: &FeatureLabels, n: usize) -> Vec<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::color::Srgb;
 
     fn partition(features: Vec<Feature>, labels: FeatureLabels) -> Partition {
         Partition { features, labels }
@@ -334,9 +336,9 @@ mod tests {
         at[(3 * w + 4) as usize] = FeatureId(2);
         let labels = FeatureLabels { w, h, at };
         let features = vec![
-            Feature { mean: [120, 120, 120], area: w * h - 2, bbox: (0, 0, 7, 7) },
-            Feature { mean: [122, 121, 120], area: 1, bbox: (3, 3, 3, 3) },
-            Feature { mean: [122, 121, 120], area: 1, bbox: (4, 3, 4, 3) },
+            Feature { mean: Srgb([120, 120, 120]), area: w * h - 2, bbox: (0, 0, 7, 7) },
+            Feature { mean: Srgb([122, 121, 120]), area: 1, bbox: (3, 3, 3, 3) },
+            Feature { mean: Srgb([122, 121, 120]), area: 1, bbox: (4, 3, 4, 3) },
         ];
         let mut part = partition(features, labels);
         part.fold_residue();
@@ -359,9 +361,9 @@ mod tests {
         // dominant neighbors and must fold into one of them.
         let labels = column_labels(22, 20, |x| if x < 10 { 0 } else if x < 12 { 1 } else { 2 });
         let features = vec![
-            Feature { mean: [40, 40, 40], area: 200, bbox: (0, 0, 9, 19) },
-            Feature { mean: [120, 120, 120], area: 40, bbox: (10, 0, 11, 19) },
-            Feature { mean: [200, 200, 200], area: 200, bbox: (12, 0, 21, 19) },
+            Feature { mean: Srgb([40, 40, 40]), area: 200, bbox: (0, 0, 9, 19) },
+            Feature { mean: Srgb([120, 120, 120]), area: 40, bbox: (10, 0, 11, 19) },
+            Feature { mean: Srgb([200, 200, 200]), area: 200, bbox: (12, 0, 21, 19) },
         ];
         let mut part = partition(features, labels);
         part.fold_residue();
@@ -379,8 +381,8 @@ mod tests {
         }
         let labels = FeatureLabels { w, h, at };
         let features = vec![
-            Feature { mean: [230, 230, 230], area: w * h - 12, bbox: (0, 0, 19, 19) },
-            Feature { mean: [60, 60, 60], area: 12, bbox: (4, 10, 15, 10) },
+            Feature { mean: Srgb([230, 230, 230]), area: w * h - 12, bbox: (0, 0, 19, 19) },
+            Feature { mean: Srgb([60, 60, 60]), area: 12, bbox: (4, 10, 15, 10) },
         ];
         let mut part = partition(features, labels);
         part.fold_residue();
@@ -395,9 +397,9 @@ mod tests {
         // into that fill instead of surviving as a strip.
         let labels = column_labels(21, 14, |x| if x < 10 { 0 } else if x < 11 { 1 } else { 2 });
         let features = vec![
-            Feature { mean: [41, 41, 41], area: 140, bbox: (0, 0, 9, 13) },
-            Feature { mean: [51, 51, 51], area: 14, bbox: (10, 0, 10, 13) },
-            Feature { mean: [217, 217, 217], area: 140, bbox: (11, 0, 20, 13) },
+            Feature { mean: Srgb([41, 41, 41]), area: 140, bbox: (0, 0, 9, 13) },
+            Feature { mean: Srgb([51, 51, 51]), area: 14, bbox: (10, 0, 10, 13) },
+            Feature { mean: Srgb([217, 217, 217]), area: 140, bbox: (11, 0, 20, 13) },
         ];
         let mut part = partition(features, labels);
         part.fold_residue();
@@ -413,9 +415,9 @@ mod tests {
         // survives where a blend ribbon of the same shape folds.
         let labels = column_labels(20, 20, |x| if x < 9 { 0 } else if x < 11 { 1 } else { 2 });
         let features = vec![
-            Feature { mean: [120, 120, 120], area: 180, bbox: (0, 0, 8, 19) },
-            Feature { mean: [30, 30, 30], area: 40, bbox: (9, 0, 10, 19) },
-            Feature { mean: [220, 220, 220], area: 180, bbox: (11, 0, 19, 19) },
+            Feature { mean: Srgb([120, 120, 120]), area: 180, bbox: (0, 0, 8, 19) },
+            Feature { mean: Srgb([30, 30, 30]), area: 40, bbox: (9, 0, 10, 19) },
+            Feature { mean: Srgb([220, 220, 220]), area: 180, bbox: (11, 0, 19, 19) },
         ];
         let mut part = partition(features, labels);
         part.fold_residue();

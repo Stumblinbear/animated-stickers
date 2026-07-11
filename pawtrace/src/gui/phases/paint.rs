@@ -13,6 +13,11 @@ use iced::Element;
 pub const SUBVIEWS: &[SubView] = &[SubView::Flatten, SubView::Remap];
 pub const DEFAULT_SUBVIEW: SubView = SubView::Remap;
 
+/// The status-line detail: Paint has no headline count.
+pub fn status_detail(_app: &App) -> Option<String> {
+    None
+}
+
 pub fn inspector(app: &App) -> Element<'_, Msg> {
     let Some(sess) = app.session() else {
         return column![].into();

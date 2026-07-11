@@ -155,12 +155,13 @@ impl Partition {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::color::Srgb;
     use crate::palette::FeatureLabels;
 
     // 20-wide raster: a 1px chip strip at y=0 x=8..13 (touching the image
     // border, so on the rim), an outline band over y=0..3 elsewhere, and a
     // fill below. Feature 0 is the outline, 1 the chip, 2 the fill.
-    fn partition(outline: [u8; 3], chip: [u8; 3]) -> Partition {
+    fn partition(outline: Srgb, chip: Srgb) -> Partition {
         let (w, h) = (20u32, 12u32);
         let of = |x: u32, y: u32| {
             if y == 0 && (8..13).contains(&x) {
@@ -176,7 +177,7 @@ mod tests {
             features: vec![
                 Feature { mean: outline, area: 55, bbox: (0, 0, 19, 2) },
                 Feature { mean: chip, area: 5, bbox: (8, 0, 12, 0) },
-                Feature { mean: [200, 200, 200], area: 180, bbox: (0, 3, 19, 11) },
+                Feature { mean: Srgb([200, 200, 200]), area: 180, bbox: (0, 3, 19, 11) },
             ],
             labels: FeatureLabels { w, h, at },
         }
@@ -186,7 +187,7 @@ mod tests {
     fn fold_rim_residue_folds_a_chip_embedded_in_the_ink_outline() {
         // Fur-grey chip on the outer edge of a black outline: background
         // above, ink everywhere else. The cut-residue signature.
-        let mut part = partition([0, 0, 0], [57, 57, 57]);
+        let mut part = partition(Srgb([0, 0, 0]), Srgb([57, 57, 57]));
         part.fold_rim_residue();
         assert_eq!(part.features.len(), 2, "the chip must fold");
         // Its pixels land in the outline, not the fill.
@@ -198,7 +199,7 @@ mod tests {
         // The same chip embedded in a BROWN outline: brown is authored
         // linework, not ink, so there is nothing to embed into and the chip
         // is left for the artist to judge.
-        let mut part = partition([46, 17, 16], [120, 120, 120]);
+        let mut part = partition(Srgb([46, 17, 16]), Srgb([120, 120, 120]));
         part.fold_rim_residue();
         assert_eq!(part.features.len(), 3, "no ink, no fold");
     }
@@ -212,8 +213,8 @@ mod tests {
         let at = (0..w * h).map(|i| FeatureId(of(i % w, i / w))).collect();
         let mut part = Partition {
             features: vec![
-                Feature { mean: [180, 180, 180], area: 235, bbox: (0, 0, 19, 11) },
-                Feature { mean: [230, 230, 230], area: 5, bbox: (8, 0, 12, 0) },
+                Feature { mean: Srgb([180, 180, 180]), area: 235, bbox: (0, 0, 19, 11) },
+                Feature { mean: Srgb([230, 230, 230]), area: 5, bbox: (8, 0, 12, 0) },
             ],
             labels: FeatureLabels { w, h, at },
         };

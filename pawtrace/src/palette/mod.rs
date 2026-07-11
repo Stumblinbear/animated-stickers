@@ -16,6 +16,7 @@ mod select;
 pub use remap::{label_smooth, remap_constrained, RemapPlan};
 pub use select::{group_features, select_features, FeatureGroup};
 
+use crate::color::Srgb;
 use crate::config::Config;
 use image::RgbaImage;
 
@@ -48,7 +49,7 @@ impl MergeParams {
 /// [`select_features`]) reads.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SelectParams {
-    pub locked: Vec<[u8; 3]>,
+    pub locked: Vec<Srgb>,
     pub max_colors: usize,
 }
 
@@ -77,7 +78,7 @@ impl RemapParams {
 #[derive(Debug, Clone, Hash)]
 pub struct Feature {
     /// Mean member color, sRGB.
-    pub mean: [u8; 3],
+    pub mean: Srgb,
     /// Member pixel count, source px.
     pub area: u32,
     /// Bbox in source-crop px, inclusive: (x0, y0, x1, y1).

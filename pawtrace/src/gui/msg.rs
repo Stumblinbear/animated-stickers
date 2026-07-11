@@ -1,6 +1,7 @@
 //! Message types, one sub-enum per interaction domain, and the small shared
 //! enums naming what the preview shows and which tool is active.
 
+use crate::color::Srgb;
 use super::compute::{FullError, FullResult, StagePart};
 use super::fields::Field;
 use super::ids::{DocId, LayerId};
@@ -105,7 +106,7 @@ pub enum EditMsg {
     Set(Field, f64),
     ResetField(Field),
     StrokeHex(String),
-    ToggleLock([u8; 3]),
+    ToggleLock(Srgb),
     /// Flips the edit target between the layer's own override (true) and its
     /// governing profile (false).
     OverrideLayer(bool),

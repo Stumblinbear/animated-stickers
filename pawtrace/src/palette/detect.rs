@@ -1,7 +1,8 @@
 //! Fine feature detection: color-uniform component growing over the opaque
 //! pixels of the 1x source crop.
 
-use super::common::{Lab, UnionFind};
+use super::common::UnionFind;
+use crate::color::{Lab, Srgb};
 use super::{DetectParams, Feature, FeatureId, FeatureLabels, Partition};
 use image::RgbaImage;
 
@@ -33,14 +34,14 @@ impl Comp {
         ])
     }
 
-    fn add(&mut self, lab: Lab, rgb: [u8; 3], x: u32, y: u32) {
+    fn add(&mut self, lab: Lab, rgb: Srgb, x: u32, y: u32) {
         self.count += 1;
 
         for (s, v) in self.sum_lab.iter_mut().zip(lab.0) {
             *s += v as f64;
         }
 
-        for (s, v) in self.sum_rgb.iter_mut().zip(rgb) {
+        for (s, v) in self.sum_rgb.iter_mut().zip(rgb.0) {
             *s += v as u64;
         }
 
@@ -75,8 +76,8 @@ pub(super) fn grow_features(src: &RgbaImage, cfg: &DetectParams) -> Partition {
                 continue;
             }
 
-            let rgb = [raw[i * 4], raw[i * 4 + 1], raw[i * 4 + 2]];
-            let lab = Lab::of(rgb);
+            let rgb = Srgb([raw[i * 4], raw[i * 4 + 1], raw[i * 4 + 2]]);
+            let lab = Lab::from(rgb);
 
             let mut joined: Option<u32> = None;
 
@@ -161,8 +162,8 @@ pub(super) fn grow_features(src: &RgbaImage, cfg: &DetectParams) -> Partition {
 
                 comps.push(Comp {
                     count: 1,
-                    sum_lab: [lab.0[0] as f64, lab.0[1] as f64, lab.0[2] as f64],
-                    sum_rgb: [rgb[0] as u64, rgb[1] as u64, rgb[2] as u64],
+                    sum_lab: lab.0.map(f64::from),
+                    sum_rgb: rgb.0.map(u64::from),
                     bbox: (x, y, x, y),
                 });
 
@@ -185,11 +186,11 @@ pub(super) fn grow_features(src: &RgbaImage, cfg: &DetectParams) -> Partition {
         let n = c.count as u64;
 
         features.push(Feature {
-            mean: [
+            mean: Srgb([
                 (c.sum_rgb[0] / n) as u8,
                 (c.sum_rgb[1] / n) as u8,
                 (c.sum_rgb[2] / n) as u8,
-            ],
+            ]),
             area: c.count,
             bbox: c.bbox,
         });

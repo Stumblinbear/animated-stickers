@@ -1,3 +1,5 @@
+use crate::color::Srgb;
+
 /// One perceptual constant drives derived params (ported from vectorize.py).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Config {
@@ -43,7 +45,7 @@ pub struct Config {
     /// Colors seeded into the palette unconditionally (no count floor, no
     /// merge test); other candidates merge toward them. Locked from the GUI
     /// or per profile.
-    pub locked: Vec<[u8; 3]>, // default empty
+    pub locked: Vec<Srgb>, // default empty
     /// OKLab ΔE two shades must differ by to stay separate features. Feature
     /// consolidation merges adjacent detected regions, closest colors first,
     /// until every remaining gap reaches this; soft interiors and ramp bands
@@ -79,7 +81,7 @@ pub struct Config {
     /// 0 = none. The sticker outline hosted by Fill layers: a "* Fill"
     /// profile sets it once for every matte.
     pub stroke_width: f32, // default 0
-    pub stroke_color: [u8; 3], // default white
+    pub stroke_color: Srgb, // default white
 }
 
 impl Default for Config {
@@ -104,7 +106,7 @@ impl Default for Config {
             seam_slack: 1.0,
             simplify: 0.0,
             stroke_width: 0.0,
-            stroke_color: [255, 255, 255],
+            stroke_color: Srgb([255, 255, 255]),
         }
     }
 }
@@ -130,43 +132,4 @@ pub fn corner_threshold(alphamax: f64) -> f64 {
 /// Boundary-smoothing window radius in scaled px.
 pub fn smooth_radius(smoothing: f32, scale: u32) -> usize {
     (smoothing.max(0.0) * scale as f32).round() as usize
-}
-
-/// sRGB [0,255] -> OKLab (Ottosson 2020). Perceptually uniform: Euclidean
-/// distance here tracks visual difference, unlike RGB or redmean. Used for
-/// ALL color comparisons (palette dedup, key guard, per-pixel remap) so the
-/// whole pipeline agrees on what "different colors" means.
-pub fn srgb_to_oklab(c: [u8; 3]) -> [f32; 3] {
-    // The channel input is 8-bit, so the three powf calls (most of the
-    // conversion's cost, per-pixel in feature detection and remap) fold into
-    // one 256-entry table.
-    static LIN: std::sync::LazyLock<[f32; 256]> = std::sync::LazyLock::new(|| {
-        std::array::from_fn(|u| {
-            let x = u as f32 / 255.0;
-            if x >= 0.04045 {
-                ((x + 0.055) / 1.055).powf(2.4)
-            } else {
-                x / 12.92
-            }
-        })
-    });
-    let (r, g, b) = (LIN[c[0] as usize], LIN[c[1] as usize], LIN[c[2] as usize]);
-    let l = 0.412_221_46 * r + 0.536_332_55 * g + 0.051_445_995 * b;
-    let m = 0.211_903_5 * r + 0.680_699_5 * g + 0.107_396_96 * b;
-    let s = 0.088_302_46 * r + 0.281_718_85 * g + 0.629_978_7 * b;
-    let (l_, m_, s_) = (l.cbrt(), m.cbrt(), s.cbrt());
-    [
-        0.210_454_26 * l_ + 0.793_617_8 * m_ - 0.004_072_047 * s_,
-        1.977_998_5 * l_ - 2.428_592_2 * m_ + 0.450_593_7 * s_,
-        0.025_904_037 * l_ + 0.782_771_77 * m_ - 0.808_675_77 * s_,
-    ]
-}
-
-/// Perceptual color distance (OKLab ΔE), living roughly on 0..1.
-pub fn color_dist(a: [u8; 3], b: [u8; 3]) -> f32 {
-    let (la, lb) = (srgb_to_oklab(a), srgb_to_oklab(b));
-    let d0 = la[0] - lb[0];
-    let d1 = la[1] - lb[1];
-    let d2 = la[2] - lb[2];
-    (d0 * d0 + d1 * d1 + d2 * d2).sqrt()
 }

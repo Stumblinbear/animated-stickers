@@ -55,6 +55,29 @@ impl Tool {
             Tool::Heat => heat::applies(view, sub),
         }
     }
+
+    /// Whether this tool takes a left press for itself; a press it declines
+    /// pans the canvas instead (and may click-select on release).
+    pub fn captures_press(self) -> bool {
+        match self {
+            Tool::Select => select::CAPTURES_PRESS,
+            Tool::Pin => pin::CAPTURES_PRESS,
+            Tool::Lock => lock::CAPTURES_PRESS,
+            Tool::Protect => protect::CAPTURES_PRESS,
+            Tool::Heat => heat::CAPTURES_PRESS,
+        }
+    }
+
+    /// The cursor shown over the canvas while this tool is active.
+    pub fn cursor(self) -> iced::mouse::Interaction {
+        match self {
+            Tool::Select => select::CURSOR,
+            Tool::Pin => pin::CURSOR,
+            Tool::Lock => lock::CURSOR,
+            Tool::Protect => protect::CURSOR,
+            Tool::Heat => heat::CURSOR,
+        }
+    }
 }
 
 /// The active tool and the per-tool parameter state of the stateful tools.
@@ -83,9 +106,9 @@ pub fn update(tools: &mut Tools, msg: ToolMsg) {
 /// The active tool's option fly-out, or `None` when it has no options.
 pub fn flyout(tools: &Tools) -> Option<Element<'_, Msg>> {
     match tools.active {
+        Tool::Select | Tool::Pin | Tool::Lock => None,
         Tool::Protect => Some(protect::flyout(&tools.protect)),
         Tool::Heat => Some(heat::flyout(&tools.heat)),
-        _ => None,
     }
 }
 
@@ -99,7 +122,7 @@ pub fn press(app: &mut App, p: iced::Point) -> iced::Task<Msg> {
     match app.tools.active {
         Tool::Pin => pin::press(app, p),
         Tool::Lock => lock::press(app, p),
-        _ => iced::Task::none(),
+        Tool::Select | Tool::Protect | Tool::Heat => iced::Task::none(),
     }
 }
 
@@ -107,7 +130,7 @@ pub fn press(app: &mut App, p: iced::Point) -> iced::Task<Msg> {
 pub fn drag(app: &mut App, p: iced::Point) -> iced::Task<Msg> {
     match app.tools.active {
         Tool::Pin => pin::drag(app, p),
-        _ => iced::Task::none(),
+        Tool::Select | Tool::Lock | Tool::Protect | Tool::Heat => iced::Task::none(),
     }
 }
 

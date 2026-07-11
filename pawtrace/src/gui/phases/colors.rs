@@ -20,6 +20,11 @@ pub const SUBVIEWS: &[SubView] = &[
 ];
 pub const DEFAULT_SUBVIEW: SubView = SubView::Palette;
 
+/// The status-line detail: the extracted palette's color count.
+pub fn status_detail(app: &App) -> Option<String> {
+    app.session().map(|s| format!("{} colors", s.preview.palette.len()))
+}
+
 pub fn inspector(app: &App) -> Element<'_, Msg> {
     let Some(sess) = app.session() else {
         return column![].into();
@@ -95,7 +100,7 @@ fn swatches(app: &App) -> Element<'_, Msg> {
         pal.iter()
             .enumerate()
             .filter(|&(j, _)| j != i)
-            .map(|(_, o)| crate::config::color_dist(pal[i], *o))
+            .map(|(_, o)| pal[i].dist(*o))
             .fold(f32::INFINITY, f32::min)
     };
 
@@ -103,7 +108,7 @@ fn swatches(app: &App) -> Element<'_, Msg> {
         .enumerate()
         .fold(row![].spacing(4), |r, (i, c)| {
             let is_locked = locked.contains(c);
-            let hex = format!("#{:02x}{:02x}{:02x}", c[0], c[1], c[2]);
+            let hex = c.to_hex();
 
             let de = nearest(i);
             let de_text = if de.is_finite() {
@@ -123,11 +128,9 @@ fn swatches(app: &App) -> Element<'_, Msg> {
             };
             let swatch = container(column![top, text(de_text).size(9)])
                 .style(move |_: &iced::Theme| container::Style {
-                    background: Some(Background::Color(Color::from_rgb8(
-                        color[0], color[1], color[2],
-                    ))),
+                    background: Some(Background::Color(color.into())),
                     text_color: Some(
-                        if color[0] as u32 + color[1] as u32 + color[2] as u32 > 380 {
+                        if color.r() as u32 + color.g() as u32 + color.b() as u32 > 380 {
                             Color::BLACK
                         } else {
                             Color::WHITE

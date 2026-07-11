@@ -14,6 +14,11 @@ use iced::Element;
 pub const SUBVIEWS: &[SubView] = &[SubView::Regions, SubView::Fates, SubView::Stack];
 pub const DEFAULT_SUBVIEW: SubView = SubView::Regions;
 
+/// The status-line detail: Shapes has no headline count.
+pub fn status_detail(_app: &App) -> Option<String> {
+    None
+}
+
 pub fn inspector(app: &App) -> Element<'_, Msg> {
     let Some(sess) = app.session() else {
         return column![].into();

@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use image::{Rgba, RgbaImage};
 use serde::{Deserialize, Serialize};
 
-use pawtrace::config::srgb_to_oklab;
+use pawtrace::color::Srgb;
 
 use common::{
     composite_over_grid, counts, load_manifest, render, resolve_entry, trace, visual_golden_dir,
@@ -52,22 +52,17 @@ struct DocStats {
 
 /// Straight sRGB of a premultiplied-RGBA pixel over white, so an alpha drop
 /// reads as a large color change instead of vanishing.
-fn over_white(p: &Rgba<u8>) -> [u8; 3] {
+fn over_white(p: &Rgba<u8>) -> Srgb {
     let bg = 255 - p.0[3];
-    [
+    Srgb([
         p.0[0].saturating_add(bg),
         p.0[1].saturating_add(bg),
         p.0[2].saturating_add(bg),
-    ]
+    ])
 }
 
 fn delta_e(a: &Rgba<u8>, b: &Rgba<u8>) -> f32 {
-    let la = srgb_to_oklab(over_white(a));
-    let lb = srgb_to_oklab(over_white(b));
-    let d0 = la[0] - lb[0];
-    let d1 = la[1] - lb[1];
-    let d2 = la[2] - lb[2];
-    (d0 * d0 + d1 * d1 + d2 * d2).sqrt()
+    over_white(a).dist(over_white(b))
 }
 
 /// Mean ΔE and visibly-changed fraction over pixels painted in either image.

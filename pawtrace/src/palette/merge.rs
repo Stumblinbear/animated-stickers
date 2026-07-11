@@ -1,7 +1,8 @@
 //! Cliff-bounded consolidation: adjacent features merge smallest ΔE first
 //! until every remaining gap reaches the shade-split stop.
 
-use super::common::{boundary_edges, grow_bbox, Lab, UnionFind};
+use super::common::{boundary_edges, grow_bbox, UnionFind};
+use crate::color::Lab;
 use super::{Feature, FeatureId, FeatureLabels, MergeParams, Partition};
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, HashSet};
@@ -62,7 +63,7 @@ fn consolidate(
     let mut lab_sum: Vec<[f64; 3]> = features
         .iter()
         .map(|f| {
-            let l = Lab::of(f.mean).0;
+            let l = Lab::from(f.mean).0;
             let a = f.area as f64;
             [l[0] as f64 * a, l[1] as f64 * a, l[2] as f64 * a]
         })
@@ -78,7 +79,7 @@ fn consolidate(
         nbrs[b.ix()].insert(a.0);
     }
 
-    let lab0: Vec<Lab> = features.iter().map(|f| Lab::of(f.mean)).collect();
+    let lab0: Vec<Lab> = features.iter().map(|f| Lab::from(f.mean)).collect();
     let mean = |lab_sum: &[[f64; 3]], area: &[u64], i: usize| -> Lab {
         let a = area[i] as f64;
         Lab([

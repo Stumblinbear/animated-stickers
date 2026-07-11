@@ -85,7 +85,7 @@ pub(super) struct StageJob {
     /// The selected layer's speckle-floor exemption points, document source px.
     pub pins: Vec<[u32; 2]>,
     pub stroke_bits: u32,
-    pub stroke_color: [u8; 3],
+    pub stroke_color: crate::color::Srgb,
     /// The keys and inputs the currently shown images reflect, or `None` when
     /// nothing is shown for this layer yet.
     pub shown: Option<Shown>,
@@ -395,6 +395,7 @@ impl LayerStages {
 mod tests {
     use super::super::artifact::Artifact;
     use super::*;
+    use crate::color::Srgb;
     use crate::palette::DetectParams;
     use crate::pipeline::SimplifyParams;
     use crate::raster::{PrepParams, Prepared};
@@ -413,10 +414,10 @@ mod tests {
         Artifact::new_with(Arc::new(prep), |_, _| {})
     }
 
-    fn rgb(px: [u8; 3]) -> Artifact<RgbImage> {
+    fn rgb(px: Srgb) -> Artifact<RgbImage> {
         let mut img = RgbImage::new(1, 1);
 
-        img.put_pixel(0, 0, image::Rgb(px));
+        img.put_pixel(0, 0, px.into());
 
         Artifact::new_with(Arc::new(img), |img, h| {
             h.write_u32(img.width());
@@ -431,9 +432,9 @@ mod tests {
     // content cuts off. A differing hash moves the key.
     #[test]
     fn equal_content_hits_and_different_content_misses() {
-        let a = rgb([0, 0, 0]);
-        let b = rgb([0, 0, 0]);
-        let c = rgb([9, 9, 9]);
+        let a = rgb(Srgb([0, 0, 0]));
+        let b = rgb(Srgb([0, 0, 0]));
+        let c = rgb(Srgb([9, 9, 9]));
         assert_eq!(a, b, "equal content hashes compare equal");
         assert_ne!(a, c, "different content hashes compare unequal");
 
@@ -454,7 +455,7 @@ mod tests {
     #[test]
     fn a_pin_edit_moves_the_plan_key_only() {
         let prep = dummy_prep();
-        let remap = rgb([0, 0, 0]);
+        let remap = rgb(Srgb([0, 0, 0]));
         let regs = Artifact::new(Arc::new(Vec::<Region>::new()));
         let regions = RegionsInputs {
             remap: remap.clone(),

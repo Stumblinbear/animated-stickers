@@ -12,6 +12,10 @@ use iced::widget::{button, column, row, slider, text};
 use iced::{Alignment, Element};
 
 pub const ICON: char = icons::PAINTBRUSH;
+/// The brush press is absorbed with no effect yet, but capturing it keeps a
+/// left-drag from panning.
+pub const CAPTURES_PRESS: bool = true;
+pub const CURSOR: iced::mouse::Interaction = iced::mouse::Interaction::Crosshair;
 
 /// The protect brush parameters.
 pub struct State {

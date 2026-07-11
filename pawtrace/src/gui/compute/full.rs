@@ -16,27 +16,6 @@ use anyhow::Result;
 use rustc_hash::FxHashMap;
 use std::sync::Arc;
 
-/// Positions a layer-local trace in the document: scales from the layer's
-/// supersample space into the document's, then translates to the layer's
-/// document position.
-fn place(pre: &LayerTrace, cfg: &Config, doc_scale: u32, offset: (u32, u32)) -> LayerTrace {
-    let mut colors = pre.clone();
-    let ratio = doc_scale as f64 / cfg.scale as f64;
-    let (dx, dy) = ((offset.0 * doc_scale) as f64, (offset.1 * doc_scale) as f64);
-
-    for (_, paths) in &mut colors {
-        for p in paths {
-            if ratio != 1.0 {
-                p.scale(ratio);
-            }
-
-            p.translate(dx, dy);
-        }
-    }
-
-    colors
-}
-
 /// One layer through the pipeline, positioned in document space.
 fn trace_layer(
     l: &Layer,
@@ -46,7 +25,7 @@ fn trace_layer(
     pins: &[[u32; 2]],
 ) -> Result<LayerTrace> {
     let pre = pipeline::run(&l.img, cfg, doc_dim, l.offset, pins)?;
-    Ok(place(&pre, cfg, doc_scale, l.offset))
+    Ok(output::place(&pre, cfg.scale, doc_scale, l.offset))
 }
 
 /// Full document render. Excluded layers are skipped entirely; hidden layers
@@ -121,7 +100,7 @@ pub(super) fn render_full(
         .map(|(i, cfg, _, pre)| {
             (
                 *i,
-                place(pre, cfg, doc_scale, layers[*i].offset),
+                output::place(pre, cfg.scale, doc_scale, layers[*i].offset),
                 output::stroke_of(cfg),
             )
         })
@@ -184,29 +163,7 @@ pub(crate) fn export_doc(
         })
         .collect::<Result<Vec<_>>>()?;
 
-    let scale = doc_scale as f64;
-
-    let out = output::Doc {
-        width: doc.size.0,
-        height: doc.size.1,
-        layers: traced
-            .into_iter()
-            .map(|(name, stroke, colors)| output::Layer {
-                name,
-                stroke,
-                colors: colors
-                    .into_iter()
-                    .map(|(hex, paths)| output::ColorGroup {
-                        hex,
-                        paths: paths
-                            .iter()
-                            .map(|p| output::to_json_path(p, scale))
-                            .collect(),
-                    })
-                    .collect(),
-            })
-            .collect(),
-    };
+    let out = output::doc(doc.size.0, doc.size.1, doc_scale, traced);
 
     let path = doc.path.with_extension("json");
     std::fs::write(&path, serde_json::to_vec_pretty(&out)?)?;

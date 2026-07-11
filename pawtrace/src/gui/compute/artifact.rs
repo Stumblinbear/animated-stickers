@@ -97,6 +97,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::color::Srgb;
     use crate::regions::Region;
 
     // An artifact's identity is the content hash the producer computes, not its
@@ -104,7 +105,7 @@ mod tests {
     // downstream cutoff), and from different content compare unequal.
     #[test]
     fn artifacts_compare_by_content_not_allocation() {
-        let region = |c: [u8; 3]| Region {
+        let region = |c: Srgb| Region {
             color: c,
             x0: 0,
             y0: 0,
@@ -112,14 +113,14 @@ mod tests {
             y1: 0,
             pixels: vec![(0, 0)],
         };
-        let regs = vec![region([1, 2, 3])];
+        let regs = vec![region(Srgb([1, 2, 3]))];
         let (ra, rb) = (Arc::new(regs.clone()), Arc::new(regs.clone()));
         let a = Artifact::new(ra.clone());
         let b = Artifact::new(rb.clone());
         assert!(!Arc::ptr_eq(&ra, &rb), "distinct allocations");
         assert_eq!(a, b, "equal content compares equal");
 
-        let other = vec![region([9, 9, 9])];
+        let other = vec![region(Srgb([9, 9, 9]))];
         let c = Artifact::new(Arc::new(other.clone()));
         assert_ne!(a, c, "different content compares unequal");
     }

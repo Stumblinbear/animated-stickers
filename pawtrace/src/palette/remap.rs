@@ -2,7 +2,7 @@
 //! restricting each pixel to the colors of the features under it, so
 //! anti-alias blends never precipitate a third color along a seam.
 
-use super::common::Lab;
+use crate::color::{Lab, Srgb};
 use super::{group_features, select_features, FeatureId, Partition, SelectParams};
 use image::{GrayImage, RgbImage};
 use std::collections::HashMap;
@@ -12,7 +12,7 @@ use std::collections::HashMap;
 /// third color along a feature seam.
 pub struct RemapPlan {
     /// Selected palette colors, as [`select_features`], sRGB.
-    pub palette: Vec<[u8; 3]>,
+    pub palette: Vec<Srgb>,
 
     w: u32,
     h: u32,
@@ -35,13 +35,13 @@ impl Partition {
 
     /// [`Partition::plan`] with the palette supplied instead of selected, for
     /// harnesses and overrides that choose the colors themselves.
-    pub fn plan_with(&self, palette: Vec<[u8; 3]>) -> RemapPlan {
-        let pal_lab: Vec<Lab> = palette.iter().map(|&c| Lab::of(c)).collect();
+    pub fn plan_with(&self, palette: Vec<Srgb>) -> RemapPlan {
+        let pal_lab: Vec<Lab> = palette.iter().map(|&c| Lab::from(c)).collect();
 
         let feat_pal: Vec<u32> = self
             .features
             .iter()
-            .map(|f| nearest_palette(Lab::of(f.mean), &pal_lab))
+            .map(|f| nearest_palette(Lab::from(f.mean), &pal_lab))
             .collect();
 
         let feat_color: Vec<u32> = self
@@ -97,7 +97,7 @@ pub fn remap_constrained(
 
     let (w, h) = (plan.w as usize, plan.h as usize);
     let scale = scale.max(1) as usize;
-    let pal_lab: Vec<Lab> = plan.palette.iter().map(|&c| Lab::of(c)).collect();
+    let pal_lab: Vec<Lab> = plan.palette.iter().map(|&c| Lab::from(c)).collect();
 
     // Per source pixel, the distinct palette colors across its 3x3
     // neighborhood. A blend pixel lies in the interior of a source pixel's
@@ -143,7 +143,7 @@ pub fn remap_constrained(
     // Nearest palette color to `cl` among `cands` (indices into `pal_lab`).
     // `cands` is only ever `all` or a `multi` entry, both non-empty, so the
     // min is always present.
-    let nearest = |cl: Lab, cands: &[u32]| -> [u8; 3] {
+    let nearest = |cl: Lab, cands: &[u32]| -> Srgb {
         let i = *cands
             .iter()
             .min_by(|&&a, &&b| {
@@ -169,9 +169,9 @@ pub fn remap_constrained(
         let sp = ((i / sw) / scale).min(h - 1) * w + ((i % sw) / scale).min(w - 1);
 
         p.0 = match resolved[sp] {
-            EMPTY => nearest(Lab::of(p.0), &all),
-            MULTI => nearest(Lab::of(p.0), &multi[&sp]),
-            idx => plan.palette[idx as usize],
+            EMPTY => nearest(Lab::from(Srgb(p.0)), &all).0,
+            MULTI => nearest(Lab::from(Srgb(p.0)), &multi[&sp]).0,
+            idx => plan.palette[idx as usize].0,
         };
     }
 
@@ -193,7 +193,7 @@ mod tests {
     use super::*;
     use image::{Luma, Rgb};
 
-    fn plan(w: u32, h: u32, palette: Vec<[u8; 3]>, feat_color: Vec<u32>) -> RemapPlan {
+    fn plan(w: u32, h: u32, palette: Vec<Srgb>, feat_color: Vec<u32>) -> RemapPlan {
         RemapPlan {
             palette,
             w,
@@ -210,7 +210,7 @@ mod tests {
         let plan = plan(
             2,
             1,
-            vec![[255, 0, 0], [0, 0, 255], [0, 255, 0]],
+            vec![Srgb([255, 0, 0]), Srgb([0, 0, 255]), Srgb([0, 255, 0])],
             vec![0, 1],
         );
 
@@ -236,7 +236,7 @@ mod tests {
         let plan = plan(
             3,
             1,
-            vec![[255, 0, 0], [0, 0, 255], [0, 255, 0]],
+            vec![Srgb([255, 0, 0]), Srgb([0, 0, 255]), Srgb([0, 255, 0])],
             vec![0, 0, 0],
         );
 
@@ -259,7 +259,7 @@ mod tests {
         let plan = plan(
             1,
             1,
-            vec![[255, 0, 0], [0, 0, 255], [0, 255, 0]],
+            vec![Srgb([255, 0, 0]), Srgb([0, 0, 255]), Srgb([0, 255, 0])],
             vec![u32::MAX],
         );
 

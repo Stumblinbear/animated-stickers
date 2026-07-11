@@ -83,15 +83,10 @@ fn composition(app: &App) -> String {
 
             let sub = app.active_subview().map(|sv| sv.label()).unwrap_or("");
 
-            let detail = match p {
-                crate::gui::msg::Phase::Colors => {
-                    format!(" · {} colors", sess.preview.palette.len())
-                }
-                crate::gui::msg::Phase::Curves => {
-                    format!(" · {} anchors", sess.preview.simplify_anchor_count)
-                }
-                _ => String::new(),
-            };
+            let detail = p
+                .status_detail(app)
+                .map(|d| format!(" · {d}"))
+                .unwrap_or_default();
 
             format!("{layer} · {} → {sub}{detail}", p.label())
         }

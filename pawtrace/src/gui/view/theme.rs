@@ -14,6 +14,12 @@ const fn rgb8(r: u8, g: u8, b: u8) -> Color {
     }
 }
 
+impl From<crate::color::Srgb> for Color {
+    fn from(c: crate::color::Srgb) -> Color {
+        rgb8(c.r(), c.g(), c.b())
+    }
+}
+
 pub const BG: Color = rgb8(0x14, 0x14, 0x17);
 pub const SURFACE: Color = rgb8(0x1b, 0x1b, 0x20);
 pub const SURFACE2: Color = rgb8(0x22, 0x22, 0x28);

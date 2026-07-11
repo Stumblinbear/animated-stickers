@@ -26,7 +26,7 @@ pub(super) fn compute_shapes(k: &ShapesInputs, _ctx: ()) -> Artifact<Vec<Shape>>
         h.write_usize(shapes.len());
 
         for (color, mask, slack, (bx, by)) in shapes {
-            h.write(color);
+            h.write(&color.0);
             write_raster(h, mask);
             match slack {
                 Some(s) => {

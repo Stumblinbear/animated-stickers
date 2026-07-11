@@ -10,6 +10,7 @@ mod memo;
 mod render;
 mod stages;
 
+use crate::color::Srgb;
 use super::app::App;
 use crate::regions;
 use iced::widget::image as iced_image;
@@ -31,7 +32,7 @@ pub struct Img {
 }
 
 /// One layer's traced colors: color hex -> paths, in bottom-first paint order.
-pub(super) type LayerTrace = Vec<(String, Vec<crate::trace::TracedPath>)>;
+pub(super) type LayerTrace = crate::output::LayerColors;
 
 /// The layer, inputs, and per-stage keys the current stage images reflect, so
 /// the next spawn can tell whether the strip changed at all (the `cfg`/`pins`
@@ -43,7 +44,7 @@ pub(super) struct Shown {
     pub(super) cfg: crate::config::Config,
     pub(super) pins: Vec<[u32; 2]>,
     pub(super) stroke_bits: u32,
-    pub(super) stroke_color: [u8; 3],
+    pub(super) stroke_color: crate::color::Srgb,
     /// Per-display-stage keys the shown images were built under. `None` for a
     /// stage never yet shown (the very first run for this layer), which reads as
     /// stale so the worker draws it.
@@ -64,7 +65,7 @@ impl Shown {
         cfg: crate::config::Config,
         pins: Vec<[u32; 2]>,
         stroke_bits: u32,
-        stroke_color: [u8; 3],
+        stroke_color: crate::color::Srgb,
     ) -> Self {
         Shown {
             layer,
@@ -102,7 +103,7 @@ pub(super) struct StageImages {
     pub(super) render: Option<Img>,
     /// Final render, after the simplify pass.
     pub(super) simplified: Option<Img>,
-    pub(super) palette: Vec<[u8; 3]>,
+    pub(super) palette: Vec<Srgb>,
     pub(super) region_count: usize,
     pub(super) anchor_count: usize,
     pub(super) simplify_anchor_count: usize,
@@ -143,7 +144,7 @@ pub struct FullResult {
 pub enum StagePart {
     Source(Img),
     Flat(Img),
-    Remap(Img, RgbaImage, Vec<[u8; 3]>),
+    Remap(Img, RgbaImage, Vec<Srgb>),
     Regions(Img, usize),
     /// The fate tint (`None` when every region survives) and the region report,
     /// emitted whenever the merge plan changes, including on a pin edit.

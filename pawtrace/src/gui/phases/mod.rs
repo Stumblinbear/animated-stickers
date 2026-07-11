@@ -37,14 +37,12 @@ pub enum SubView {
 impl SubView {
     /// The phase this sub-view belongs to.
     pub fn phase(self) -> Phase {
-        match self {
-            SubView::Source | SubView::Features | SubView::Merged | SubView::Palette => {
-                Phase::Colors
-            }
-            SubView::Flatten | SubView::Remap => Phase::Paint,
-            SubView::Regions | SubView::Fates | SubView::Stack => Phase::Shapes,
-            SubView::Fit | SubView::Simplify => Phase::Curves,
-        }
+        // Derived from the phases' SUBVIEWS lists, so membership is declared
+        // once and moving a sub-view between phases cannot desync this.
+        *PHASES
+            .iter()
+            .find(|p| p.subviews().contains(&self))
+            .expect("every sub-view is in one phase's SUBVIEWS")
     }
 
     /// The breadcrumb label shown in the sub-view panel.
@@ -174,6 +172,17 @@ impl Phase {
             Phase::Paint => paint::DEFAULT_SUBVIEW,
             Phase::Shapes => shapes::DEFAULT_SUBVIEW,
             Phase::Curves => curves::DEFAULT_SUBVIEW,
+        }
+    }
+
+    /// This phase's contribution to the composition status line, or `None`
+    /// when it has no headline count.
+    pub fn status_detail(self, app: &App) -> Option<String> {
+        match self {
+            Phase::Colors => colors::status_detail(app),
+            Phase::Paint => paint::status_detail(app),
+            Phase::Shapes => shapes::status_detail(app),
+            Phase::Curves => curves::status_detail(app),
         }
     }
 

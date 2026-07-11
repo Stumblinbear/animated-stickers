@@ -4,6 +4,7 @@
 //! every platform and toolchain version. Hand-coded bitmaps guarantee that
 //! where a rasterized TrueType font would not.
 
+use pawtrace::color::Srgb;
 use image::{Rgba, RgbaImage};
 
 const GLYPH_W: u32 = 5;
@@ -28,8 +29,8 @@ pub fn text_width(text: &str) -> u32 {
 /// Draws `text` in `color` with its top-left at `(x, y)`, left to right.
 /// Glyphs that would extend past `x + max_w` are dropped, so a label never
 /// spills out of its tile column.
-pub fn draw_text(dst: &mut RgbaImage, text: &str, x: u32, y: u32, max_w: u32, color: [u8; 3]) {
-    let px = Rgba([color[0], color[1], color[2], 255]);
+pub fn draw_text(dst: &mut RgbaImage, text: &str, x: u32, y: u32, max_w: u32, color: Srgb) {
+    let px: Rgba<u8> = color.into();
     let advance = (GLYPH_W + TRACKING) * SCALE;
     let mut cx = x;
     for ch in text.chars() {

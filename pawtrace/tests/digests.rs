@@ -74,7 +74,7 @@ fn region_digest(regs: &[Region]) -> String {
     let mut h = Fnv::new();
 
     for r in regs {
-        h.write(&r.color);
+        h.write(&r.color.0);
         h.u32(r.x0);
         h.u32(r.y0);
         h.u32(r.x1);
@@ -146,7 +146,7 @@ fn layer_digests(
     {
         let alpha = raster::scale_alpha(&src, cfg);
         let mut h = Fnv::new();
-        h.write(&color);
+        h.write(&color.0);
         h.write(alpha.as_raw());
         let regs = regions::from_mask(&alpha, color);
         (alpha, regs, h.hex())

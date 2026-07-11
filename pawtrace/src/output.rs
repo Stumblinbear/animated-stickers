@@ -33,10 +33,7 @@ pub struct Stroke { pub hex: String, pub width: f32 }
 /// The layer's stroke as configured, `None` when the width is 0.
 pub fn stroke_of(cfg: &Config) -> Option<Stroke> {
     (cfg.stroke_width > 0.0).then(|| Stroke {
-        hex: format!(
-            "#{:02x}{:02x}{:02x}",
-            cfg.stroke_color[0], cfg.stroke_color[1], cfg.stroke_color[2]
-        ),
+        hex: cfg.stroke_color.to_hex(),
         width: cfg.stroke_width,
     })
 }
@@ -48,6 +45,65 @@ pub struct JsonPath {
     /// closed. Cubics -> anchors: each segment end is an anchor; tangents
     /// from the adjoining control points.
     pub v: Vec<[f64; 2]>, pub i: Vec<[f64; 2]>, pub o: Vec<[f64; 2]>,
+}
+
+/// One layer's traced content: hex color groups of closed cubic paths, in
+/// paint order.
+pub type LayerColors = Vec<(String, Vec<TracedPath>)>;
+
+/// Positions a layer-local trace in document space: scales from the layer's
+/// `layer_scale` supersample space into the document's `doc_scale`, then
+/// translates to the layer's position `offset` (source px).
+pub fn place(
+    pre: &[(String, Vec<TracedPath>)],
+    layer_scale: u32,
+    doc_scale: u32,
+    offset: (u32, u32),
+) -> LayerColors {
+    let mut colors = pre.to_vec();
+    let ratio = doc_scale as f64 / layer_scale as f64;
+    let (dx, dy) = ((offset.0 * doc_scale) as f64, (offset.1 * doc_scale) as f64);
+
+    for (_, paths) in &mut colors {
+        for p in paths {
+            if ratio != 1.0 {
+                p.scale(ratio);
+            }
+
+            p.translate(dx, dy);
+        }
+    }
+
+    colors
+}
+
+/// Assembles the Tailmovin JSON document from placed per-layer traces, with
+/// path coordinates converted back to source px via `scale`.
+pub fn doc(
+    width: u32,
+    height: u32,
+    scale: u32,
+    layers: Vec<(String, Option<Stroke>, LayerColors)>,
+) -> Doc {
+    let s = scale as f64;
+    Doc {
+        width,
+        height,
+        layers: layers
+            .into_iter()
+            .map(|(name, stroke, colors)| Layer {
+                name,
+                stroke,
+                colors: colors
+                    .into_iter()
+                    .map(|(hex, paths)| ColorGroup {
+                        hex,
+                        paths: paths.iter().map(|p| to_json_path(p, s)).collect(),
+                    })
+                    .collect(),
+            })
+            .collect(),
+    }
 }
 
 pub fn to_json_path(p: &TracedPath, scale: f64) -> JsonPath {

@@ -18,7 +18,7 @@ pub(super) fn compute_prep(k: &PrepInputs, img: &RgbaImage) -> Artifact<Prepared
         match p.uniform {
             Some(c) => {
                 h.write_u8(1);
-                h.write(&c);
+                h.write(&c.0);
             }
             None => h.write_u8(0),
         }

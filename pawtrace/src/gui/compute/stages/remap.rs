@@ -1,6 +1,7 @@
 //! Palette-remap stage: consolidate the detected partition and remap the
 //! flattened raster onto the selected palette.
 
+use crate::color::Srgb;
 use super::super::artifact::{write_raster, Artifact};
 use crate::palette::{self, MergeParams, Partition, RemapParams, SelectParams};
 use crate::raster::Prepared;
@@ -21,7 +22,7 @@ pub(in crate::gui) struct RemapInputs {
 }
 
 /// The remapped raster and its palette, produced together by the remap stage.
-pub(in crate::gui) type RemapOutput = (Artifact<RgbImage>, Arc<Vec<[u8; 3]>>);
+pub(in crate::gui) type RemapOutput = (Artifact<RgbImage>, Arc<Vec<Srgb>>);
 
 pub(super) fn compute_remap(k: &RemapInputs, _ctx: ()) -> RemapOutput {
     // A uniform layer's palette is its single color, and the remap is a copy of
@@ -35,7 +36,7 @@ pub(super) fn compute_remap(k: &RemapInputs, _ctx: ()) -> RemapOutput {
 
             for (i, &a) in k.prep.alpha.as_raw().iter().enumerate() {
                 if a != 0 {
-                    sr[3 * i..3 * i + 3].copy_from_slice(&color);
+                    sr[3 * i..3 * i + 3].copy_from_slice(&color.0);
                 }
             }
         }

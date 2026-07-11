@@ -2,6 +2,7 @@
 //! Ported from vectorize.py with deliberate deviations; see the README
 //! "provenance" table before changing any step.
 
+use crate::color::Srgb;
 use crate::config::Config;
 use fast_image_resize as fir;
 use image::{GrayImage, RgbImage, RgbaImage};
@@ -15,7 +16,7 @@ pub struct Prepared {
     pub alpha: GrayImage,
     /// The single color when every opaque source pixel shares it, letting a
     /// consumer segment straight from the mask and skip palette selection.
-    pub uniform: Option<[u8; 3]>,
+    pub uniform: Option<Srgb>,
 }
 
 /// Every config value [`prepare`] reads.
@@ -38,15 +39,15 @@ impl PrepParams {
 
 /// The single color of a layer whose opaque pixels are all identical
 /// (helper layers: solid fills, border mattes), or `None`.
-pub fn uniform_color(src: &RgbaImage, alpha_threshold: u8) -> Option<[u8; 3]> {
-    let mut color: Option<[u8; 3]> = None;
+pub fn uniform_color(src: &RgbaImage, alpha_threshold: u8) -> Option<Srgb> {
+    let mut color: Option<Srgb> = None;
 
     for p in src.pixels() {
         if p.0[3] < alpha_threshold {
             continue;
         }
 
-        let c = [p.0[0], p.0[1], p.0[2]];
+        let c = Srgb([p.0[0], p.0[1], p.0[2]]);
 
         match color {
             None => color = Some(c),
@@ -105,7 +106,7 @@ pub fn prepare(src: &RgbaImage, cfg: &PrepParams) -> Prepared {
             let fr: &mut [u8] = &mut flat;
             for (i, &a) in alpha.as_raw().iter().enumerate() {
                 if a != 0 {
-                    fr[3 * i..3 * i + 3].copy_from_slice(&color);
+                    fr[3 * i..3 * i + 3].copy_from_slice(&color.0);
                 }
             }
         }
@@ -202,7 +203,7 @@ pub(crate) fn majority_vote(img: &RgbImage, alpha: &GrayImage, k: u32) -> RgbIma
             let y = y as i64;
             // A window holds at most k*k distinct colors, small enough that a
             // linear scan beats hashing.
-            let mut counts: Vec<([u8; 3], u32)> = Vec::with_capacity((k * k) as usize);
+            let mut counts: Vec<(Srgb, u32)> = Vec::with_capacity((k * k) as usize);
 
             for x in 0..w as i64 {
                 // Background must not vote: a majority-background window
@@ -231,7 +232,7 @@ pub(crate) fn majority_vote(img: &RgbImage, alpha: &GrayImage, k: u32) -> RgbIma
                         let ni = (ny * w as i64 + nx) as usize;
 
                         if amask[ni] != 0 {
-                            let c = [src[3 * ni], src[3 * ni + 1], src[3 * ni + 2]];
+                            let c = Srgb([src[3 * ni], src[3 * ni + 1], src[3 * ni + 2]]);
 
                             match counts.iter_mut().find(|(cc, _)| *cc == c) {
                                 Some((_, n)) => *n += 1,
@@ -244,7 +245,7 @@ pub(crate) fn majority_vote(img: &RgbImage, alpha: &GrayImage, k: u32) -> RgbIma
                 if let Some(best) = counts.iter().max_by_key(|(_, n)| *n) {
                     let xi = x as usize * 3;
 
-                    row[xi..xi + 3].copy_from_slice(&best.0);
+                    row[xi..xi + 3].copy_from_slice(&(best.0).0);
                 }
             }
         });

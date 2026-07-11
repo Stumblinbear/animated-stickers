@@ -5,6 +5,7 @@
 //! shapes it moved. The cache holds the paths mask-local, so one entry serves a
 //! shape wherever its bbox sits.
 
+use crate::color::Srgb;
 use super::super::artifact::Artifact;
 use super::super::cache::ShapeCache;
 use super::super::LayerTrace;
@@ -21,7 +22,7 @@ use std::sync::Arc;
 /// nothing outside this module reads pre-fit geometry.
 #[derive(Debug)]
 struct ShapeContours {
-    color: [u8; 3],
+    color: Srgb,
     contours: Vec<SmoothedContour>,
     origin: (u32, u32),
 }
@@ -164,19 +165,19 @@ mod tests {
     fn fixture() -> (RgbImage, GrayImage) {
         let mut quant = RgbImage::from_pixel(24, 8, image::Rgb([0, 0, 0]));
         let mut alpha = GrayImage::new(24, 8);
-        let mut opaque = |q: &mut RgbImage, x: u32, y: u32, c: [u8; 3]| {
-            q.put_pixel(x, y, image::Rgb(c));
+        let mut opaque = |q: &mut RgbImage, x: u32, y: u32, c: Srgb| {
+            q.put_pixel(x, y, c.into());
             alpha.put_pixel(x, y, Luma([255]));
         };
 
         for y in 0..6 {
             for x in 0..6 {
-                opaque(&mut quant, x, y, [200, 30, 30]);
+                opaque(&mut quant, x, y, Srgb([200, 30, 30]));
             }
         }
 
-        opaque(&mut quant, 15, 0, [200, 200, 40]);
-        opaque(&mut quant, 16, 0, [200, 200, 40]);
+        opaque(&mut quant, 15, 0, Srgb([200, 200, 40]));
+        opaque(&mut quant, 16, 0, Srgb([200, 200, 40]));
 
         (quant, alpha)
     }

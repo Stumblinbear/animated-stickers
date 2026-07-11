@@ -10,6 +10,8 @@ use crate::gui::view::icons;
 use iced::{Point, Task};
 
 pub const ICON: char = icons::PIN;
+pub const CAPTURES_PRESS: bool = true;
+pub const CURSOR: iced::mouse::Interaction = iced::mouse::Interaction::Crosshair;
 
 /// Offered on the Document view and the Shapes and Curves phases, the views
 /// where regions exist to pin.

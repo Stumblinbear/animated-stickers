@@ -14,6 +14,11 @@ use iced::{Alignment, Element};
 pub const SUBVIEWS: &[SubView] = &[SubView::Fit, SubView::Simplify];
 pub const DEFAULT_SUBVIEW: SubView = SubView::Simplify;
 
+/// The status-line detail: the simplified trace's anchor count.
+pub fn status_detail(app: &App) -> Option<String> {
+    app.session().map(|s| format!("{} anchors", s.preview.simplify_anchor_count))
+}
+
 pub fn inspector(app: &App) -> Element<'_, Msg> {
     let Some(sess) = app.session() else {
         return column![].into();

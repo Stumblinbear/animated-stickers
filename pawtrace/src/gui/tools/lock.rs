@@ -10,6 +10,8 @@ use crate::gui::view::icons;
 use iced::{Point, Task};
 
 pub const ICON: char = icons::PIPETTE;
+pub const CAPTURES_PRESS: bool = true;
+pub const CURSOR: iced::mouse::Interaction = iced::mouse::Interaction::Crosshair;
 
 /// Offered only when the Palette sub-view is shown.
 pub fn applies(_view: StripView, sub: Option<SubView>) -> bool {
@@ -34,7 +36,7 @@ pub fn press(app: &mut App, p: Point) -> Task<Msg> {
     }
 
     let px = q.get_pixel(x, y).0;
-    let c = [px[0], px[1], px[2]];
+    let c = crate::color::Srgb([px[0], px[1], px[2]]);
     if px[3] != 0 && sess.preview.palette.contains(&c) {
         app.toggle_lock(c)
     } else {

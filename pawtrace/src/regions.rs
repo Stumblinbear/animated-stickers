@@ -2,7 +2,8 @@
 //! and per-region paintable shapes. The region is the pipeline's unit of
 //! output: each becomes one filled path, painted as an outside-in stack.
 
-use crate::config::{color_dist, Config};
+use crate::color::Srgb;
+use crate::config::Config;
 #[cfg(test)]
 use image::Luma;
 use image::{GrayImage, RgbImage};
@@ -56,7 +57,7 @@ impl PlanParams {
 
 #[derive(Debug, Clone, Hash)]
 pub struct Region {
-    pub color: [u8; 3],
+    pub color: Srgb,
     /// Bbox in scaled px, inclusive.
     pub x0: u32,
     pub y0: u32,
@@ -81,7 +82,7 @@ impl Region {
 /// For uniform-color layers, where the mask already determines the regions
 /// and quantization would only rediscover them. Components stay separate:
 /// trace_mask walks one component per shape.
-pub fn from_mask(mask: &GrayImage, color: [u8; 3]) -> Vec<Region> {
+pub fn from_mask(mask: &GrayImage, color: Srgb) -> Vec<Region> {
     // A uniform image quantizes to itself, so the mask's connected
     // components are exactly the regions and no color comparison is needed.
     segment_runs(row_runs(None, mask, color))
@@ -90,7 +91,7 @@ pub fn from_mask(mask: &GrayImage, color: [u8; 3]) -> Vec<Region> {
 /// Connected same-color regions (4-connectivity) over art pixels, in
 /// first-encounter scan order.
 pub fn segment(quant: &RgbImage, alpha: &GrayImage) -> Vec<Region> {
-    segment_runs(row_runs(Some(quant), alpha, [0, 0, 0]))
+    segment_runs(row_runs(Some(quant), alpha, Srgb([0, 0, 0])))
 }
 
 /// A maximal same-color span of opaque pixels in one row: `(x0, x1)`
@@ -98,12 +99,12 @@ pub fn segment(quant: &RgbImage, alpha: &GrayImage) -> Vec<Region> {
 struct Run {
     x0: u32,
     x1: u32,
-    color: [u8; 3],
+    color: Srgb,
 }
 
 /// The runs of every row, rows in order. Color comes from `quant`, or is
 /// `uniform` for every run when `quant` is `None` (mask-only segmentation).
-fn row_runs(quant: Option<&RgbImage>, alpha: &GrayImage, uniform: [u8; 3]) -> Vec<Vec<Run>> {
+fn row_runs(quant: Option<&RgbImage>, alpha: &GrayImage, uniform: Srgb) -> Vec<Vec<Run>> {
     use rayon::prelude::*;
 
     let (w, _) = alpha.dimensions();
@@ -120,7 +121,7 @@ fn row_runs(quant: Option<&RgbImage>, alpha: &GrayImage, uniform: [u8; 3]) -> Ve
                 Some(q) => {
                     let i = (y * w as usize + x) * 3;
                     let q3 = q.as_raw();
-                    [q3[i], q3[i + 1], q3[i + 2]]
+                    Srgb([q3[i], q3[i + 1], q3[i + 2]])
                 }
                 None => uniform,
             };
@@ -292,9 +293,9 @@ fn merge_speckle_roots(
     (w, h): (u32, u32),
     min_area: u64,
     pins: &[(u32, u32)],
-) -> (Vec<u32>, Vec<[u8; 3]>) {
+) -> (Vec<u32>, Vec<Srgb>) {
     let n = regs.len();
-    let mut color: Vec<[u8; 3]> = regs.iter().map(|r| r.color).collect();
+    let mut color: Vec<Srgb> = regs.iter().map(|r| r.color).collect();
     let small = |r: &Region| (r.pixels.len() as u64) < min_area;
     if n < 2 || !regs.iter().any(small) {
         return ((0..n as u32).collect(), color);
@@ -412,8 +413,8 @@ fn merge_speckle_roots(
             // merging would bleed the line into the fill instead of
             // reuniting it.
             let target = by_root.into_iter().min_by(|&(ra, la), &(rb, lb)| {
-                color_dist(color[id as usize], color[ra as usize])
-                    .total_cmp(&color_dist(color[id as usize], color[rb as usize]))
+                color[id as usize].dist(color[ra as usize])
+                    .total_cmp(&color[id as usize].dist(color[rb as usize]))
                     .then(lb.cmp(&la))
                     .then(ra.cmp(&rb))
             });
@@ -460,7 +461,7 @@ fn merge_speckle_roots(
 fn gather_speckle_merged(
     regs: &[Region],
     roots: &[u32],
-    colors: &[[u8; 3]],
+    colors: &[Srgb],
 ) -> std::collections::BTreeMap<u32, Region> {
     let mut merged: std::collections::BTreeMap<u32, Region> = Default::default();
 
@@ -656,7 +657,7 @@ pub fn region_fates(
 /// Static per-region facts gathered in one pass, plus union-find state for
 /// the merge cascade.
 struct Node {
-    color: [u8; 3],
+    color: Srgb,
     area: u64,
     perimeter: u64,
     /// Max BFS depth from the boundary; 2x this bounds the inscribed width.
@@ -848,14 +849,14 @@ fn absorb(regions: Vec<Region>, w: u32, h: u32, cfg: &SegmentParams) -> Vec<Regi
                 nodes[neigh[1].0 as usize].color,
             );
 
-            let (da, db) = (color_dist(color, a), color_dist(color, b));
+            let (da, db) = (color.dist(a), color.dist(b));
             if da.min(db) >= cfg.absorb_dist {
                 continue;
             }
 
             // A transition lies on the color segment between its dominant
             // neighbors; an extremum (highlight against two fills) does not.
-            if da + db > 1.25 * color_dist(a, b) {
+            if da + db > 1.25 * a.dist(b) {
                 continue;
             }
 
@@ -1125,7 +1126,7 @@ fn merge_strokes(regions: Vec<Region>, w: u32, h: u32, cfg: &SegmentParams) -> V
             neigh.sort_by_key(|&(rid, l)| (std::cmp::Reverse(l), rid));
 
             let target = neigh.into_iter().find(|&(rid, _)| {
-                color_dist(color, nodes[rid as usize].color) < cfg.stroke_merge_dist
+                color.dist(nodes[rid as usize].color) < cfg.stroke_merge_dist
                     && is_thin(rid, &mut nodes, &mut thin)
             });
 
@@ -1534,11 +1535,11 @@ mod tests {
 
         // The arcs coalesce into one dark region instead of bleeding into
         // the gray fill (nearest color, not dominant boundary).
-        let dark = merged.iter().find(|r| r.color[0] < 100).unwrap();
+        let dark = merged.iter().find(|r| r.color.r() < 100).unwrap();
         assert_eq!(dark.pixels.len(), 12);
         assert_eq!((dark.x0, dark.y0, dark.x1, dark.y1), (0, 0, 11, 0));
 
-        let fill = merged.iter().find(|r| r.color[0] == 128).unwrap();
+        let fill = merged.iter().find(|r| r.color.r() == 128).unwrap();
         assert_eq!(fill.pixels.len(), 36);
     }
 
@@ -1555,10 +1556,10 @@ mod tests {
         // fill keeps its color and stays out of it.
         assert_eq!(merged.len(), 2);
 
-        let dark = merged.iter().find(|r| r.color[0] < 100).unwrap();
+        let dark = merged.iter().find(|r| r.color.r() < 100).unwrap();
         assert_eq!(dark.pixels.len(), 12);
 
-        let fill = merged.iter().find(|r| r.color == [128, 128, 128]).unwrap();
+        let fill = merged.iter().find(|r| r.color == Srgb([128, 128, 128])).unwrap();
         assert_eq!(fill.pixels.len(), 36);
     }
 
@@ -1592,7 +1593,7 @@ mod tests {
 
         assert!(merged
             .iter()
-            .any(|r| r.color == [24, 24, 24] && r.pixels.len() == 4));
+            .any(|r| r.color == Srgb([24, 24, 24]) && r.pixels.len() == 4));
     }
 
     #[test]
@@ -1620,25 +1621,25 @@ mod tests {
         // 2px isolated speck; a 2px isolated speck that a pin exempts.
         let mut quant = RgbImage::from_pixel(24, 8, image::Rgb([0, 0, 0]));
         let mut alpha = GrayImage::new(24, 8);
-        let mut opaque = |q: &mut RgbImage, x: u32, y: u32, c: [u8; 3]| {
-            q.put_pixel(x, y, image::Rgb(c));
+        let mut opaque = |q: &mut RgbImage, x: u32, y: u32, c: Srgb| {
+            q.put_pixel(x, y, c.into());
             alpha.put_pixel(x, y, Luma([255]));
         };
 
         for y in 0..6 {
             for x in 0..6 {
-                opaque(&mut quant, x, y, [200, 30, 30]);
+                opaque(&mut quant, x, y, Srgb([200, 30, 30]));
             }
         }
 
         for y in 0..2 {
-            opaque(&mut quant, 6, y, [40, 200, 40]);
+            opaque(&mut quant, 6, y, Srgb([40, 200, 40]));
         }
 
-        opaque(&mut quant, 10, 0, [40, 40, 200]);
-        opaque(&mut quant, 11, 0, [40, 40, 200]);
-        opaque(&mut quant, 15, 0, [200, 200, 40]);
-        opaque(&mut quant, 16, 0, [200, 200, 40]);
+        opaque(&mut quant, 10, 0, Srgb([40, 40, 200]));
+        opaque(&mut quant, 11, 0, Srgb([40, 40, 200]));
+        opaque(&mut quant, 15, 0, Srgb([200, 200, 40]));
+        opaque(&mut quant, 16, 0, Srgb([200, 200, 40]));
 
         let regs = segment(&quant, &alpha);
         assert_eq!(regs.len(), 4);
