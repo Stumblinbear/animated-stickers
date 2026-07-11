@@ -42,6 +42,7 @@ pub fn run(initial: Vec<std::path::PathBuf>) -> iced::Result {
         view::view,
     )
     .title("Pawtrace")
+    .antialiasing(true)
     .theme(theme)
     .subscription(subscription)
     .font(include_bytes!("../../assets/lucide.ttf").as_slice())
