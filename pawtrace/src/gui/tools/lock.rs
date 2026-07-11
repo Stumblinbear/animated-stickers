@@ -21,18 +21,21 @@ pub fn press(app: &mut App, p: Point) -> Task<Msg> {
     let Some(sess) = app.session() else {
         return Task::none();
     };
-    let Some(q) = &sess.stages.quant_px else {
+
+    let Some(q) = &sess.preview.remap_px else {
         return Task::none();
     };
-    // The quant raster is the crop supersampled by `scale`; map crop px into it.
+
+    // The remap raster is the crop supersampled by `scale`; map crop px into it.
     let s = sess.cfg.scale as f32;
     let (x, y) = ((p.x * s) as u32, (p.y * s) as u32);
     if x >= q.width() || y >= q.height() {
         return Task::none();
     }
+
     let px = q.get_pixel(x, y).0;
     let c = [px[0], px[1], px[2]];
-    if px[3] != 0 && sess.stages.palette.contains(&c) {
+    if px[3] != 0 && sess.preview.palette.contains(&c) {
         app.toggle_lock(c)
     } else {
         Task::none()

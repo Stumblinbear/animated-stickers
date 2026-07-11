@@ -18,7 +18,9 @@ pub fn inspector(app: &App) -> Element<'_, Msg> {
     let Some(sess) = app.session() else {
         return column![].into();
     };
+
     let cfg = &sess.cfg;
+
     column![
         setting(
             app,
@@ -87,8 +89,11 @@ pub fn inspector(app: &App) -> Element<'_, Msg> {
              supersample scale) allowed when dropping an anchor. Higher \
              removes more. 0 disables the pass.",
             Field::Simplify,
-            slider(0.0..=20.0, cfg.simplify, |v| Msg::Edit(EditMsg::Set(Field::Simplify, v)))
-                .step(0.1),
+            slider(0.0..=20.0, cfg.simplify, |v| Msg::Edit(EditMsg::Set(
+                Field::Simplify,
+                v
+            )))
+            .step(0.1),
         ),
         setting(
             app,
@@ -118,7 +123,7 @@ pub fn inspector(app: &App) -> Element<'_, Msg> {
         .align_y(Alignment::Center),
         widgets::mono(format!(
             "{} anchors ({} after simplify)",
-            sess.stages.anchor_count, sess.stages.simplify_anchor_count
+            sess.preview.anchor_count, sess.preview.simplify_anchor_count
         ))
         .size(11)
         .color(theme::MUTED),

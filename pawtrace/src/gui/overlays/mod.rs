@@ -58,6 +58,7 @@ impl OverlayCtx<'_> {
             .and_then(|(s, doc)| doc.layer(s.selected_layer))
             .map(|l| l.offset)
             .unwrap_or((0, 0));
+
         OverlayCtx {
             view: session.map(|s| s.view).unwrap_or_default(),
             subview: app.active_subview(),
@@ -75,7 +76,7 @@ impl OverlayCtx<'_> {
             } else {
                 &[]
             },
-            fate_tint: session.and_then(|s| s.stages.fate_tint.as_ref()),
+            fate_tint: session.and_then(|s| s.preview.fate_tint.as_ref()),
         }
     }
 }
@@ -96,12 +97,17 @@ pub const ALL: &[Overlay] = &[fates::overlay, pins::overlay];
 pub fn marching_ants(frame: &mut Frame, path: &Path, now: Instant) {
     const SEGMENTS: [f32; 2] = [4.0, 4.0];
     const CYCLE_SECS: f32 = 0.5;
+
     let cycle: f32 = SEGMENTS.iter().sum();
     let offset = (super::view::anim::phase(now, CYCLE_SECS) * cycle) as usize;
+
     frame.stroke(
         path,
         Stroke {
-            line_dash: LineDash { segments: &SEGMENTS, offset },
+            line_dash: LineDash {
+                segments: &SEGMENTS,
+                offset,
+            },
             ..Stroke::default()
                 .with_color(super::view::theme::ACCENT)
                 .with_width(1.0)

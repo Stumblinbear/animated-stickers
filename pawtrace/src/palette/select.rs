@@ -2,8 +2,7 @@
 //! authored color, then greedy salience-ordered slot assignment.
 
 use super::common::Lab;
-use super::Feature;
-use crate::config::Config;
+use super::{Feature, SelectParams};
 
 /// OKLab distance under which feature means count as one authored color.
 /// Independent detections of the same fill land a few thousandths apart
@@ -35,10 +34,13 @@ pub struct FeatureGroup {
 pub fn group_features(features: &[Feature]) -> Vec<FeatureGroup> {
     let mut feats: Vec<&Feature> = features.iter().filter(|f| f.area >= GROUP_PRUNE).collect();
     feats.sort_unstable_by_key(|f| (std::cmp::Reverse(f.area), f.mean));
+
     let mut groups: Vec<FeatureGroup> = Vec::new();
     let mut group_lab: Vec<Lab> = Vec::new();
+
     for f in feats {
         let l = Lab::of(f.mean);
+
         // The founding (largest) member fixes the group color and its lab
         // anchor: an exact fill stays exact instead of drifting with every
         // joining stripe.
@@ -50,13 +52,20 @@ pub fn group_features(features: &[Feature]) -> Vec<FeatureGroup> {
                     largest: f.area,
                     aggregate: f.area as u64,
                 });
+
                 group_lab.push(l);
             }
         }
     }
+
     groups.sort_unstable_by_key(|g| {
-        (std::cmp::Reverse(g.largest), std::cmp::Reverse(g.aggregate), g.color)
+        (
+            std::cmp::Reverse(g.largest),
+            std::cmp::Reverse(g.aggregate),
+            g.color,
+        )
     });
+
     groups
 }
 
@@ -68,24 +77,30 @@ pub fn group_features(features: &[Feature]) -> Vec<FeatureGroup> {
 /// Over `cfg.max_colors`, the least distinct color is evicted first: the
 /// non-locked entry with the smallest OKLab gap to its nearest surviving
 /// neighbor, whose regions then degrade onto that neighbor.
-pub fn select_features(groups: &[FeatureGroup], cfg: &Config) -> Vec<[u8; 3]> {
+pub fn select_features(groups: &[FeatureGroup], cfg: &SelectParams) -> Vec<[u8; 3]> {
     let mut palette: Vec<[u8; 3]> = Vec::new();
     let mut locked_n = 0;
+
     for &c in &cfg.locked {
         if !palette.contains(&c) {
             palette.push(c);
         }
     }
+
     let mut kept: Vec<Lab> = palette.iter().map(|&c| Lab::of(c)).collect();
     locked_n += kept.len();
+
     for g in groups {
         let l = Lab::of(g.color);
+
         if kept.iter().any(|&k| l.dist(k) < FEATURE_DEDUP) {
             continue;
         }
+
         palette.push(g.color);
         kept.push(l);
     }
+
     while palette.len() > cfg.max_colors.max(locked_n) {
         let nearest_gap = |i: usize| {
             kept.iter()
@@ -94,9 +109,11 @@ pub fn select_features(groups: &[FeatureGroup], cfg: &Config) -> Vec<[u8; 3]> {
                 .map(|(_, &k)| kept[i].dist(k))
                 .fold(f32::MAX, f32::min)
         };
+
         // Locked colors occupy the front of the vec and are never evicted.
         let evict = (locked_n..palette.len())
             .min_by(|&a, &b| nearest_gap(a).partial_cmp(&nearest_gap(b)).unwrap());
+
         match evict {
             Some(i) => {
                 palette.remove(i);
@@ -105,5 +122,6 @@ pub fn select_features(groups: &[FeatureGroup], cfg: &Config) -> Vec<[u8; 3]> {
             None => break,
         }
     }
+
     palette
 }

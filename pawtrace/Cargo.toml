@@ -20,6 +20,7 @@ lru = "0.12"
 resvg = "0.45"
 getrandom = "0.3"
 rustc-hash = "2"
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
 
 [dependencies.iced]
 version = "0.14"

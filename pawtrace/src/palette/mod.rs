@@ -19,9 +19,62 @@ pub use select::{group_features, select_features, FeatureGroup};
 use crate::config::Config;
 use image::RgbaImage;
 
+/// Every config value [`Partition::detect`] reads.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DetectParams {
+    pub alpha_threshold: u8,
+}
+
+impl DetectParams {
+    pub fn of(cfg: &Config) -> Self {
+        Self { alpha_threshold: cfg.alpha_threshold }
+    }
+}
+
+/// Every config value [`Partition::merge_shades`] reads.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MergeParams {
+    pub shade_split: f32,
+    pub shade_noise: f32,
+}
+
+impl MergeParams {
+    pub fn of(cfg: &Config) -> Self {
+        Self { shade_split: cfg.shade_split, shade_noise: cfg.shade_noise }
+    }
+}
+
+/// Every config value palette selection ([`Partition::plan`] /
+/// [`select_features`]) reads.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SelectParams {
+    pub locked: Vec<[u8; 3]>,
+    pub max_colors: usize,
+}
+
+impl SelectParams {
+    pub fn of(cfg: &Config) -> Self {
+        Self { locked: cfg.locked.clone(), max_colors: cfg.max_colors }
+    }
+}
+
+/// Every config value the palette remap reads: `scale` for
+/// [`remap_constrained`] and `color_cleanup` for [`label_smooth`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct RemapParams {
+    pub scale: u32,
+    pub color_cleanup: u32,
+}
+
+impl RemapParams {
+    pub fn of(cfg: &Config) -> Self {
+        Self { scale: cfg.scale, color_cleanup: cfg.color_cleanup }
+    }
+}
+
 /// One color-uniform connected component of the 1x source crop, the evidence
 /// unit of region-first palette selection.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash)]
 pub struct Feature {
     /// Mean member color, sRGB.
     pub mean: [u8; 3],
@@ -51,7 +104,7 @@ impl FeatureId {
 /// pixel is below the alpha threshold. Indexes into the owning
 /// [`Partition`]'s feature list, so callers can read which feature owns a
 /// pixel and which features share a boundary.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash)]
 pub struct FeatureLabels {
     pub w: u32,
     pub h: u32,
@@ -64,7 +117,7 @@ pub struct FeatureLabels {
 /// segmentation; [`Partition::merge_shades`] and [`Partition::fold_residue`]
 /// consolidate it in place; [`Partition::plan`] derives the palette and the
 /// raster the constrained remap consumes.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash)]
 pub struct Partition {
     pub features: Vec<Feature>,
     pub labels: FeatureLabels,
@@ -77,7 +130,7 @@ impl Partition {
     /// over-segmented: compression and anti-alias fringe spawns fragment
     /// features freely, and [`Partition::merge_shades`] plus
     /// [`Partition::fold_residue`] consolidate them.
-    pub fn detect(src: &RgbaImage, cfg: &Config) -> Partition {
+    pub fn detect(src: &RgbaImage, cfg: &DetectParams) -> Partition {
         detect::grow_features(src, cfg)
     }
 
@@ -87,8 +140,8 @@ impl Partition {
     /// the same partition, so their downstream stages match the palette the
     /// pipeline builds.
     pub fn build(src: &RgbaImage, cfg: &Config) -> Partition {
-        let mut part = Partition::detect(src, cfg);
-        part.merge_shades(cfg);
+        let mut part = Partition::detect(src, &DetectParams::of(cfg));
+        part.merge_shades(&MergeParams::of(cfg));
         part.fold_residue();
         part.fold_rim_residue();
         part

@@ -1,5 +1,5 @@
 {
   "rust-analyzer.linkedProjects": ["pawtrace/Cargo.toml"],
-  "rust-analyzer.cargo.features": ["gui", "preview"],
+  "rust-analyzer.cargo.features": [],
   "rust-analyzer.diagnostics.disabled": ["unlinked-file"]
 }

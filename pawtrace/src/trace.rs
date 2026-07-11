@@ -13,6 +13,38 @@ use visioncortex::{BinaryImage, PathSimplifyMode};
 /// One cubic segment: (control 1, control 2, end), absolute coords.
 pub type Cubic = ((f64, f64), (f64, f64), (f64, f64));
 
+/// Every config value [`trace_mask`] and [`smoothed_contours`] read.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TraceParams {
+    pub alphamax: f64,
+    pub opttolerance: f64,
+    pub seam_slack: f64,
+    pub smoothing: f32,
+    pub scale: u32,
+}
+
+impl TraceParams {
+    pub fn of(cfg: &Config) -> Self {
+        Self {
+            alphamax: cfg.alphamax,
+            opttolerance: cfg.opttolerance,
+            seam_slack: cfg.seam_slack,
+            smoothing: cfg.smoothing,
+            scale: cfg.scale,
+        }
+    }
+
+    /// [`crate::config::corner_threshold`] at this `alphamax`.
+    fn corner_threshold(&self) -> f64 {
+        crate::config::corner_threshold(self.alphamax)
+    }
+
+    /// [`crate::config::smooth_radius`] at this `smoothing` and `scale`.
+    fn smooth_radius(&self) -> usize {
+        crate::config::smooth_radius(self.smoothing, self.scale)
+    }
+}
+
 /// A closed filled path: cubic bezier in absolute coords (start + segments).
 #[derive(Debug, Clone)]
 pub struct TracedPath {
@@ -26,6 +58,7 @@ impl TracedPath {
     pub fn scale(&mut self, s: f64) {
         self.start.0 *= s;
         self.start.1 *= s;
+
         for (c1, c2, end) in &mut self.cubics {
             c1.0 *= s;
             c1.1 *= s;
@@ -39,6 +72,7 @@ impl TracedPath {
     pub fn translate(&mut self, dx: f64, dy: f64) {
         self.start.0 += dx;
         self.start.1 += dy;
+
         for (c1, c2, end) in &mut self.cubics {
             c1.0 += dx;
             c1.1 += dy;
@@ -58,9 +92,14 @@ impl TracedPath {
 /// abutting a low-contrast neighbor; boundary vertices touching a marked
 /// pixel are fit at `cfg.opttolerance * cfg.seam_slack`. `None` fits every
 /// vertex at the base tolerance.
-pub fn trace_mask(mask: &GrayImage, cfg: &Config, slack: Option<&GrayImage>) -> Vec<TracedPath> {
+pub fn trace_mask(
+    mask: &GrayImage,
+    cfg: &TraceParams,
+    slack: Option<&GrayImage>,
+) -> Vec<TracedPath> {
     let (w, h) = (mask.width() as usize, mask.height() as usize);
     let mut bin = BinaryImage::new_w_h(w, h);
+
     // The mask and BinaryImage share row-major layout, so the raw index maps
     // straight through.
     for (i, &v) in mask.as_raw().iter().enumerate() {
@@ -70,15 +109,18 @@ pub fn trace_mask(mask: &GrayImage, cfg: &Config, slack: Option<&GrayImage>) -> 
     }
 
     let corner_threshold = cfg.corner_threshold();
+
     // Max fit deviation in scaled px, matching potrace's opttolerance units:
     // potrace ran on the supersampled bitmap, so its tolerance is scaled px,
     // NOT source px. Multiplying by scale here made every boundary wander
     // independently by ~half a source px, visibly wobbling the width of thin
     // outlines (each side of a line is fit separately).
     let tolerance = cfg.opttolerance;
+
     // Arclength window for corner detection; single-vertex turn angles on a
     // pixel-derived path are quantization noise.
     let corner_arm = 2.5 * cfg.scale as f64;
+
     let smooth_radius = cfg.smooth_radius();
 
     // The mask is one connected component by construction, so no clustering
@@ -89,23 +131,31 @@ pub fn trace_mask(mask: &GrayImage, cfg: &Config, slack: Option<&GrayImage>) -> 
     // simplification keeps wobble extrema as vertices, which smoothing can't
     // average.
     let mut out = Vec::new();
+
     for path in Cluster::image_to_paths(&bin, PathSimplifyMode::None) {
         let mut pts: Vec<(f64, f64)> = path.path.iter().map(|p| (p.x as f64, p.y as f64)).collect();
+
         if pts.len() > 1 && pts.first() == pts.last() {
             pts.pop();
         }
+
         if pts.len() < 3 {
             continue;
         }
+
         let corners = fit::find_corners(&pts, corner_threshold, corner_arm);
+
         // Sampled from the pre-smoothing integer vertices, which sit on the
         // slack mask's pixel grid; smoothing preserves vertex count and order.
         let vslack = slack.map(|sm| vertex_slack(&pts, sm, cfg.seam_slack));
+
         let pts = fit::smooth_pinned(&pts, &corners, smooth_radius);
+
         if let Some(tp) = fit::fit_closed(&pts, &corners, tolerance, vslack.as_deref()) {
             out.push(tp);
         }
     }
+
     out
 }
 
@@ -115,16 +165,26 @@ pub fn trace_mask(mask: &GrayImage, cfg: &Config, slack: Option<&GrayImage>) -> 
 /// `(x-1, y-1)..(x, y)`.
 fn vertex_slack(pts: &[(f64, f64)], slack: &GrayImage, factor: f64) -> Vec<f64> {
     let (w, h) = (slack.width() as i64, slack.height() as i64);
+
     pts.iter()
         .map(|&(x, y)| {
             let (vx, vy) = (x.round() as i64, y.round() as i64);
+
             let touches = [(vx - 1, vy - 1), (vx, vy - 1), (vx - 1, vy), (vx, vy)]
                 .into_iter()
                 .any(|(px, py)| {
-                    px >= 0 && py >= 0 && px < w && py < h
+                    px >= 0
+                        && py >= 0
+                        && px < w
+                        && py < h
                         && slack.get_pixel(px as u32, py as u32)[0] != 0
                 });
-            if touches { factor } else { 1.0 }
+
+            if touches {
+                factor
+            } else {
+                1.0
+            }
         })
         .collect()
 }
@@ -141,11 +201,13 @@ pub type SmoothedContour = (Vec<(f64, f64)>, Vec<usize>, Vec<bool>);
 /// tolerance; every flag is `false` when `slack` is `None`.
 pub fn smoothed_contours(
     mask: &GrayImage,
-    cfg: &Config,
+    cfg: &TraceParams,
     slack: Option<&GrayImage>,
 ) -> Vec<SmoothedContour> {
     let (w, h) = (mask.width() as usize, mask.height() as usize);
+
     let mut bin = BinaryImage::new_w_h(w, h);
+
     // The mask and BinaryImage share row-major layout, so the raw index maps
     // straight through.
     for (i, &v) in mask.as_raw().iter().enumerate() {
@@ -153,20 +215,26 @@ pub fn smoothed_contours(
             bin.set_pixel_index(i, true);
         }
     }
+
     let corner_threshold = cfg.corner_threshold();
     let corner_arm = 2.5 * cfg.scale as f64;
     let smooth_radius = cfg.smooth_radius();
 
     let mut out = Vec::new();
+
     for path in Cluster::image_to_paths(&bin, PathSimplifyMode::None) {
         let mut pts: Vec<(f64, f64)> = path.path.iter().map(|p| (p.x as f64, p.y as f64)).collect();
+
         if pts.len() > 1 && pts.first() == pts.last() {
             pts.pop();
         }
+
         if pts.len() < 3 {
             continue;
         }
+
         let corners = fit::find_corners(&pts, corner_threshold, corner_arm);
+
         let flags = match slack {
             Some(sm) => vertex_slack(&pts, sm, cfg.seam_slack)
                 .into_iter()
@@ -174,8 +242,11 @@ pub fn smoothed_contours(
                 .collect(),
             None => vec![false; pts.len()],
         };
+
         let smoothed = fit::smooth_pinned(&pts, &corners, smooth_radius);
+
         out.push((smoothed, corners, flags));
     }
+
     out
 }

@@ -3,8 +3,7 @@
 //! anti-alias blends never precipitate a third color along a seam.
 
 use super::common::Lab;
-use super::{group_features, select_features, FeatureId, Partition};
-use crate::config::Config;
+use super::{group_features, select_features, FeatureId, Partition, SelectParams};
 use image::{GrayImage, RgbImage};
 use std::collections::HashMap;
 
@@ -14,8 +13,10 @@ use std::collections::HashMap;
 pub struct RemapPlan {
     /// Selected palette colors, as [`select_features`], sRGB.
     pub palette: Vec<[u8; 3]>,
+
     w: u32,
     h: u32,
+
     // feat_color[y * w + x] indexes `palette` for the feature owning source
     // pixel (x, y), or u32::MAX outside the alpha. Every feature is pinned to
     // the palette color nearest its mean, which is the color its solid interior
@@ -28,7 +29,7 @@ impl Partition {
     /// Builds the palette and the source-pixel feature-color raster for
     /// [`remap_constrained`] from this merged partition (its labels pin each
     /// 1x source pixel to a feature).
-    pub fn plan(&self, cfg: &Config) -> RemapPlan {
+    pub fn plan(&self, cfg: &SelectParams) -> RemapPlan {
         self.plan_with(select_features(&group_features(&self.features), cfg))
     }
 
@@ -36,18 +37,32 @@ impl Partition {
     /// harnesses and overrides that choose the colors themselves.
     pub fn plan_with(&self, palette: Vec<[u8; 3]>) -> RemapPlan {
         let pal_lab: Vec<Lab> = palette.iter().map(|&c| Lab::of(c)).collect();
+
         let feat_pal: Vec<u32> = self
             .features
             .iter()
             .map(|f| nearest_palette(Lab::of(f.mean), &pal_lab))
             .collect();
+
         let feat_color: Vec<u32> = self
             .labels
             .at
             .iter()
-            .map(|&f| if f == FeatureId::NONE { u32::MAX } else { feat_pal[f.ix()] })
+            .map(|&f| {
+                if f == FeatureId::NONE {
+                    u32::MAX
+                } else {
+                    feat_pal[f.ix()]
+                }
+            })
             .collect();
-        RemapPlan { palette, w: self.labels.w, h: self.labels.h, feat_color }
+
+        RemapPlan {
+            palette,
+            w: self.labels.w,
+            h: self.labels.h,
+            feat_color,
+        }
     }
 }
 
@@ -75,9 +90,11 @@ pub fn remap_constrained(
     scale: u32,
 ) -> RgbImage {
     let mut out = flat.clone();
+
     if plan.palette.is_empty() {
         return out;
     }
+
     let (w, h) = (plan.w as usize, plan.h as usize);
     let scale = scale.max(1) as usize;
     let pal_lab: Vec<Lab> = plan.palette.iter().map(|&c| Lab::of(c)).collect();
@@ -91,20 +108,27 @@ pub fn remap_constrained(
     // resolved to a single index otherwise.
     const MULTI: u32 = u32::MAX;
     const EMPTY: u32 = u32::MAX - 1;
+
     let mut resolved = vec![EMPTY; w * h];
+
     let mut multi: HashMap<usize, Vec<u32>> = HashMap::new();
+
     for y in 0..h {
         for x in 0..w {
             let mut cand: Vec<u32> = Vec::new();
+
             for ny in y.saturating_sub(1)..=(y + 1).min(h - 1) {
                 for nx in x.saturating_sub(1)..=(x + 1).min(w - 1) {
                     let f = plan.feat_color[ny * w + nx];
+
                     if f != u32::MAX && !cand.contains(&f) {
                         cand.push(f);
                     }
                 }
             }
+
             let p = y * w + x;
+
             match cand.len() {
                 0 => {}
                 1 => resolved[p] = cand[0],
@@ -128,23 +152,29 @@ pub fn remap_constrained(
                     .unwrap()
             })
             .unwrap();
+
         plan.palette[i as usize]
     };
+
     let all: Vec<u32> = (0..plan.palette.len() as u32).collect();
 
     let sw = out.width() as usize;
     let amask = alpha.as_raw();
+
     for (i, p) in out.pixels_mut().enumerate() {
         if amask[i] == 0 {
             continue;
         }
+
         let sp = ((i / sw) / scale).min(h - 1) * w + ((i % sw) / scale).min(w - 1);
+
         p.0 = match resolved[sp] {
             EMPTY => nearest(Lab::of(p.0), &all),
             MULTI => nearest(Lab::of(p.0), &multi[&sp]),
             idx => plan.palette[idx as usize],
         };
     }
+
     out
 }
 
@@ -164,7 +194,12 @@ mod tests {
     use image::{Luma, Rgb};
 
     fn plan(w: u32, h: u32, palette: Vec<[u8; 3]>, feat_color: Vec<u32>) -> RemapPlan {
-        RemapPlan { palette, w, h, feat_color }
+        RemapPlan {
+            palette,
+            w,
+            h,
+            feat_color,
+        }
     }
 
     #[test]
@@ -172,15 +207,24 @@ mod tests {
         // Two source px: 0 -> feature A (red), 1 -> feature B (blue), with a
         // green third slot. A green blend over source 0 is nearest green
         // unconstrained; the seam neighborhood {A, B} must exclude it.
-        let plan = plan(2, 1, vec![[255, 0, 0], [0, 0, 255], [0, 255, 0]], vec![0, 1]);
+        let plan = plan(
+            2,
+            1,
+            vec![[255, 0, 0], [0, 0, 255], [0, 255, 0]],
+            vec![0, 1],
+        );
+
         let mut flat = RgbImage::new(4, 1);
+
         flat.put_pixel(0, 0, Rgb([255, 0, 0]));
         flat.put_pixel(1, 0, Rgb([0, 200, 0]));
         flat.put_pixel(2, 0, Rgb([0, 0, 255]));
         flat.put_pixel(3, 0, Rgb([0, 0, 255]));
+
         let alpha = GrayImage::from_pixel(4, 1, Luma([255]));
         let out = remap_constrained(&flat, &alpha, &plan, 2);
         let seam = out.get_pixel(1, 0).0;
+
         assert_ne!(seam, [0, 255, 0]);
         assert!(seam == [255, 0, 0] || seam == [0, 0, 255]);
     }
@@ -189,13 +233,22 @@ mod tests {
     fn constrained_remap_pins_interior_to_its_feature_color() {
         // The middle pixel's 3x3 neighborhood is pure feature A, so a green
         // blend there resolves to A without consulting its own color.
-        let plan = plan(3, 1, vec![[255, 0, 0], [0, 0, 255], [0, 255, 0]], vec![0, 0, 0]);
+        let plan = plan(
+            3,
+            1,
+            vec![[255, 0, 0], [0, 0, 255], [0, 255, 0]],
+            vec![0, 0, 0],
+        );
+
         let mut flat = RgbImage::new(3, 1);
+
         flat.put_pixel(0, 0, Rgb([255, 0, 0]));
         flat.put_pixel(1, 0, Rgb([0, 200, 0]));
         flat.put_pixel(2, 0, Rgb([255, 0, 0]));
+
         let alpha = GrayImage::from_pixel(3, 1, Luma([255]));
         let out = remap_constrained(&flat, &alpha, &plan, 1);
+
         assert_eq!(out.get_pixel(1, 0).0, [255, 0, 0]);
     }
 
@@ -203,11 +256,18 @@ mod tests {
     fn constrained_remap_falls_back_to_full_palette_off_every_feature() {
         // No feature under the pixel (silhouette rim): the full palette is the
         // candidate set, so a green blend snaps to the green slot.
-        let plan = plan(1, 1, vec![[255, 0, 0], [0, 0, 255], [0, 255, 0]], vec![u32::MAX]);
+        let plan = plan(
+            1,
+            1,
+            vec![[255, 0, 0], [0, 0, 255], [0, 255, 0]],
+            vec![u32::MAX],
+        );
+
         let mut flat = RgbImage::new(1, 1);
         flat.put_pixel(0, 0, Rgb([0, 200, 0]));
         let alpha = GrayImage::from_pixel(1, 1, Luma([255]));
         let out = remap_constrained(&flat, &alpha, &plan, 1);
+
         assert_eq!(out.get_pixel(0, 0).0, [0, 255, 0]);
     }
 }

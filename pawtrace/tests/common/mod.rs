@@ -30,7 +30,10 @@ pub fn manifest_dir() -> PathBuf {
 }
 
 pub fn visual_golden_dir() -> PathBuf {
-    manifest_dir().join("fixtures").join("visual").join("golden")
+    manifest_dir()
+        .join("fixtures")
+        .join("visual")
+        .join("golden")
 }
 
 /// Filesystem-safe stem: ASCII alphanumerics kept, everything else `_`.
@@ -72,11 +75,14 @@ struct RawManifest {
 /// Every entry in the manifest, subsets first, then whole files, in file
 /// order.
 pub fn load_manifest() -> Vec<Entry> {
-    let path = manifest_dir().join("fixtures").join("visual").join("subsets.toml");
+    let path = manifest_dir()
+        .join("fixtures")
+        .join("visual")
+        .join("subsets.toml");
     let text = std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("reading {}: {e}", path.display()));
-    let raw: RawManifest = toml::from_str(&text)
-        .unwrap_or_else(|e| panic!("parsing {}: {e}", path.display()));
+    let raw: RawManifest =
+        toml::from_str(&text).unwrap_or_else(|e| panic!("parsing {}: {e}", path.display()));
     let root = manifest_dir();
     let mut entries = Vec::new();
     for s in raw.subset {
@@ -87,7 +93,11 @@ pub fn load_manifest() -> Vec<Entry> {
         });
     }
     for w in raw.whole {
-        entries.push(Entry { name: w.name, source: root.join(&w.source), layers: None });
+        entries.push(Entry {
+            name: w.name,
+            source: root.join(&w.source),
+            layers: None,
+        });
     }
     entries
 }
@@ -123,15 +133,18 @@ pub fn resolve_entry(entry: &Entry) -> Resolved {
     let scale = profiles.resolve("").0.scale;
 
     let mut layers = Vec::new();
+
     for (name, img) in all {
         if let Some(want) = &entry.layers {
             if !want.contains(&name) {
                 continue;
             }
         }
+
         let (cfg, _) = profiles.resolve(&name);
         layers.push(KeptLayer { name, cfg, img });
     }
+
     let missing = match &entry.layers {
         None => Vec::new(),
         Some(want) => want
@@ -140,7 +153,14 @@ pub fn resolve_entry(entry: &Entry) -> Resolved {
             .cloned()
             .collect(),
     };
-    Resolved { w, h, scale, layers, missing }
+
+    Resolved {
+        w,
+        h,
+        scale,
+        layers,
+        missing,
+    }
 }
 
 /// One traced layer of an entry, in document scaled space.
@@ -164,12 +184,14 @@ pub struct Document {
 /// from the layer's own supersample space into the document's.
 pub fn trace(r: &Resolved) -> Document {
     let doc_dim = r.w.max(r.h);
+
     let layers = r
         .layers
         .par_iter()
         .map(|l| {
             let mut colors = pipeline::run(&l.img, &l.cfg, doc_dim, (0, 0), &[]).unwrap();
             let ratio = r.scale as f64 / l.cfg.scale as f64;
+
             if ratio != 1.0 {
                 for (_, paths) in &mut colors {
                     for p in paths {
@@ -177,10 +199,21 @@ pub fn trace(r: &Resolved) -> Document {
                     }
                 }
             }
-            Layer { name: l.name.clone(), stroke: output::stroke_of(&l.cfg), colors }
+
+            Layer {
+                name: l.name.clone(),
+                stroke: output::stroke_of(&l.cfg),
+                colors,
+            }
         })
         .collect();
-    Document { w: r.w, h: r.h, scale: r.scale, layers }
+
+    Document {
+        w: r.w,
+        h: r.h,
+        scale: r.scale,
+        layers,
+    }
 }
 
 /// Rasterizes the assembled document SVG at its native (source-pixel) size.
@@ -188,8 +221,13 @@ pub fn render(doc: &Document) -> RgbaImage {
     let svg_layers: Vec<SvgLayer> = doc
         .layers
         .iter()
-        .map(|l| SvgLayer { name: &l.name, stroke: l.stroke.as_ref(), colors: &l.colors })
+        .map(|l| SvgLayer {
+            name: &l.name,
+            stroke: l.stroke.as_ref(),
+            colors: &l.colors,
+        })
         .collect();
+
     rasterize(doc.w, doc.h, doc.scale, &svg_layers)
 }
 
@@ -220,12 +258,14 @@ fn rasterize_scaled(w: u32, h: u32, scale: u32, layers: &[SvgLayer]) -> RgbaImag
 pub fn counts(doc: &Document) -> (usize, usize) {
     let mut paths = 0;
     let mut anchors = 0;
+
     for l in &doc.layers {
         for (_, ps) in &l.colors {
             paths += ps.len();
             anchors += ps.iter().map(|p| p.cubics.len()).sum::<usize>();
         }
     }
+
     (paths, anchors)
 }
 
@@ -259,34 +299,51 @@ pub fn layer_stages(img: &RgbaImage, cfg: &Config, doc_dim: u32) -> Option<Stage
     let merged = palette::Partition::build(&src, cfg);
     let features_img = feature_image(&merged.labels);
 
-    let (alpha, flat, quant_rgb, regs) =
-        if let Some(color) = raster::uniform_color(&src, cfg.alpha_threshold) {
-            let alpha = raster::scale_alpha(&src, cfg);
-            let flat = RgbImage::from_pixel(alpha.width(), alpha.height(), Rgb(color));
-            let regs = regions::from_mask(&alpha, color);
-            (alpha, flat.clone(), flat, regs)
-        } else {
-            let prep = raster::prepare(&src, cfg);
-            let plan = merged.plan(cfg);
-            let mut quant = palette::remap_constrained(&prep.flat, &prep.alpha, &plan, cfg.scale);
-            if cfg.color_cleanup > 0 {
-                quant = palette::label_smooth(&quant, &prep.alpha, cfg.color_cleanup);
-            }
-            let regs = regions::segment_absorbed(&quant, &prep.alpha, cfg);
-            (prep.alpha, prep.flat, quant, regs)
-        };
+    let (alpha, flat, quant_rgb, regs) = if let Some(color) =
+        raster::uniform_color(&src, cfg.alpha_threshold)
+    {
+        let alpha = raster::scale_alpha(&src, cfg);
+        let flat = RgbImage::from_pixel(alpha.width(), alpha.height(), Rgb(color));
+        let regs = regions::from_mask(&alpha, color);
+        (alpha, flat.clone(), flat, regs)
+    } else {
+        let prep = raster::prepare(&src, &raster::PrepParams::of(cfg));
+        let plan = merged.plan(&palette::SelectParams::of(cfg));
+        let mut quant = palette::remap_constrained(&prep.flat, &prep.alpha, &plan, cfg.scale);
+
+        if cfg.color_cleanup > 0 {
+            quant = palette::label_smooth(&quant, &prep.alpha, cfg.color_cleanup);
+        }
+
+        let regs = regions::segment_absorbed(&quant, &prep.alpha, &regions::SegmentParams::of(cfg));
+        (prep.alpha, prep.flat, quant, regs)
+    };
 
     // trace_regions leaves paths in the crop's scaled space; render at that
     // supersampled size so the tiles are as crisp as the region tile once the
     // sheet fits them to a common height.
     let render_trace = |colors: &[(String, Vec<TracedPath>)]| {
         let stroke = output::stroke_of(cfg);
-        let layer = SvgLayer { name: "layer", stroke: stroke.as_ref(), colors };
-        rasterize_scaled(src.width(), src.height(), cfg.scale, std::slice::from_ref(&layer))
+        let layer = SvgLayer {
+            name: "layer",
+            stroke: stroke.as_ref(),
+            colors,
+        };
+
+        rasterize_scaled(
+            src.width(),
+            src.height(),
+            cfg.scale,
+            std::slice::from_ref(&layer),
+        )
     };
+
     let fit_paths = pipeline::trace_regions(&regs, &alpha, cfg, doc_dim, &pins);
     let fit = render_trace(&fit_paths);
-    let simplify = render_trace(&pipeline::simplify_paths(fit_paths, cfg));
+    let simplify = render_trace(&pipeline::simplify_paths(
+        fit_paths,
+        &pipeline::SimplifyParams::of(cfg),
+    ));
 
     Some(Stages {
         crop: src,
@@ -304,11 +361,13 @@ pub fn layer_stages(img: &RgbaImage, cfg: &Config, doc_dim: u32) -> Option<Stage
 fn rgba_over_alpha(rgb: &RgbImage, alpha: &GrayImage) -> RgbaImage {
     let (w, h) = alpha.dimensions();
     let mut out = RgbaImage::new(w, h);
+
     for (o, (p, a)) in out.pixels_mut().zip(rgb.pixels().zip(alpha.pixels())) {
         if a.0[0] != 0 {
             *o = Rgba([p.0[0], p.0[1], p.0[2], 255]);
         }
     }
+
     out
 }
 
@@ -317,12 +376,14 @@ fn rgba_over_alpha(rgb: &RgbImage, alpha: &GrayImage) -> RgbaImage {
 /// read as separate patches even where neighbors share an art color.
 fn region_image(regs: &[regions::Region], w: u32, h: u32) -> RgbaImage {
     let mut out = RgbaImage::new(w, h);
+
     for (i, r) in regs.iter().enumerate() {
         let c = hashed_color(i as u32);
         for &(px, py) in &r.pixels {
             out.put_pixel(r.x0 + px, r.y0 + py, c);
         }
     }
+
     out
 }
 
@@ -331,13 +392,17 @@ fn region_image(regs: &[regions::Region], w: u32, h: u32) -> RgbaImage {
 /// palette selection is legible independently of the art colors.
 fn feature_image(labels: &palette::FeatureLabels) -> RgbaImage {
     let mut out = RgbaImage::new(labels.w, labels.h);
+
     for (i, &f) in labels.at.iter().enumerate() {
         if f == palette::FeatureId::NONE {
             continue;
         }
+
         let (x, y) = (i as u32 % labels.w, i as u32 / labels.w);
+
         out.put_pixel(x, y, hashed_color(f.0));
     }
+
     out
 }
 
@@ -389,8 +454,9 @@ const LABEL: [u8; 3] = [210, 210, 215];
 /// Caption per tile. The sheet splits the GUI's Palette stage into the
 /// feature and quantized views and its Trace stage into fit and simplify, so
 /// it carries more stages than the GUI's five-chip strip.
-const STAGE_LABELS: [&str; 7] =
-    ["SOURCE", "FLATTEN", "FEATURES", "PALETTE", "REGIONS", "FIT", "SIMPLIFY"];
+const STAGE_LABELS: [&str; 7] = [
+    "SOURCE", "FLATTEN", "FEATURES", "PALETTE", "REGIONS", "FIT", "SIMPLIFY",
+];
 
 /// Alpha checkerboard, mirrored from the GUI preview's
 /// `src/gui/view/checkerboard.rs` (CHECK_LIGHT / CHECK_DARK / TILE) as 8-bit.
@@ -402,10 +468,16 @@ const CHECK_TILE: u32 = 8;
 /// GUI draws behind preview art, so composited alpha stays legible.
 fn checkerboard(w: u32, h: u32) -> RgbaImage {
     let mut img = RgbaImage::new(w, h);
+
     for (x, y, p) in img.enumerate_pixels_mut() {
-        let c = if (x / CHECK_TILE + y / CHECK_TILE) % 2 == 1 { CHECK_DARK } else { CHECK_LIGHT };
+        let c = if (x / CHECK_TILE + y / CHECK_TILE) % 2 == 1 {
+            CHECK_DARK
+        } else {
+            CHECK_LIGHT
+        };
         *p = Rgba([c[0], c[1], c[2], 255]);
     }
+
     img
 }
 
@@ -424,9 +496,18 @@ pub fn composite_over_grid(top: &RgbaImage) -> RgbaImage {
 /// tile; tiles keep their aspect ratio at a fixed height and read
 /// left-to-right in pipeline order.
 pub fn contact_sheet(s: &Stages) -> RgbaImage {
-    let tiles: [&RgbaImage; 7] =
-        [&s.crop, &s.flat, &s.features, &s.quant, &s.regions, &s.fit, &s.simplify];
+    let tiles: [&RgbaImage; 7] = [
+        &s.crop,
+        &s.flat,
+        &s.features,
+        &s.quant,
+        &s.regions,
+        &s.fit,
+        &s.simplify,
+    ];
+
     let scaled: Vec<RgbaImage> = tiles.iter().map(|t| fit_height(t, TILE_H)).collect();
+
     // A column is at least as wide as its caption, so a narrow tile (an iris
     // crop) never clips its label. The tile stays left-aligned in the column.
     let col_w: Vec<u32> = scaled
@@ -442,22 +523,29 @@ pub fn contact_sheet(s: &Stages) -> RgbaImage {
     let height = tile_top + TILE_H + PAD;
 
     let mut sheet = checkerboard(width, height);
+
     let mut x = PAD;
+
     for (i, tile) in scaled.iter().enumerate() {
         font::draw_text(&mut sheet, STAGE_LABELS[i], x, PAD, col_w[i], LABEL);
+
         blit_over(&mut sheet, tile, x, tile_top);
+
         x += col_w[i];
+
         if i + 1 < scaled.len() {
             fill_rect(&mut sheet, x + PAD, tile_top, SEP_W, TILE_H, SEP);
             x += gap;
         }
     }
+
     sheet
 }
 
 /// Paints an opaque `color` rectangle, clipped to the image bounds.
 fn fill_rect(dst: &mut RgbaImage, x: u32, y: u32, w: u32, h: u32, color: [u8; 3]) {
     let px = Rgba([color[0], color[1], color[2], 255]);
+
     for yy in y..(y + h).min(dst.height()) {
         for xx in x..(x + w).min(dst.width()) {
             dst.put_pixel(xx, yy, px);
@@ -477,10 +565,13 @@ fn fit_height(img: &RgbaImage, h: u32) -> RgbaImage {
 fn blit_over(dst: &mut RgbaImage, tile: &RgbaImage, dx: u32, dy: u32) {
     for (tx, ty, p) in tile.enumerate_pixels() {
         let a = p.0[3] as u32;
+
         if a == 0 {
             continue;
         }
+
         let d = dst.get_pixel_mut(dx + tx, dy + ty);
+
         for c in 0..3 {
             d.0[c] = ((p.0[c] as u32 * a + d.0[c] as u32 * (255 - a)) / 255) as u8;
         }

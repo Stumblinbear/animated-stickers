@@ -109,24 +109,27 @@ impl Default for Config {
     }
 }
 
-impl Config {
-    /// Area (scaled px^2) of the smallest visible feature; drives palette
-    /// floor and speckle (turd) size. `dim` = max(source W,H).
-    pub fn detail_area_scaled(&self, dim: u32) -> f32 {
-        let d = self.detail * self.scale as f32 * (512.0 / dim.max(1) as f32);
-        d * d
-    }
-    pub fn turdsize(&self, dim: u32) -> u32 {
-        ((self.detail_area_scaled(dim) * 0.5) as u32).max(4)
-    }
-    /// Turn angle (radians) at or above which a boundary vertex is a corner.
-    pub fn corner_threshold(&self) -> f64 {
-        (self.alphamax * 90.0).to_radians()
-    }
-    /// Boundary-smoothing window radius in scaled px.
-    pub fn smooth_radius(&self) -> usize {
-        (self.smoothing.max(0.0) * self.scale as f32).round() as usize
-    }
+/// Area (scaled px^2) of the smallest visible feature at `detail`/`scale`;
+/// drives the speckle (turd) floor. `dim` = max(source W,H).
+pub fn detail_area_scaled(detail: f32, scale: u32, dim: u32) -> f32 {
+    let d = detail * scale as f32 * (512.0 / dim.max(1) as f32);
+    d * d
+}
+
+/// Speckle floor (scaled px): the area below which a region is a turd.
+/// `dim` = max(source W,H).
+pub fn turdsize(detail: f32, scale: u32, dim: u32) -> u32 {
+    ((detail_area_scaled(detail, scale, dim) * 0.5) as u32).max(4)
+}
+
+/// Turn angle (radians) at or above which a boundary vertex is a corner.
+pub fn corner_threshold(alphamax: f64) -> f64 {
+    (alphamax * 90.0).to_radians()
+}
+
+/// Boundary-smoothing window radius in scaled px.
+pub fn smooth_radius(smoothing: f32, scale: u32) -> usize {
+    (smoothing.max(0.0) * scale as f32).round() as usize
 }
 
 /// sRGB [0,255] -> OKLab (Ottosson 2020). Perceptually uniform: Euclidean

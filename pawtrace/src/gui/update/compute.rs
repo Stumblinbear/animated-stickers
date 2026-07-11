@@ -18,92 +18,95 @@ pub(super) fn update(app: &mut App, msg: ComputeMsg) -> Task<Msg> {
 }
 
 fn stage_part(app: &mut App, doc: DocId, generation: u64, part: StagePart) -> Task<Msg> {
-    let done = matches!(part, StagePart::Simplify(..));
+    let done = matches!(part, StagePart::Done(..));
     let (dirty, queued);
     let selected = doc == app.selected_doc;
+
     // A part for a document that has since closed resolves to no position and
     // drops, so a dead stream never touches whichever document slid into its
     // old tab-strip slot.
     let Some(pos) = app.doc_pos(doc) else {
         return Task::none();
     };
+
     {
         let d = &mut app.docs[pos];
         let s = &mut d.session;
+
         if generation == s.stage_gen {
-            let layer = s.selected_layer;
-            let keys = s.stage_keys;
             match part {
                 StagePart::Source(img) => {
-                    s.stages.source = Some(img);
+                    s.preview.source = Some(img);
                     s.stage_pending[Stage::Source] = false;
                 }
-                StagePart::Flat(img, prep) => {
-                    s.stages.flat = Some(img);
-                    s.memo.put_prep(layer, keys.prep, prep);
+                StagePart::Flat(img) => {
+                    s.preview.flat = Some(img);
                     s.stage_pending[Stage::Flatten] = false;
                 }
-                StagePart::Detect(detect) => {
-                    s.memo.put_detect(layer, keys.detect, detect);
-                }
-                StagePart::Plan(plan) => {
-                    s.memo.put_plan(layer, keys.regions_view, plan);
-                }
-                StagePart::Remap(img, px, quant, pal) => {
-                    s.stages.remap = Some(img);
-                    s.stages.palette = (*pal).clone();
-                    s.stages.quant_px = Some(px);
-                    s.memo.put_quant(layer, keys.quant, quant);
-                    s.memo.put_palette(layer, keys.quant, pal);
+                StagePart::Remap(img, px, palette) => {
+                    s.preview.remap = Some(img);
+                    s.preview.palette = palette;
+                    s.preview.remap_px = Some(px);
                     s.stage_pending[Stage::Remap] = false;
                 }
-                StagePart::Regions(img, count, regs) => {
-                    s.stages.regions = Some(img);
-                    s.stages.region_count = count;
-                    s.memo.put_regions(layer, keys.regions, regs);
+                StagePart::Regions(img, count) => {
+                    s.preview.regions = Some(img);
+                    s.preview.region_count = count;
                     s.stage_pending[Stage::Regions] = false;
                 }
                 StagePart::Fates(tint, report) => {
-                    s.stages.fate_tint = tint;
-                    s.stages.region_report = Some(report);
+                    s.preview.fate_tint = tint;
+                    s.preview.region_report = Some(report);
                 }
                 StagePart::Contours(img) => {
-                    s.stages.contours = img.clone();
-                    s.memo.put_smooth(layer, keys.fit, img);
+                    s.preview.contours = img;
                     s.stage_pending[Stage::Contours] = false;
                 }
-                StagePart::Fit(img, anchors, fit) => {
-                    s.stages.render = img;
-                    s.stages.anchor_count = anchors;
-                    s.memo.put_fit(layer, keys.fit, fit);
+                StagePart::Fit(img, anchors) => {
+                    s.preview.render = img;
+                    s.preview.anchor_count = anchors;
                     s.stage_pending[Stage::Fit] = false;
                 }
-                StagePart::Simplify(img, anchors, simpl, shown) => {
-                    s.stages.simplified = img;
-                    s.stages.simplify_anchor_count = anchors;
-                    s.memo.put_simplify(layer, keys.simplify, simpl);
-                    s.stages.shown = Some(shown);
+                StagePart::Simplify(img, anchors) => {
+                    s.preview.simplified = img;
+                    s.preview.simplify_anchor_count = anchors;
                     s.stage_pending[Stage::Simplify] = false;
+                }
+                StagePart::Unchanged(stage) => {
+                    s.stage_pending[stage] = false;
+                }
+                StagePart::Done(slots, shown) => {
+                    // The run computed against a clone of this layer's slots;
+                    // install the filled clone so later runs and the full render
+                    // read what it produced.
+                    s.stages.install(shown.layer, *slots);
+                    s.preview.shown = Some(*shown);
                 }
             }
         }
+
         if !done {
             return Task::none();
         }
+
         s.stages_running = false;
+
         // A background document only settles `stages_running`; its latches
         // stay set so select_doc can relaunch what the edit still owes.
         if !selected {
             return Task::none();
         }
+
         dirty = s.stages_dirty;
         queued = s.full_queued;
+
         if dirty {
             s.stages_dirty = false;
         } else if queued {
             s.full_queued = false;
         }
     }
+
     if dirty {
         app.spawn_stages()
     } else if queued {
@@ -122,24 +125,30 @@ fn full_ready(
     let mut err = None;
     let dirty;
     let selected = doc == app.selected_doc;
+
     // A result for a since-closed document resolves to no position and drops,
     // leaving the document now at its old slot untouched.
     let Some(pos) = app.doc_pos(doc) else {
         return Task::none();
     };
+
     {
         let d = &mut app.docs[pos];
         let s = &mut d.session;
+
         if generation == s.full_gen {
             match result {
                 Ok(r) => {
                     let r = *r;
+
                     for m in r.merges {
-                        s.memo.put_simplify(m.layer, m.simplify_key, m.trace.clone());
+                        let sl = s.stages.stages_mut(m.layer);
+                        sl.simplify.put(m.simplify_key, m.trace.clone());
                         if let Some(fk) = m.fit_key {
-                            s.memo.put_fit(m.layer, fk, m.trace);
+                            sl.fit.put(fk, m.trace);
                         }
                     }
+
                     s.layer_outputs = r.outputs;
                     s.full_preview = Some(r.img);
                     s.full_stats = Some(r.stats);
@@ -149,18 +158,22 @@ fn full_ready(
                 Err(e) => err = Some(e),
             }
         }
+
         s.full_busy = false;
+
         // A background document keeps its dirty latch for select_doc to
         // honor later.
         if !selected {
             dirty = false;
         } else {
             dirty = s.full_dirty;
+
             if dirty {
                 s.full_dirty = false;
             }
         }
     }
+
     if let Some(e) = err {
         // Attribute the red treatment to the layer that failed, falling back to
         // the selected layer when the failure names none. The render does not
@@ -168,6 +181,7 @@ fn full_ready(
         if selected {
             if let Some(s) = app.session_mut() {
                 let layer = e.layer.unwrap_or(s.selected_layer);
+
                 s.trace_error = Some(crate::gui::app::LayerError {
                     layer,
                     phase: crate::gui::msg::Phase::Curves,
@@ -177,8 +191,10 @@ fn full_ready(
                 });
             }
         }
+
         app.status = e.msg;
     }
+
     if dirty {
         app.spawn_full()
     } else {
@@ -197,6 +213,7 @@ mod tests {
 
     fn doc_with_id(id: DocId) -> Doc {
         let lid = LayerId::from_raw(0);
+
         Doc {
             id,
             path: "test.png".into(),
@@ -237,7 +254,10 @@ mod tests {
         assert_eq!(app.doc_pos(survivor), Some(0));
 
         // `gone`'s final full result arrives after the close.
-        let err = FullError { layer: Some(LayerId::from_raw(0)), msg: "dead stream".into() };
+        let err = FullError {
+            layer: Some(LayerId::from_raw(0)),
+            msg: "dead stream".into(),
+        };
         let _ = update(&mut app, ComputeMsg::FullReady(gone, 1, Err(err)));
 
         assert!(

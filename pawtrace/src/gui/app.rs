@@ -7,7 +7,7 @@
 //! global library plus one project tier per folder, both kept across tab
 //! switches so unsaved edits are not dropped.
 
-use super::compute::{DocStats, Img, Memo, StageImages, StageKeys};
+use super::compute::{DocStages, DocStats, Img, StageImages};
 use super::doc::{Doc, LayerOutputs};
 use super::fields::Field;
 use super::ids::{DocId, LayerId};
@@ -126,13 +126,10 @@ pub struct DocState {
     /// Stage views' shared pan, a screen-px offset from the centered position.
     pub stage_pan: iced::Vector,
 
-    pub stages: StageImages,
-    /// Content-keyed cache of this document's pipeline outputs, shared by the
-    /// stage strip and the full render.
-    pub memo: Memo,
-    /// The stage keys of the in-flight stage run, so its streamed parts merge
-    /// into the memo under the keys they were computed for.
-    pub stage_keys: StageKeys,
+    pub preview: StageImages,
+    /// This document's per-layer pipeline stage outputs, shared by the stage
+    /// strip and the full render.
+    pub stages: DocStages,
     pub stage_pending: PerStage<bool>,
     pub stages_running: bool,
     pub stages_dirty: bool,
@@ -187,9 +184,8 @@ impl Default for DocState {
             doc_pan: iced::Vector::ZERO,
             stage_zoom: None,
             stage_pan: iced::Vector::ZERO,
-            stages: StageImages::default(),
-            memo: Memo::default(),
-            stage_keys: StageKeys::of(&Config::default(), &[]),
+            preview: StageImages::default(),
+            stages: DocStages::default(),
             stage_pending: PerStage::from_fn(|_| false),
             stages_running: false,
             stages_dirty: false,
@@ -218,12 +214,20 @@ impl DocState {
     /// The active view's zoom: the document viewport on Document, else the
     /// shared stage viewport. `None` fits to the canvas.
     pub fn zoom(&self) -> Option<f32> {
-        if self.is_doc_view() { self.doc_zoom } else { self.stage_zoom }
+        if self.is_doc_view() {
+            self.doc_zoom
+        } else {
+            self.stage_zoom
+        }
     }
 
     /// The active view's pan, in screen px from the centered position.
     pub fn pan(&self) -> iced::Vector {
-        if self.is_doc_view() { self.doc_pan } else { self.stage_pan }
+        if self.is_doc_view() {
+            self.doc_pan
+        } else {
+            self.stage_pan
+        }
     }
 
     /// Writes both zoom and pan to the active view's viewport.
@@ -278,6 +282,7 @@ pub struct App {
 impl Default for App {
     fn default() -> Self {
         use pane_grid::{Axis, Configuration};
+
         let panes = pane_grid::State::with_configuration(Configuration::Split {
             axis: Axis::Vertical,
             ratio: 0.16,
@@ -289,6 +294,7 @@ impl Default for App {
                 b: Box::new(Configuration::Pane(PaneKind::Inspector)),
             }),
         });
+
         Self {
             docs: Vec::new(),
             // Names no open document until one is selected; every read resolves
@@ -323,16 +329,20 @@ impl App {
     /// images stay empty and the panels show their loading state.
     pub(super) fn with_document(path: &Path) -> anyhow::Result<Self> {
         let doc = super::doc::load_doc(path)?;
+
         let mut app = Self::default();
+
         app.docs.push(doc);
         app.ensure_project(0);
         app.selected_doc = app.docs[0].id;
         app.docs[0].session.initialized = true;
+
         // Only the state mutations matter here; the returned compute Task is
         // dropped unpolled, which the iced runtime would otherwise drive.
         if let Some(top) = app.docs[0].top_layer() {
             let _ = app.select_layer(top);
         }
+
         Ok(app)
     }
 
@@ -340,7 +350,9 @@ impl App {
     /// newest-first. Indices into this list are what the welcome rows carry.
     pub fn filtered_recents(&self) -> Vec<&super::recents::RecentEntry> {
         let want_folder = self.welcome.tab == super::msg::RecentTab::Folders;
+
         let q = self.welcome.search.trim().to_lowercase();
+
         self.welcome
             .recents
             .iter()
@@ -360,12 +372,15 @@ impl App {
         let Some(path) = self.recent_path(i) else {
             return;
         };
+
         if let Some(e) = self.welcome.recents.iter_mut().find(|e| e.path == path) {
             e.pinned = !e.pinned;
         }
+
         self.welcome
             .recents
             .sort_by(|a, b| b.pinned.cmp(&a.pinned).then(b.opened.cmp(&a.opened)));
+
         super::recents::save(&self.welcome.recents);
     }
 
@@ -374,9 +389,11 @@ impl App {
         if paths.is_empty() {
             return;
         }
+
         for p in paths {
             super::recents::touch(&mut self.welcome.recents, p, folder);
         }
+
         super::recents::save(&self.welcome.recents);
     }
 
@@ -421,7 +438,11 @@ impl App {
             .get(i)
             .and_then(|d| self.projects.get(&folder_of(&d.path)))
             .unwrap_or(&self.empty);
-        StackRef { global: &self.global_profiles, project }
+
+        StackRef {
+            global: &self.global_profiles,
+            project,
+        }
     }
 
     /// The selected document's profile view.
@@ -433,6 +454,7 @@ impl App {
     /// document from its folder.
     pub(super) fn project_tier_mut(&mut self, i: usize) -> Option<&mut Profiles> {
         let dir = folder_of(&self.docs.get(i)?.path);
+
         Some(self.projects.entry(dir).or_default())
     }
 
@@ -441,6 +463,7 @@ impl App {
         let Some(dir) = self.docs.get(i).map(|d| folder_of(&d.path)) else {
             return;
         };
+
         if !self.projects.contains_key(&dir) {
             let near = Profiles::load_near(&self.docs[i].path);
             self.projects.insert(dir, near);
@@ -454,27 +477,34 @@ impl App {
         if i >= self.docs.len() {
             return Task::none();
         }
+
         self.selected_doc = self.docs[i].id;
+
         if !self.docs[i].session.initialized {
             return self.init_doc(i);
         }
+
         // Latches left set while the document was in the background (its
         // completions only settle the running/busy flags) relaunch here.
         let s = &mut self.docs[i].session;
+
         if s.stages_dirty && !s.stages_running {
             s.stages_dirty = false;
             return self.spawn_stages();
         }
+
         if s.full_dirty && !s.full_busy {
             s.full_dirty = false;
             return self.spawn_full();
         }
+
         // A queued full render behind a still-running strip stays latched;
         // the strip's completion path consumes it.
         if s.full_queued && !s.stages_running && !s.full_busy {
             s.full_queued = false;
             return self.spawn_full();
         }
+
         Task::none()
     }
 
@@ -482,11 +512,14 @@ impl App {
     /// its topmost layer, and kick off both compute passes.
     fn init_doc(&mut self, i: usize) -> Task<Msg> {
         self.ensure_project(i);
+
         self.selected_doc = self.docs[i].id;
         self.docs[i].session.initialized = true;
+
         let Some(top) = self.docs[i].top_layer() else {
             return self.spawn_full();
         };
+
         Task::batch([self.select_layer(top), self.spawn_full()])
     }
 
@@ -497,13 +530,17 @@ impl App {
         if self.session().is_none_or(|s| s.selected_layer == i) {
             return;
         }
+
         // Orphan any in-flight run: its parts are the old layer's and would
         // repaint the cleared slots. Completion bookkeeping still runs on the
         // final part, so the dirty-latch relaunch is unaffected.
         self.stages_gen += 1;
+
         let generation = self.stages_gen;
+
         let s = self.session_mut().expect("checked above");
-        s.stages = StageImages::default();
+
+        s.preview = StageImages::default();
         s.stage_pending = PerStage::from_fn(|_| true);
         s.stage_gen = generation;
     }
@@ -511,34 +548,43 @@ impl App {
     /// Selects layer `i` alone: the multi-selection collapses to it.
     pub(super) fn select_layer(&mut self, i: LayerId) -> Task<Msg> {
         self.clear_stages_on_switch(i);
+
         let doc_idx = self.selected_pos();
         let name = self.layer_name_of(doc_idx, i);
         let seed = name
             .as_deref()
             .and_then(|l| self.stack(doc_idx).match_name(l))
             .unwrap_or_default();
+
         let Some(sess) = self.session_mut() else {
             return Task::none();
         };
+
         sess.selected_layer = i;
         sess.select_anchor = i;
         sess.selection = BTreeSet::from([i]);
         sess.profile_input = seed;
         // The failure treatment is per primary layer, so a new selection starts clean.
         sess.trace_error = None;
+
         self.load_layer_into_controls();
         self.spawn_stages()
     }
 
     /// The name of layer `i` in document `d`.
     pub fn layer_name_of(&self, d: usize, i: LayerId) -> Option<String> {
-        self.docs.get(d).and_then(|doc| doc.layer(i)).map(|l| l.name.clone())
+        self.docs
+            .get(d)
+            .and_then(|doc| doc.layer(i))
+            .map(|l| l.name.clone())
     }
 
     /// The selected layer's name in the selected document.
     pub fn layer_name(&self) -> Option<String> {
         let d = self.selected_pos();
-        self.session().and_then(|s| self.layer_name_of(d, s.selected_layer))
+
+        self.session()
+            .and_then(|s| self.layer_name_of(d, s.selected_layer))
     }
 
     /// Load the selected layer's fully resolved config into the controls.
@@ -546,12 +592,16 @@ impl App {
     /// mode never moves a slider.
     pub(super) fn load_layer_into_controls(&mut self) {
         let doc_idx = self.selected_pos();
+
         let cfg = match self.layer_name() {
             Some(l) => self.stack(doc_idx).resolve(&l).0,
             None => Config::default(),
         };
+
         let c = cfg.stroke_color;
+
         let hex = format!("#{:02x}{:02x}{:02x}", c[0], c[1], c[2]);
+
         if let Some(sess) = self.session_mut() {
             sess.cfg = cfg;
             sess.stroke_hex = hex;
@@ -562,6 +612,7 @@ impl App {
         if let Some(sess) = self.session_mut() {
             sess.full_queued = true;
         }
+
         self.spawn_stages()
     }
 
@@ -598,9 +649,10 @@ impl App {
     /// rendered yet.
     pub fn active_image(&self) -> Option<&Img> {
         let sess = self.session()?;
+
         match sess.view {
             StripView::Document => sess.full_preview.as_ref(),
-            StripView::Phase(_) => self.active_stage()?.image(&sess.stages),
+            StripView::Phase(_) => self.active_stage()?.image(&sess.preview),
         }
     }
 
@@ -609,6 +661,7 @@ impl App {
     pub fn is_animating(&self) -> bool {
         self.docs.iter().any(|d| {
             let s = &d.session;
+
             s.stages_running || s.full_busy || s.stage_pending.iter().any(|&p| p)
         })
     }
@@ -620,6 +673,7 @@ impl App {
         let Some(sess) = self.session() else {
             return false;
         };
+
         match view {
             StripView::Document => sess.full_busy,
             StripView::Phase(p) => self.phase_busy(p),
@@ -631,6 +685,7 @@ impl App {
         let Some(sess) = self.session() else {
             return false;
         };
+
         p.subviews()
             .iter()
             .filter_map(|sv| sv.stage())
@@ -659,6 +714,7 @@ impl App {
     /// downstream of the viewed phase, so its effect can't be shown. The
     /// Document view depends on the whole pipeline, so nothing is locked there.
     pub fn section_locked(&self, phase: Phase) -> bool {
-        self.active_phase().is_some_and(|p| phase.index() > p.index())
+        self.active_phase()
+            .is_some_and(|p| phase.index() > p.index())
     }
 }

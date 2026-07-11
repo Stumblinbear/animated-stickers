@@ -18,7 +18,9 @@ pub fn inspector(app: &App) -> Element<'_, Msg> {
     let Some(sess) = app.session() else {
         return column![].into();
     };
+
     let cfg = &sess.cfg;
+
     column![
         setting(
             app,
@@ -78,7 +80,7 @@ pub fn inspector(app: &App) -> Element<'_, Msg> {
         ),
         widgets::mono(format!(
             "{} regions, {} pinned",
-            sess.stages.region_count,
+            sess.preview.region_count,
             app.doc()
                 .and_then(|d| d.inputs.get(&sess.selected_layer))
                 .map_or(0, |i| i.pins.len())

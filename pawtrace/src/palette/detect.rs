@@ -2,8 +2,7 @@
 //! pixels of the 1x source crop.
 
 use super::common::{Lab, UnionFind};
-use super::{Feature, FeatureId, FeatureLabels, Partition};
-use crate::config::Config;
+use super::{DetectParams, Feature, FeatureId, FeatureLabels, Partition};
 use image::RgbaImage;
 
 /// Growing cap for detection (OKLab ΔE): a pixel joins a component only while
@@ -36,12 +35,15 @@ impl Comp {
 
     fn add(&mut self, lab: Lab, rgb: [u8; 3], x: u32, y: u32) {
         self.count += 1;
+
         for (s, v) in self.sum_lab.iter_mut().zip(lab.0) {
             *s += v as f64;
         }
+
         for (s, v) in self.sum_rgb.iter_mut().zip(rgb) {
             *s += v as u64;
         }
+
         self.bbox.0 = self.bbox.0.min(x);
         self.bbox.1 = self.bbox.1.min(y);
         self.bbox.2 = self.bbox.2.max(x);
@@ -51,34 +53,48 @@ impl Comp {
 
 /// Grows the color-uniform components of [`Partition::detect`] over `src`'s
 /// opaque pixels.
-pub(super) fn grow_features(src: &RgbaImage, cfg: &Config) -> Partition {
+pub(super) fn grow_features(src: &RgbaImage, cfg: &DetectParams) -> Partition {
     // Squared distances: the tolerance tests run up to three times per pixel,
     // and squaring the threshold once saves the sqrt in each.
     let tol2 = DETECT_TOL * DETECT_TOL;
+
     let (w, h) = src.dimensions();
     let (wu, hu) = (w as usize, h as usize);
+
     let raw = src.as_raw();
+
     let mut label: Vec<u32> = vec![u32::MAX; wu * hu];
     let mut comps: Vec<Comp> = Vec::new();
     let mut uf = UnionFind::new(0);
+
     for y in 0..hu {
         for x in 0..wu {
             let i = y * wu + x;
+
             if raw[i * 4 + 3] < cfg.alpha_threshold {
                 continue;
             }
+
             let rgb = [raw[i * 4], raw[i * 4 + 1], raw[i * 4 + 2]];
             let lab = Lab::of(rgb);
+
             let mut joined: Option<u32> = None;
-            for ni in [x.checked_sub(1).map(|x| y * wu + x), y.checked_sub(1).map(|y| y * wu + x)]
-                .into_iter()
-                .flatten()
+
+            for ni in [
+                x.checked_sub(1).map(|x| y * wu + x),
+                y.checked_sub(1).map(|y| y * wu + x),
+            ]
+            .into_iter()
+            .flatten()
             {
                 let nl = label[ni];
+
                 if nl == u32::MAX {
                     continue;
                 }
+
                 let root = uf.find(nl);
+
                 match joined {
                     None => {
                         // The cap tests the component mean against the pixel,
@@ -92,6 +108,7 @@ pub(super) fn grow_features(src: &RgbaImage, cfg: &Config) -> Partition {
                             joined = Some(root);
                         }
                     }
+
                     Some(j) if root != j => {
                         // Both components accepted this pixel, but they only
                         // fuse when their means also agree: one boundary pixel
@@ -105,51 +122,68 @@ pub(super) fn grow_features(src: &RgbaImage, cfg: &Config) -> Partition {
                             // The smaller id stays root, keeping component
                             // order first-encounter.
                             let (lo, hi) = (j.min(root), j.max(root));
+
                             uf.union(lo, hi);
+
                             let (count, sum_lab, sum_rgb, bbox) = {
                                 let c = &comps[hi as usize];
                                 (c.count, c.sum_lab, c.sum_rgb, c.bbox)
                             };
+
                             let t = &mut comps[lo as usize];
+
                             t.count += count;
+
                             for (s, v) in t.sum_lab.iter_mut().zip(sum_lab) {
                                 *s += v;
                             }
+
                             for (s, v) in t.sum_rgb.iter_mut().zip(sum_rgb) {
                                 *s += v;
                             }
+
                             t.bbox.0 = t.bbox.0.min(bbox.0);
                             t.bbox.1 = t.bbox.1.min(bbox.1);
                             t.bbox.2 = t.bbox.2.max(bbox.2);
                             t.bbox.3 = t.bbox.3.max(bbox.3);
+
                             joined = Some(lo);
                         }
                     }
+
                     Some(_) => {}
                 }
             }
+
             if joined.is_none() {
                 let id = uf.push();
                 let (x, y) = (x as u32, y as u32);
+
                 comps.push(Comp {
                     count: 1,
                     sum_lab: [lab.0[0] as f64, lab.0[1] as f64, lab.0[2] as f64],
                     sum_rgb: [rgb[0] as u64, rgb[1] as u64, rgb[2] as u64],
                     bbox: (x, y, x, y),
                 });
+
                 label[i] = id;
             }
         }
     }
+
     let mut root_feat = vec![u32::MAX; comps.len()];
     let mut features = Vec::new();
+
     for id in 0..comps.len() as u32 {
         if !uf.is_root(id) {
             continue;
         }
+
         root_feat[id as usize] = features.len() as u32;
+
         let c = &comps[id as usize];
         let n = c.count as u64;
+
         features.push(Feature {
             mean: [
                 (c.sum_rgb[0] / n) as u8,
@@ -160,12 +194,18 @@ pub(super) fn grow_features(src: &RgbaImage, cfg: &Config) -> Partition {
             bbox: c.bbox,
         });
     }
+
     let mut at = vec![FeatureId::NONE; wu * hu];
+
     for (i, slot) in at.iter_mut().enumerate() {
         if label[i] != u32::MAX {
             let root = uf.find(label[i]);
             *slot = FeatureId(root_feat[root as usize]);
         }
     }
-    Partition { features, labels: FeatureLabels { w, h, at } }
+
+    Partition {
+        features,
+        labels: FeatureLabels { w, h, at },
+    }
 }

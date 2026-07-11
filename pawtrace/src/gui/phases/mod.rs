@@ -11,7 +11,7 @@ mod paint;
 mod shapes;
 
 use super::app::App;
-use super::compute::{Img, StageImages, StageKeys};
+use super::compute::{Img, StageImages};
 use super::msg::{Msg, Phase};
 use iced::Element;
 use std::ops::{Index, IndexMut};
@@ -85,8 +85,7 @@ impl SubView {
 
 /// A pipeline stage as compute produces it: the display image the preview can
 /// show, in [`Stage::ALL`] order. Each carries the raster density it renders at
-/// relative to source-crop px, the [`StageImages`] field it reads, and the rule
-/// deciding when its cached image goes stale.
+/// relative to source-crop px and the [`StageImages`] field it reads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Stage {
     Source,
@@ -96,14 +95,6 @@ pub enum Stage {
     Contours,
     Fit,
     Simplify,
-}
-
-/// A stage's staleness rule against the currently shown images: the [`StageKeys`]
-/// field whose change dirties it (`None` for Source, which tracks only the
-/// layer), and whether repainting the stroke also dirties it.
-struct Staleness {
-    key: Option<fn(&StageKeys) -> u64>,
-    stroke: bool,
 }
 
 impl Stage {
@@ -148,39 +139,6 @@ impl Stage {
         }
     }
 
-    /// Whether this stage's shown image is stale and must recompute, given the
-    /// shown-vs-current layer match, a key-equality test (invoked with this
-    /// stage's own key selector), and whether the stroke is unchanged.
-    pub(in crate::gui) fn is_stale(
-        self,
-        same_layer: bool,
-        key_same: impl Fn(fn(&StageKeys) -> u64) -> bool,
-        stroke_same: bool,
-    ) -> bool {
-        let rule = self.staleness();
-        let key_ok = match rule.key {
-            None => same_layer,
-            Some(sel) => same_layer && key_same(sel),
-        };
-        !(key_ok && (!rule.stroke || stroke_same))
-    }
-
-    fn staleness(self) -> Staleness {
-        match self {
-            // Source is the raw layer raster: only a layer switch dirties it.
-            Stage::Source => Staleness { key: None, stroke: false },
-            Stage::Flatten => Staleness { key: Some(|k| k.prep), stroke: false },
-            Stage::Remap => Staleness { key: Some(|k| k.quant), stroke: false },
-            // The segmentation raster keys on `regions`, not `regions_view`: it
-            // is pin-independent, so a pin edit leaves it valid (the tint moves
-            // to the fates overlay).
-            Stage::Regions => Staleness { key: Some(|k| k.regions), stroke: false },
-            Stage::Contours => Staleness { key: Some(|k| k.fit), stroke: false },
-            // Fit and Simplify paint the stroke, so a stroke change dirties them.
-            Stage::Fit => Staleness { key: Some(|k| k.fit), stroke: true },
-            Stage::Simplify => Staleness { key: Some(|k| k.simplify), stroke: true },
-        }
-    }
 }
 
 /// The phases in strip order.

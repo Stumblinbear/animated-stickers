@@ -9,11 +9,13 @@ use iced::{Alignment, Element, Length};
 
 pub fn zoom_bar(app: &App) -> Element<'_, Msg> {
     let readout = widgets::mono(composition(app)).size(11).color(theme::MUTED);
+
     let zoom_pct = app
         .session()
         .and_then(|s| s.zoom())
         .map(|z| format!("{}%", (z * 100.0).round() as i32))
         .unwrap_or_else(|| "fit".into());
+
     let zoom = row![
         button(icons::icon(icons::FIT).size(11).color(theme::MUTED))
             .on_press(Msg::Ui(UiMsg::ZoomFit))
@@ -36,9 +38,14 @@ pub fn zoom_bar(app: &App) -> Element<'_, Msg> {
     .align_y(Alignment::Center);
 
     container(
-        row![space().width(Length::Fill), readout, space().width(16), zoom]
-            .align_y(Alignment::Center)
-            .padding([5, 10]),
+        row![
+            space().width(Length::Fill),
+            readout,
+            space().width(16),
+            zoom
+        ]
+        .align_y(Alignment::Center)
+        .padding([5, 10]),
     )
     .style(theme::panel)
     .width(Length::Fill)
@@ -52,28 +59,40 @@ fn composition(app: &App) -> String {
     let Some(sess) = app.session() else {
         return String::new();
     };
+
     match sess.view {
         StripView::Document => {
             let Some(doc) = app.doc() else {
                 return String::new();
             };
+
             let (w, h) = doc.size;
-            let shown = doc.inputs.values().filter(|i| i.visible && i.enabled).count();
+
+            let shown = doc
+                .inputs
+                .values()
+                .filter(|i| i.visible && i.enabled)
+                .count();
+
             let excluded = doc.inputs.values().filter(|i| !i.enabled).count();
+
             format!("{w} × {h} · {shown} shown · {excluded} excluded")
         }
         StripView::Phase(p) => {
             let layer = app.layer_name().unwrap_or_else(|| "-".into());
+
             let sub = app.active_subview().map(|sv| sv.label()).unwrap_or("");
+
             let detail = match p {
                 crate::gui::msg::Phase::Colors => {
-                    format!(" · {} colors", sess.stages.palette.len())
+                    format!(" · {} colors", sess.preview.palette.len())
                 }
                 crate::gui::msg::Phase::Curves => {
-                    format!(" · {} anchors", sess.stages.simplify_anchor_count)
+                    format!(" · {} anchors", sess.preview.simplify_anchor_count)
                 }
                 _ => String::new(),
             };
+
             format!("{layer} · {} → {sub}{detail}", p.label())
         }
     }

@@ -2,8 +2,7 @@
 //! until every remaining gap reaches the shade-split stop.
 
 use super::common::{boundary_edges, grow_bbox, Lab, UnionFind};
-use super::{Feature, FeatureId, FeatureLabels, Partition};
-use crate::config::Config;
+use super::{Feature, FeatureId, FeatureLabels, MergeParams, Partition};
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, HashSet};
 
@@ -27,12 +26,18 @@ impl Partition {
     /// the stop, cutting a band roughly every stop-width of ramp. Each output
     /// feature keeps the color of its largest original member, so an authored
     /// fill stays exact.
-    pub fn merge_shades(&mut self, cfg: &Config) {
+    pub fn merge_shades(&mut self, cfg: &MergeParams) {
         if self.features.is_empty() {
             return;
         }
-        let (out, remap) =
-            consolidate(&self.features, &self.labels, cfg.shade_split, cfg.shade_noise);
+
+        let (out, remap) = consolidate(
+            &self.features,
+            &self.labels,
+            cfg.shade_split,
+            cfg.shade_noise,
+        );
+
         self.apply(out, &remap);
     }
 }
@@ -45,12 +50,15 @@ fn consolidate(
 ) -> (Vec<Feature>, Vec<FeatureId>) {
     let n = features.len();
     let mut uf = UnionFind::new(n);
+
     // Cluster accumulators, indexed by root. The merge decision uses the
     // area-weighted mean in OKLab (f64 sums: a cluster can span millions of
     // px), while `rep` remembers the largest original member for the output
     // color.
     let mut version = vec![0u32; n];
+
     let mut area: Vec<u64> = features.iter().map(|f| f.area as u64).collect();
+
     let mut lab_sum: Vec<[f64; 3]> = features
         .iter()
         .map(|f| {
@@ -59,14 +67,17 @@ fn consolidate(
             [l[0] as f64 * a, l[1] as f64 * a, l[2] as f64 * a]
         })
         .collect();
+
     let mut bbox: Vec<(u32, u32, u32, u32)> = features.iter().map(|f| f.bbox).collect();
     let mut rep: Vec<u32> = (0..n as u32).collect();
     let mut rep_area: Vec<u32> = features.iter().map(|f| f.area).collect();
     let mut nbrs: Vec<HashSet<u32>> = vec![HashSet::new(); n];
+
     for (a, b) in boundary_edges(labels) {
         nbrs[a.ix()].insert(b.0);
         nbrs[b.ix()].insert(a.0);
     }
+
     let lab0: Vec<Lab> = features.iter().map(|f| Lab::of(f.mean)).collect();
     let mean = |lab_sum: &[[f64; 3]], area: &[u64], i: usize| -> Lab {
         let a = area[i] as f64;
@@ -76,6 +87,7 @@ fn consolidate(
             (lab_sum[i][2] / a) as f32,
         ])
     };
+
     // Pair distance is the max of the mean distance and the rep distance over
     // [`GUARD_SLACK`]: means still average noise away, while a cluster's
     // identity (its rep) can stretch at most slack-times the tolerance, which
@@ -91,7 +103,9 @@ fn consolidate(
     // regardless of hash-order pushes. A popped entry whose endpoint is no
     // longer a root, or whose version moved, is stale and skipped.
     type Merges = BinaryHeap<Reverse<(u32, u32, u32, u32, u32)>>;
+
     let mut heap: Merges = BinaryHeap::new();
+
     for (a, ns) in nbrs.iter().enumerate() {
         for &b in ns {
             let b = b as usize;
@@ -101,54 +115,72 @@ fn consolidate(
             }
         }
     }
+
     while let Some(Reverse((dbits, a, b, va, vb))) = heap.pop() {
         let d = f32::from_bits(dbits);
+
         // Nothing in the heap can beat the 1px-cluster tolerance, and pops
         // arrive in ascending d, so everything past this point fails too.
         if d >= shade_split + noise_k {
             break;
         }
+
         if !uf.is_root(a) || !uf.is_root(b) {
             continue;
         }
+
         let (a, b) = (a as usize, b as usize);
+
         if version[a] != va || version[b] != vb {
             continue;
         }
+
         // Areas only grow, so a pair failing its tolerance now fails forever;
         // it re-enters the heap with fresh distance if either side merges.
         if d >= shade_split + noise_k / area[a].min(area[b]) as f32 {
             continue;
         }
+
         // b folds into a (a < b), keeping ascending-root determinism.
         uf.union(a as u32, b as u32);
+
         area[a] += area[b];
+
         for k in 0..3 {
             lab_sum[a][k] += lab_sum[b][k];
         }
+
         let bb = bbox[b];
         grow_bbox(&mut bbox[a], bb);
+
         if rep_area[b] > rep_area[a] || (rep_area[b] == rep_area[a] && rep[b] < rep[a]) {
             rep[a] = rep[b];
             rep_area[a] = rep_area[b];
         }
+
         version[a] += 1;
+
         let moved: Vec<u32> = nbrs[b].iter().copied().collect();
         for nb in moved {
             let nbu = nb as usize;
+
             nbrs[nbu].remove(&(b as u32));
+
             if nbu != a {
                 nbrs[nbu].insert(a as u32);
                 nbrs[a].insert(nb);
             }
         }
+
         nbrs[a].remove(&(a as u32));
         nbrs[a].remove(&(b as u32));
         nbrs[b].clear();
+
         for &nb in &nbrs[a] {
             let nbu = nb as usize;
             let d = pair_d(&lab_sum, &area, &rep, a, nbu);
             let (x, y) = (a.min(nbu) as u32, a.max(nbu) as u32);
+
             heap.push(Reverse((
                 d.to_bits(),
                 x,
@@ -163,10 +195,13 @@ fn consolidate(
     let mut remap = vec![FeatureId::NONE; n];
     let mut out: Vec<Feature> = Vec::new();
     let mut slot: HashMap<u32, u32> = HashMap::new();
+
     for i in 0..n as u32 {
         let r = uf.find(i);
+
         if r == i {
             slot.insert(r, out.len() as u32);
+
             out.push(Feature {
                 mean: features[rep[r as usize] as usize].mean,
                 area: area[r as usize] as u32,
@@ -174,8 +209,10 @@ fn consolidate(
             });
         }
     }
+
     for i in 0..n as u32 {
         remap[i as usize] = FeatureId(slot[&uf.find(i)]);
     }
+
     (out, remap)
 }

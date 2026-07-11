@@ -30,21 +30,26 @@ impl Fnv {
     fn new() -> Self {
         Fnv(0xcbf2_9ce4_8422_2325)
     }
+
     fn write(&mut self, bytes: &[u8]) {
         for &b in bytes {
             self.0 ^= b as u64;
             self.0 = self.0.wrapping_mul(0x0000_0100_0000_01b3);
         }
     }
+
     fn u32(&mut self, v: u32) {
         self.write(&v.to_le_bytes());
     }
+
     fn u64(&mut self, v: u64) {
         self.write(&v.to_le_bytes());
     }
+
     fn f64(&mut self, v: f64) {
         self.u64(v.to_bits());
     }
+
     fn hex(self) -> String {
         format!("{:016x}", self.0)
     }
@@ -67,6 +72,7 @@ struct LayerDigests {
 /// refactors that only reorder it.
 fn region_digest(regs: &[Region]) -> String {
     let mut h = Fnv::new();
+
     for r in regs {
         h.write(&r.color);
         h.u32(r.x0);
@@ -74,15 +80,19 @@ fn region_digest(regs: &[Region]) -> String {
         h.u32(r.x1);
         h.u32(r.y1);
         h.u64(r.pixels.len() as u64);
+
         let mut set = 0u64;
+
         for &(px, py) in &r.pixels {
             let mut ph = Fnv::new();
             ph.u32(px);
             ph.u32(py);
             set = set.wrapping_add(ph.0);
         }
+
         h.u64(set);
     }
+
     h.hex()
 }
 
@@ -90,12 +100,15 @@ fn region_digest(regs: &[Region]) -> String {
 /// control points, in emission order, bit-exact.
 fn trace_digest(colors: &[(String, Vec<pawtrace::trace::TracedPath>)]) -> String {
     let mut h = Fnv::new();
+
     for (hex, paths) in colors {
         h.write(hex.as_bytes());
         h.u64(paths.len() as u64);
+
         for p in paths {
             h.f64(p.start.0);
             h.f64(p.start.1);
+
             for &(c1, c2, to) in &p.cubics {
                 for (x, y) in [c1, c2, to] {
                     h.f64(x);
@@ -104,6 +117,7 @@ fn trace_digest(colors: &[(String, Vec<pawtrace::trace::TracedPath>)]) -> String
             }
         }
     }
+
     h.hex()
 }
 
@@ -114,6 +128,7 @@ fn layer_digests(
     doc_dim: u32,
 ) -> LayerDigests {
     let empty = || Fnv::new().hex();
+
     let Some((src, ox, oy)) = pipeline::crop_to_alpha(img, cfg) else {
         return LayerDigests {
             quant: empty(),
@@ -123,34 +138,38 @@ fn layer_digests(
             output: empty(),
         };
     };
+
     let pins = pipeline::scale_pins(&[], (ox, oy), cfg.scale, (src.width(), src.height()));
 
-    let (alpha, regs, quant_digest) =
-        if let Some(color) = raster::uniform_color(&src, cfg.alpha_threshold) {
-            let alpha = raster::scale_alpha(&src, cfg);
-            let mut h = Fnv::new();
-            h.write(&color);
-            h.write(alpha.as_raw());
-            let regs = regions::from_mask(&alpha, color);
-            (alpha, regs, h.hex())
-        } else {
-            let prep = raster::prepare(&src, cfg);
-            let plan = palette::Partition::build(&src, cfg).plan(cfg);
-            let mut quant = palette::remap_constrained(&prep.flat, &prep.alpha, &plan, cfg.scale);
-            if cfg.color_cleanup > 0 {
-                quant = palette::label_smooth(&quant, &prep.alpha, cfg.color_cleanup);
-            }
-            let mut h = Fnv::new();
-            h.write(quant.as_raw());
-            h.write(prep.alpha.as_raw());
-            let regs = regions::segment_absorbed(&quant, &prep.alpha, cfg);
-            (prep.alpha, regs, h.hex())
-        };
+    let (alpha, regs, quant_digest) = if let Some(color) =
+        raster::uniform_color(&src, cfg.alpha_threshold)
+    {
+        let alpha = raster::scale_alpha(&src, cfg);
+        let mut h = Fnv::new();
+        h.write(&color);
+        h.write(alpha.as_raw());
+        let regs = regions::from_mask(&alpha, color);
+        (alpha, regs, h.hex())
+    } else {
+        let prep = raster::prepare(&src, &raster::PrepParams::of(cfg));
+        let plan = palette::Partition::build(&src, cfg).plan(&palette::SelectParams::of(cfg));
+        let mut quant = palette::remap_constrained(&prep.flat, &prep.alpha, &plan, cfg.scale);
+
+        if cfg.color_cleanup > 0 {
+            quant = palette::label_smooth(&quant, &prep.alpha, cfg.color_cleanup);
+        }
+
+        let mut h = Fnv::new();
+        h.write(quant.as_raw());
+        h.write(prep.alpha.as_raw());
+        let regs = regions::segment_absorbed(&quant, &prep.alpha, &regions::SegmentParams::of(cfg));
+        (prep.alpha, regs, h.hex())
+    };
 
     let fit = pipeline::trace_regions(&regs, &alpha, cfg, doc_dim, &pins);
     let fit_digest = trace_digest(&fit);
 
-    let mut out = pipeline::simplify_paths(fit, cfg);
+    let mut out = pipeline::simplify_paths(fit, &pipeline::SimplifyParams::of(cfg));
     let (sx, sy) = ((ox * cfg.scale) as f64, (oy * cfg.scale) as f64);
     for (_, paths) in &mut out {
         for p in paths {
@@ -185,11 +204,10 @@ fn slug(name: &str) -> String {
 fn per_stage_digests_match_baselines() {
     let bless = std::env::var_os("UPDATE_GOLDENS").is_some();
     let path = fixtures_dir().join("golden").join("digests.toml");
-    let blessed: BTreeMap<String, BTreeMap<String, LayerDigests>> =
-        std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|s| toml::from_str(&s).ok())
-            .unwrap_or_default();
+    let blessed: BTreeMap<String, BTreeMap<String, LayerDigests>> = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| toml::from_str(&s).ok())
+        .unwrap_or_default();
 
     let mut current: BTreeMap<String, BTreeMap<String, LayerDigests>> = Default::default();
     for &fixture in FIXTURES {
@@ -219,11 +237,16 @@ fn per_stage_digests_match_baselines() {
     }
 
     let mut failures = Vec::new();
+
     for (fixture, layers) in &current {
         let Some(base) = blessed.get(fixture) else {
-            failures.push(format!("{fixture}: no blessed digests; bless with UPDATE_GOLDENS=1"));
+            failures.push(format!(
+                "{fixture}: no blessed digests; bless with UPDATE_GOLDENS=1"
+            ));
+
             continue;
         };
+
         for (layer, d) in layers {
             match base.get(layer) {
                 None => failures.push(format!("{fixture}/{layer}: not in baseline")),
@@ -241,15 +264,24 @@ fn per_stage_digests_match_baselines() {
                     } else {
                         "output"
                     };
-                    failures.push(format!("{fixture}/{layer}: {stage} diverged ({b:?} != {d:?})"));
+
+                    failures.push(format!(
+                        "{fixture}/{layer}: {stage} diverged ({b:?} != {d:?})"
+                    ));
                 }
             }
         }
+
         for layer in base.keys() {
             if !layers.contains_key(layer) {
                 failures.push(format!("{fixture}/{layer}: in baseline but not produced"));
             }
         }
     }
-    assert!(failures.is_empty(), "digest mismatches:\n{}", failures.join("\n"));
+
+    assert!(
+        failures.is_empty(),
+        "digest mismatches:\n{}",
+        failures.join("\n")
+    );
 }

@@ -12,15 +12,21 @@ use crate::gui::view::inspector::setting::setting;
 use iced::widget::{button, column, container, row, slider, text};
 use iced::{Alignment, Background, Color, Element};
 
-pub const SUBVIEWS: &[SubView] =
-    &[SubView::Source, SubView::Features, SubView::Merged, SubView::Palette];
+pub const SUBVIEWS: &[SubView] = &[
+    SubView::Source,
+    SubView::Features,
+    SubView::Merged,
+    SubView::Palette,
+];
 pub const DEFAULT_SUBVIEW: SubView = SubView::Palette;
 
 pub fn inspector(app: &App) -> Element<'_, Msg> {
     let Some(sess) = app.session() else {
         return column![].into();
     };
+
     let cfg = &sess.cfg;
+
     column![
         setting(
             app,
@@ -29,8 +35,11 @@ pub fn inspector(app: &App) -> Element<'_, Msg> {
             "Smallest feature worth keeping, in pixels at 512-canvas \
              scale. Drives the palette floor and speckle removal.",
             Field::Detail,
-            slider(0.5..=24.0, cfg.detail as f64, |v| Msg::Edit(EditMsg::Set(Field::Detail, v)))
-                .step(0.5),
+            slider(0.5..=24.0, cfg.detail as f64, |v| Msg::Edit(EditMsg::Set(
+                Field::Detail,
+                v
+            )))
+            .step(0.5),
         ),
         setting(
             app,
@@ -79,7 +88,8 @@ fn swatches(app: &App) -> Element<'_, Msg> {
     let Some(sess) = app.session() else {
         return row![].into();
     };
-    let pal = &sess.stages.palette;
+
+    let pal = &sess.preview.palette;
     let locked = &sess.cfg.locked;
     let nearest = |i: usize| -> f32 {
         pal.iter()
@@ -88,11 +98,22 @@ fn swatches(app: &App) -> Element<'_, Msg> {
             .map(|(_, o)| crate::config::color_dist(pal[i], *o))
             .fold(f32::INFINITY, f32::min)
     };
+
     pal.iter()
         .enumerate()
         .fold(row![].spacing(4), |r, (i, c)| {
             let is_locked = locked.contains(c);
             let hex = format!("#{:02x}{:02x}{:02x}", c[0], c[1], c[2]);
+
+            let de = nearest(i);
+            let de_text = if de.is_finite() {
+                format!("{de:.3}")
+            } else {
+                "-".into()
+            };
+
+            let color = *c;
+
             let top = if is_locked {
                 row![icons::icon(icons::LOCK).size(10), text(hex).size(11)]
                     .spacing(3)
@@ -100,26 +121,22 @@ fn swatches(app: &App) -> Element<'_, Msg> {
             } else {
                 row![text(hex).size(11)]
             };
-            let de = nearest(i);
-            let de_text = if de.is_finite() {
-                format!("{de:.3}")
-            } else {
-                "-".into()
-            };
-            let color = *c;
             let swatch = container(column![top, text(de_text).size(9)])
                 .style(move |_: &iced::Theme| container::Style {
                     background: Some(Background::Color(Color::from_rgb8(
                         color[0], color[1], color[2],
                     ))),
-                    text_color: Some(if color[0] as u32 + color[1] as u32 + color[2] as u32 > 380 {
-                        Color::BLACK
-                    } else {
-                        Color::WHITE
-                    }),
+                    text_color: Some(
+                        if color[0] as u32 + color[1] as u32 + color[2] as u32 > 380 {
+                            Color::BLACK
+                        } else {
+                            Color::WHITE
+                        },
+                    ),
                     ..Default::default()
                 })
                 .padding(4);
+
             r.push(
                 button(swatch)
                     .padding(if is_locked { 3 } else { 0 })
