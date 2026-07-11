@@ -261,6 +261,7 @@ pub(super) fn stream(job: StageJob) -> Task<Msg> {
                 shapes: shapes.clone(),
                 contour: ContourParams::of(&cfg),
                 fit: FitParams::of(&cfg),
+                stitch: crate::seams::StitchParams::of(&cfg),
             };
             let fit = slots.fit.get_or(fit_key.clone(), shape_cache, compute_fit);
             if stale(shown.as_ref().and_then(|s| s.fit.as_ref()), &fit_key) {
@@ -389,6 +390,7 @@ impl LayerStages {
             shapes,
             contour: ContourParams::of(cfg),
             fit: FitParams::of(cfg),
+            stitch: crate::seams::StitchParams::of(cfg),
         };
         let fit = self
             .fit

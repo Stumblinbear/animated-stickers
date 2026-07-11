@@ -34,6 +34,7 @@ pub struct Overrides {
     pub alphamax: Option<f64>,
     pub opttolerance: Option<f64>,
     pub seam_slack: Option<f64>,
+    pub seam_stitch: Option<bool>,
     pub simplify: Option<f64>,
     pub smoothing: Option<f32>,
     pub absorb_dist: Option<f32>,
@@ -60,6 +61,7 @@ impl Overrides {
             alphamax,
             opttolerance,
             seam_slack,
+            seam_stitch,
             simplify,
             smoothing,
             absorb_dist,
@@ -98,6 +100,9 @@ impl Overrides {
         }
         if let Some(v) = *seam_slack {
             c.seam_slack = v;
+        }
+        if let Some(v) = *seam_stitch {
+            c.seam_stitch = v;
         }
         if let Some(v) = *simplify {
             c.simplify = v;
@@ -449,6 +454,7 @@ pub fn diff(base: &Config, cfg: &Config) -> Overrides {
         alphamax: d(base.alphamax, cfg.alphamax),
         opttolerance: d(base.opttolerance, cfg.opttolerance),
         seam_slack: d(base.seam_slack, cfg.seam_slack),
+        seam_stitch: d(base.seam_stitch, cfg.seam_stitch),
         simplify: d(base.simplify, cfg.simplify),
         smoothing: d(base.smoothing, cfg.smoothing),
         absorb_dist: d(base.absorb_dist, cfg.absorb_dist),

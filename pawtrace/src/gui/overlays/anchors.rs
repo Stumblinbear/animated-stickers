@@ -7,7 +7,7 @@
 
 use super::OverlayCtx;
 use crate::gui::app::App;
-use crate::gui::compute::LayerTrace;
+use crate::gui::compute::{LayerTrace, TraceOutput};
 use crate::gui::msg::Msg;
 use crate::gui::phases::SubView;
 use crate::gui::view::viewport::Viewport;
@@ -35,23 +35,20 @@ const fn rgb(r: u8, g: u8, b: u8) -> Color {
     }
 }
 
-/// The active subview's finalized trace and the supersample scale its
-/// coordinates are expressed at, read off-session from the fit or simplify
-/// memo. `None` off the Fit and Simplify views, or before that stage has run
-/// for the selected layer.
-pub(super) fn read(app: &App, subview: Option<SubView>) -> Option<(Arc<LayerTrace>, u32)> {
+/// The active subview's finalized trace output, read off-session from the fit
+/// or simplify memo. `None` off the Fit and Simplify views, or before that
+/// stage has run for the selected layer.
+pub(super) fn read(app: &App, subview: Option<SubView>) -> Option<TraceOutput> {
     let sess = app.session()?;
     let stages = sess.stages.peek(sess.selected_layer)?;
 
     // Reading each memo's current value, never its key: the overlay shows
     // whatever trace the view is actually displaying, not what a key claims.
-    let out = match subview? {
-        SubView::Fit => stages.fit.current()?,
-        SubView::Simplify => stages.simplify.current()?,
-        _ => return None,
-    };
-
-    Some((out.trace, out.scale))
+    match subview? {
+        SubView::Fit => stages.fit.current(),
+        SubView::Simplify => stages.simplify.current(),
+        _ => None,
+    }
 }
 
 /// The anchors over the Fit or Simplify view, or nothing on any other view or
@@ -61,12 +58,12 @@ pub fn overlay<'a>(ctx: &OverlayCtx<'a>) -> Option<Element<'a, Msg>> {
         return None;
     }
 
-    let (trace, scale) = ctx.active_trace.clone()?;
+    let out = ctx.active_trace.clone()?;
     let dims = ctx.dims?;
 
     let overlay = AnchorOverlay {
-        trace,
-        scale,
+        trace: out.trace,
+        scale: out.scale,
         dims,
         zoom: ctx.zoom,
         pan: ctx.pan,
@@ -128,124 +125,13 @@ impl Program<Msg> for AnchorOverlay {
                     draw_path(&mut frame, p, scale, &vp);
                 }
             }
-        } else if let Some(cur) = cursor.position_in(bounds) {
-            let ci = vp.to_image(cur);
-            let (sx, sy) = (ci.x as f64 * scale as f64, ci.y as f64 * scale as f64);
-
-            if let Some(p) = hit_path(&self.trace, sx, sy) {
-                draw_path(&mut frame, p, scale, &vp);
-            }
+        } else if let Some((ci, pi)) = super::hit::hovered(&self.trace, scale, bounds, cursor, &vp)
+        {
+            draw_path(&mut frame, &self.trace[ci].1[pi], scale, &vp);
         }
 
         vec![frame.into_geometry()]
     }
-}
-
-/// The last path in paint order (iterating color groups, then their paths, in
-/// order) whose flattened outline contains scaled-space point `(sx, sy)`, or
-/// `None` when no path does. Paths paint bottom-first, so the last containing
-/// path is the topmost.
-fn hit_path(trace: &LayerTrace, sx: f64, sy: f64) -> Option<&TracedPath> {
-    let mut hit = None;
-
-    for (_, paths) in trace {
-        for p in paths {
-            if contains(p, sx, sy) {
-                hit = Some(p);
-            }
-        }
-    }
-
-    hit
-}
-
-/// Whether scaled-space point `(sx, sy)` falls inside `p`'s flattened outline,
-/// by the even-odd rule. Bbox-prefiltered against the control-point hull: a
-/// point outside every control point's bounding box is outside the curve it
-/// bounds, so the prefilter can only reject, never wrongly accept.
-fn contains(p: &TracedPath, sx: f64, sy: f64) -> bool {
-    let (mut x0, mut y0, mut x1, mut y1) = (p.start.0, p.start.1, p.start.0, p.start.1);
-
-    for &(c1, c2, end) in &p.cubics {
-        for &(x, y) in &[c1, c2, end] {
-            x0 = x0.min(x);
-            y0 = y0.min(y);
-            x1 = x1.max(x);
-            y1 = y1.max(y);
-        }
-    }
-
-    if sx < x0 || sx > x1 || sy < y0 || sy > y1 {
-        return false;
-    }
-
-    point_in_polygon(&flatten(p), sx, sy)
-}
-
-/// Fixed subdivisions per cubic segment for the hit-test polyline: enough to
-/// track the curve closely without the cost of an adaptive walk.
-const FLATTEN_STEPS: usize = 8;
-
-/// `p`'s closed outline as a polyline, start point first.
-fn flatten(p: &TracedPath) -> Vec<(f64, f64)> {
-    let mut pts = Vec::with_capacity(p.cubics.len() * FLATTEN_STEPS + 1);
-    pts.push(p.start);
-
-    let mut cur = p.start;
-
-    for &(c1, c2, end) in &p.cubics {
-        for i in 1..=FLATTEN_STEPS {
-            let t = i as f64 / FLATTEN_STEPS as f64;
-            pts.push(cubic_point(cur, c1, c2, end, t));
-        }
-
-        cur = end;
-    }
-
-    pts
-}
-
-/// The point at parameter `t` on the cubic bezier from `p0` to `p3` via
-/// control points `p1`, `p2`.
-fn cubic_point(
-    p0: (f64, f64),
-    p1: (f64, f64),
-    p2: (f64, f64),
-    p3: (f64, f64),
-    t: f64,
-) -> (f64, f64) {
-    let mt = 1.0 - t;
-    let (a, b, c, d) = (mt * mt * mt, 3.0 * mt * mt * t, 3.0 * mt * t * t, t * t * t);
-
-    (
-        a * p0.0 + b * p1.0 + c * p2.0 + d * p3.0,
-        a * p0.1 + b * p1.1 + c * p2.1 + d * p3.1,
-    )
-}
-
-/// Even-odd point-in-polygon over closed ring `pts`.
-fn point_in_polygon(pts: &[(f64, f64)], sx: f64, sy: f64) -> bool {
-    let n = pts.len();
-
-    if n < 3 {
-        return false;
-    }
-
-    let mut inside = false;
-    let mut j = n - 1;
-
-    for i in 0..n {
-        let (xi, yi) = pts[i];
-        let (xj, yj) = pts[j];
-
-        if (yi > sy) != (yj > sy) && sx < (xj - xi) * (sy - yi) / (yj - yi) + xi {
-            inside = !inside;
-        }
-
-        j = i;
-    }
-
-    inside
 }
 
 /// Draws a dot on every anchor of `p`: its start point and each cubic's end

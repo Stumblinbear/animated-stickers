@@ -5,7 +5,7 @@
 //! places anchors only where the error tolerance demands.
 
 use crate::config::Config;
-use crate::fit;
+use crate::fit::{self, AnchorSpan};
 use image::GrayImage;
 use visioncortex::clusters::Cluster;
 use visioncortex::{BinaryImage, PathSimplifyMode};
@@ -32,18 +32,18 @@ impl ContourParams {
     }
 
     /// [`crate::config::corner_threshold`] at this `alphamax`.
-    fn corner_threshold(&self) -> f64 {
+    pub(crate) fn corner_threshold(&self) -> f64 {
         crate::config::corner_threshold(self.alphamax)
     }
 
     /// Arclength window for corner detection; single-vertex turn angles on a
     /// pixel-derived path are quantization noise.
-    fn corner_arm(&self) -> f64 {
+    pub(crate) fn corner_arm(&self) -> f64 {
         2.5 * self.scale as f64
     }
 
     /// [`crate::config::smooth_radius`] at this `smoothing` and `scale`.
-    fn smooth_radius(&self) -> usize {
+    pub(crate) fn smooth_radius(&self) -> usize {
         crate::config::smooth_radius(self.smoothing, self.scale)
     }
 }
@@ -118,25 +118,43 @@ pub fn trace_mask(
     slack: Option<&GrayImage>,
 ) -> Vec<TracedPath> {
     fit_contours(&smoothed_contours(mask, contour, slack), fit)
+        .into_iter()
+        .map(|(p, _)| p)
+        .collect()
 }
 
-/// A smoothed boundary polyline, the indices of its corner vertices, and a
-/// per-vertex seam-slack flag (same length as the polyline). A flag marks a
-/// vertex whose pixel corner touches a set pixel in the slack mask.
-pub type SmoothedContour = (Vec<(f64, f64)>, Vec<usize>, Vec<bool>);
+/// One fitted path and the anchor runs of the shared stretches it embeds.
+pub type FittedPath = (TracedPath, Vec<AnchorSpan>);
 
-/// One smoothed boundary polyline per closed contour of the mask, paired with
-/// the indices of its corner vertices and per-vertex seam-slack flags. Walks
-/// the boundary, detects corners, and smooths, stopping before the cubic fit.
-///
-/// `slack`, when given, is a mask over the same grid marking shape pixels
-/// abutting a low-contrast neighbor; a vertex touching a marked pixel gets a
-/// set flag. Every flag is `false` when `slack` is `None`.
-pub fn smoothed_contours(
-    mask: &GrayImage,
-    cfg: &ContourParams,
-    slack: Option<&GrayImage>,
-) -> Vec<SmoothedContour> {
+/// A shared-stretch run over a ring's vertices: the ring traverses the
+/// stretch from vertex `start` to vertex `end` (wrapping past the ring's
+/// last index). `start == end` marks a stretch covering the whole ring.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SeamSpan {
+    pub start: usize,
+    pub end: usize,
+    /// Whether the ring traverses the stretch in its canonical direction.
+    pub forward: bool,
+    /// Whether the whole stretch fits at the seam-slack tolerance. Uniform
+    /// across the stretch, so both sides fit the same bytes.
+    pub slack: bool,
+}
+
+/// A smoothed boundary polyline ready for the cubic fit: its corner vertex
+/// indices, a per-vertex seam-slack flag (same length as the polyline), and
+/// the shared-stretch spans the ring embeds.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SmoothedContour {
+    pub pts: Vec<(f64, f64)>,
+    pub corners: Vec<usize>,
+    pub flags: Vec<bool>,
+    pub seams: Vec<SeamSpan>,
+}
+
+/// The raw integer boundary rings of a connected binary mask, one per closed
+/// contour, in mask coordinates: the closing duplicate vertex dropped and
+/// rings shorter than three vertices discarded.
+pub(crate) fn walk_rings(mask: &GrayImage) -> Vec<Vec<(f64, f64)>> {
     let (w, h) = (mask.width() as usize, mask.height() as usize);
     let mut bin = BinaryImage::new_w_h(w, h);
 
@@ -148,10 +166,6 @@ pub fn smoothed_contours(
         }
     }
 
-    let corner_threshold = cfg.corner_threshold();
-    let corner_arm = cfg.corner_arm();
-    let smooth_radius = cfg.smooth_radius();
-
     // The mask is one connected component by construction, so no clustering
     // pass is needed: image_to_paths walks the outer boundary and every hole
     // directly. Mode None places vertices at boundary direction changes, dense
@@ -159,40 +173,69 @@ pub fn smoothed_contours(
     // windows by arclength rather than vertex count. Polygon mode's
     // simplification keeps wobble extrema as vertices, which smoothing can't
     // average.
-    let mut out = Vec::new();
+    Cluster::image_to_paths(&bin, PathSimplifyMode::None)
+        .into_iter()
+        .filter_map(|path| {
+            let mut pts: Vec<(f64, f64)> =
+                path.path.iter().map(|p| (p.x as f64, p.y as f64)).collect();
 
-    for path in Cluster::image_to_paths(&bin, PathSimplifyMode::None) {
-        let mut pts: Vec<(f64, f64)> = path.path.iter().map(|p| (p.x as f64, p.y as f64)).collect();
+            if pts.len() > 1 && pts.first() == pts.last() {
+                pts.pop();
+            }
 
-        if pts.len() > 1 && pts.first() == pts.last() {
-            pts.pop();
-        }
-
-        if pts.len() < 3 {
-            continue;
-        }
-
-        let corners = fit::find_corners(&pts, corner_threshold, corner_arm);
-
-        // Sampled from the pre-smoothing integer vertices, which sit on the
-        // slack mask's pixel grid; smoothing preserves vertex count and order.
-        let flags = match slack {
-            Some(sm) => vertex_touches(&pts, sm),
-            None => vec![false; pts.len()],
-        };
-
-        let smoothed = fit::smooth_pinned(&pts, &corners, smooth_radius);
-
-        out.push((smoothed, corners, flags));
-    }
-
-    out
+            (pts.len() >= 3).then_some(pts)
+        })
+        .collect()
 }
 
-/// Fits each smoothed contour into an error-bounded cubic path. A flagged
+/// One smoothed boundary polyline per closed contour of the mask, paired with
+/// the indices of its corner vertices and per-vertex seam-slack flags. Walks
+/// the boundary, detects corners, and smooths, stopping before the cubic fit.
+/// Every ring is free-standing: no shared-stretch spans (the cross-shape
+/// match is [`crate::seams::stitched_contours`]).
+///
+/// `slack`, when given, is a mask over the same grid marking shape pixels
+/// abutting a low-contrast neighbor; a vertex touching a marked pixel gets a
+/// set flag. Every flag is `false` when `slack` is `None`.
+pub fn smoothed_contours(
+    mask: &GrayImage,
+    cfg: &ContourParams,
+    slack: Option<&GrayImage>,
+) -> Vec<SmoothedContour> {
+    let corner_threshold = cfg.corner_threshold();
+    let corner_arm = cfg.corner_arm();
+    let smooth_radius = cfg.smooth_radius();
+
+    walk_rings(mask)
+        .into_iter()
+        .map(|pts| {
+            let corners = fit::find_corners(&pts, corner_threshold, corner_arm);
+
+            // Sampled from the pre-smoothing integer vertices, which sit on the
+            // slack mask's pixel grid; smoothing preserves vertex count and order.
+            let flags = match slack {
+                Some(sm) => vertex_touches(&pts, sm),
+                None => vec![false; pts.len()],
+            };
+
+            let smoothed = fit::smooth_pinned(&pts, &corners, smooth_radius);
+
+            SmoothedContour {
+                pts: smoothed,
+                corners,
+                flags,
+                seams: Vec::new(),
+            }
+        })
+        .collect()
+}
+
+/// Fits each smoothed contour into an error-bounded cubic path, paired with
+/// the anchor-index spans of the shared stretches it embeds. A flagged
 /// vertex is fit at `cfg.opttolerance * cfg.seam_slack`, the rest at the base
-/// tolerance; a contour with no flagged vertex is fit uniformly.
-pub fn fit_contours(contours: &[SmoothedContour], cfg: &FitParams) -> Vec<TracedPath> {
+/// tolerance; a contour with no flagged vertex is fit uniformly. A shared
+/// stretch fits uniformly at its own slack flag.
+pub fn fit_contours(contours: &[SmoothedContour], cfg: &FitParams) -> Vec<FittedPath> {
     // Max fit deviation in scaled px, matching potrace's opttolerance units:
     // potrace ran on the supersampled bitmap, so its tolerance is scaled px,
     // NOT source px. Multiplying by scale here made every boundary wander
@@ -202,18 +245,25 @@ pub fn fit_contours(contours: &[SmoothedContour], cfg: &FitParams) -> Vec<Traced
 
     contours
         .iter()
-        .filter_map(|(pts, corners, flags)| {
+        .filter_map(|c| {
             // An all-`1.0` multiplier fits identically to `None`, so a contour
             // with no flagged vertex passes `None` and stays byte-identical to
             // an unslackened trace.
-            let vslack: Option<Vec<f64>> = flags.iter().any(|&f| f).then(|| {
-                flags
+            let vslack: Option<Vec<f64>> = c.flags.iter().any(|&f| f).then(|| {
+                c.flags
                     .iter()
                     .map(|&f| if f { cfg.seam_slack } else { 1.0 })
                     .collect()
             });
 
-            fit::fit_closed(pts, corners, tolerance, vslack.as_deref())
+            fit::fit_closed_seamed(
+                &c.pts,
+                &c.corners,
+                tolerance,
+                vslack.as_deref(),
+                &c.seams,
+                cfg.seam_slack,
+            )
         })
         .collect()
 }
@@ -222,21 +272,19 @@ pub fn fit_contours(contours: &[SmoothedContour], cfg: &FitParams) -> Vec<Traced
 /// pixel in `slack`. A boundary vertex at integer `(x, y)` sits at the shared
 /// corner of the four pixels `(x-1, y-1)..(x, y)`.
 fn vertex_touches(pts: &[(f64, f64)], slack: &GrayImage) -> Vec<bool> {
+    pts.iter()
+        .map(|&(x, y)| corner_touches(slack, x.round() as i64, y.round() as i64))
+        .collect()
+}
+
+/// Whether the pixel corner at integer `(vx, vy)` touches a set pixel in
+/// `slack`: the corner is shared by the four pixels `(vx-1, vy-1)..(vx, vy)`.
+pub(crate) fn corner_touches(slack: &GrayImage, vx: i64, vy: i64) -> bool {
     let (w, h) = (slack.width() as i64, slack.height() as i64);
 
-    pts.iter()
-        .map(|&(x, y)| {
-            let (vx, vy) = (x.round() as i64, y.round() as i64);
-
-            [(vx - 1, vy - 1), (vx, vy - 1), (vx - 1, vy), (vx, vy)]
-                .into_iter()
-                .any(|(px, py)| {
-                    px >= 0
-                        && py >= 0
-                        && px < w
-                        && py < h
-                        && slack.get_pixel(px as u32, py as u32)[0] != 0
-                })
+    [(vx - 1, vy - 1), (vx, vy - 1), (vx - 1, vy), (vx, vy)]
+        .into_iter()
+        .any(|(px, py)| {
+            px >= 0 && py >= 0 && px < w && py < h && slack.get_pixel(px as u32, py as u32)[0] != 0
         })
-        .collect()
 }

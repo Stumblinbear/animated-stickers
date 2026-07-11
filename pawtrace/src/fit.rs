@@ -3,7 +3,7 @@
 //! polygons: corner detection, corner-pinned smoothing, and error-bounded
 //! recursive fitting.
 
-use crate::trace::TracedPath;
+use crate::trace::{SeamSpan, TracedPath};
 type V = (f64, f64);
 
 fn sub(a: V, b: V) -> V {
@@ -80,6 +80,221 @@ pub fn fit_closed(
         fit_cubic(&seg, t1, t2, tol * tol, seg_slack.as_deref(), &mut cubics, 0);
     }
     Some(TracedPath { start, cubics })
+}
+
+/// A shared-stretch run over a fitted path's anchors: the segments from
+/// anchor `start` to anchor `end` (wrapping past the last segment) trace the
+/// stretch. `start == end` marks a stretch covering the whole path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct AnchorSpan {
+    pub start: usize,
+    pub end: usize,
+    /// Whether the path traverses the stretch in its canonical direction.
+    pub forward: bool,
+}
+
+/// [`fit_closed`] with shared-stretch awareness: the ring is cut at its
+/// corners and span endpoints, free sections fit as usual, and each span is
+/// fit once over its points in canonical direction (at a uniform
+/// `tol * seam_slack` when the span is flagged), then spliced into the ring
+/// forward or reversed. Returns the path and each span's anchor run. With no
+/// spans this is exactly [`fit_closed`].
+pub fn fit_closed_seamed(
+    pts: &[V],
+    corners: &[usize],
+    tol: f64,
+    slack: Option<&[f64]>,
+    seams: &[SeamSpan],
+    seam_slack: f64,
+) -> Option<(TracedPath, Vec<AnchorSpan>)> {
+    if seams.is_empty() {
+        return fit_closed(pts, corners, tol, slack).map(|p| (p, Vec::new()));
+    }
+    let n = pts.len();
+    if n < 3 {
+        return None;
+    }
+
+    // A span fits at its own uniform slack, never the per-vertex flags: the
+    // flags are computed per shape, the span's value is agreed by both sides.
+    let span_slack = |s: &SeamSpan, len_pts: usize| -> Option<Vec<f64>> {
+        (s.slack && seam_slack != 1.0).then(|| vec![seam_slack; len_pts])
+    };
+
+    // A whole-ring stretch: one open chain from the canonical start around to
+    // itself.
+    if seams.len() == 1 && seams[0].start == seams[0].end {
+        let s = seams[0];
+        let chain = circular_slice(pts, s.start, s.start);
+        let mut rel: Vec<usize> = corners
+            .iter()
+            .filter(|&&c| c < n)
+            .map(|&c| (c + n - s.start) % n)
+            .filter(|&r| r != 0)
+            .collect();
+        rel.sort_unstable();
+        rel.dedup();
+        let sl = span_slack(&s, chain.len());
+        let cubics = fit_span(&chain, &rel, tol, sl.as_deref(), s.forward);
+        if cubics.is_empty() {
+            return None;
+        }
+        return Some((
+            TracedPath { start: pts[s.start], cubics },
+            vec![AnchorSpan { start: 0, end: 0, forward: s.forward }],
+        ));
+    }
+
+    let circ = |from: usize, to: usize| (to + n - from) % n;
+
+    let mut cuts: Vec<usize> = corners.iter().copied().filter(|&i| i < n).collect();
+    for s in seams {
+        cuts.push(s.start);
+        cuts.push(s.end);
+    }
+    cuts.sort_unstable();
+    cuts.dedup();
+    let m = cuts.len();
+
+    // Span endpoints are cuts, so each section between consecutive cuts lies
+    // inside at most one span, and a span tiles a contiguous run of sections.
+    let span_of: Vec<Option<usize>> = (0..m)
+        .map(|k| {
+            let a = cuts[k];
+            let seg = circ(a, cuts[(k + 1) % m]);
+            seams.iter().position(|s| {
+                let len = circ(s.start, s.end);
+                let off = circ(s.start, a);
+                off < len && off + seg <= len
+            })
+        })
+        .collect();
+
+    // Start the path at a cut that opens a free section or a span, never
+    // mid-span, so every span is met at its start and none wraps the seam
+    // between the last anchor and the first.
+    let k0 = (0..m)
+        .find(|&k| match span_of[k] {
+            None => true,
+            Some(si) => cuts[k] == seams[si].start,
+        })
+        .unwrap_or(0);
+
+    let start = pts[cuts[k0]];
+    let mut cubics: Vec<(V, V, V)> = Vec::new();
+    let mut runs: Vec<(usize, usize, bool)> = Vec::new();
+
+    let mut i = 0;
+    while i < m {
+        let k = (k0 + i) % m;
+        match span_of[k] {
+            Some(si) => {
+                let s = &seams[si];
+                let span_pts = circular_slice(pts, s.start, s.end);
+                let len = circ(s.start, s.end);
+                let mut rel: Vec<usize> = cuts
+                    .iter()
+                    .map(|&c| circ(s.start, c))
+                    .filter(|&o| o > 0 && o < len)
+                    .collect();
+                rel.sort_unstable();
+                rel.dedup();
+                let sl = span_slack(s, span_pts.len());
+                let off = cubics.len();
+                cubics.extend(fit_span(&span_pts, &rel, tol, sl.as_deref(), s.forward));
+                runs.push((off, cubics.len() - off, s.forward));
+
+                while i < m && span_of[(k0 + i) % m] == Some(si) {
+                    i += 1;
+                }
+            }
+            None => {
+                let a = cuts[k];
+                let b = cuts[(k + 1) % m];
+                let seg = circular_slice(pts, a, b);
+                let seg_slack = slack.map(|sl| circular_slice(sl, a, b));
+                let t1 = norm(sub(seg[1], seg[0]));
+                let t2 = norm(sub(seg[seg.len() - 2], seg[seg.len() - 1]));
+                fit_cubic(&seg, t1, t2, tol * tol, seg_slack.as_deref(), &mut cubics, 0);
+                i += 1;
+            }
+        }
+    }
+
+    let total = cubics.len();
+    if total == 0 {
+        return None;
+    }
+    let spans_out = runs
+        .into_iter()
+        .map(|(off, cnt, fw)| AnchorSpan {
+            start: off,
+            end: (off + cnt) % total,
+            forward: fw,
+        })
+        .collect();
+    Some((TracedPath { start, cubics }, spans_out))
+}
+
+/// Fits an open polyline with error-bounded cubics from `pts[0]` to its last
+/// point, cutting at the interior `corners` (indices into `pts`). Endpoint
+/// tangents come from the polyline's end edges, as a closed fit's corner
+/// cuts do. `slack` is the per-point tolerance multiplier of [`fit_closed`].
+pub fn fit_open(pts: &[V], corners: &[usize], tol: f64, slack: Option<&[f64]>) -> Vec<(V, V, V)> {
+    let n = pts.len();
+    if n < 2 {
+        return Vec::new();
+    }
+    let mut cuts: Vec<usize> = vec![0];
+    cuts.extend(corners.iter().copied().filter(|&c| c > 0 && c < n - 1));
+    cuts.push(n - 1);
+    cuts.sort_unstable();
+    cuts.dedup();
+
+    let mut out = Vec::new();
+    for w in cuts.windows(2) {
+        let (a, b) = (w[0], w[1]);
+        let seg = &pts[a..=b];
+        let seg_slack = slack.map(|s| &s[a..=b]);
+        let t1 = norm(sub(seg[1], seg[0]));
+        let t2 = norm(sub(seg[seg.len() - 2], seg[seg.len() - 1]));
+        fit_cubic(seg, t1, t2, tol * tol, seg_slack, &mut out, 0);
+    }
+    out
+}
+
+/// Fits one span's polyline (ring order, both endpoints included) in the
+/// stretch's canonical direction and returns the run in ring order. A
+/// non-`forward` span reverses its inputs before the fit and the resulting
+/// run after it, by index order and control-point swap alone, so both
+/// siblings emit bitwise-equal coordinates.
+fn fit_span(pts: &[V], corners: &[usize], tol: f64, slack: Option<&[f64]>, forward: bool) -> Vec<(V, V, V)> {
+    if pts.len() < 2 {
+        return Vec::new();
+    }
+    if forward {
+        return fit_open(pts, corners, tol, slack);
+    }
+    let m = pts.len();
+    let rev: Vec<V> = pts.iter().rev().copied().collect();
+    let rev_slack: Option<Vec<f64>> = slack.map(|s| s.iter().rev().copied().collect());
+    let mut rev_corners: Vec<usize> = corners.iter().map(|&c| m - 1 - c).collect();
+    rev_corners.sort_unstable();
+    let cubics = fit_open(&rev, &rev_corners, tol, rev_slack.as_deref());
+    reverse_cubics(rev[0], &cubics)
+}
+
+/// Reverses a cubic run that starts at `start`: segment order flips and each
+/// segment's control points swap; every coordinate is reused untouched.
+fn reverse_cubics(start: V, cubics: &[(V, V, V)]) -> Vec<(V, V, V)> {
+    let k = cubics.len();
+    (0..k)
+        .map(|j| {
+            let i = k - 1 - j;
+            let end = if i == 0 { start } else { cubics[i - 1].2 };
+            (cubics[i].1, cubics[i].0, end)
+        })
+        .collect()
 }
 
 /// Corner vertices: turn angle at or above `threshold`, measured between
@@ -251,9 +466,206 @@ pub fn smooth_pinned(pts: &[V], corners: &[usize], radius: usize) -> Vec<V> {
 /// An anchor whose tangents turn by `corner_threshold` or more is kept, so
 /// corners survive. Never drops below three anchors.
 pub fn simplify_closed(path: &TracedPath, tol: f64, corner_threshold: f64) -> TracedPath {
+    merge_ring(path, tol, corner_threshold, None).0
+}
+
+/// [`simplify_closed`] with shared-stretch awareness: anchors inside a span
+/// merge by an open-chain pass over the span's cubics in canonical
+/// direction, junction anchors never merge away, and free anchors merge as
+/// usual without crossing a junction. Returns the simplified path and the
+/// spans' anchor runs within it. With no spans this is exactly
+/// [`simplify_closed`].
+pub fn simplify_closed_seamed(
+    path: &TracedPath,
+    tol: f64,
+    corner_threshold: f64,
+    spans: &[AnchorSpan],
+) -> (TracedPath, Vec<AnchorSpan>) {
+    if spans.is_empty() {
+        return (simplify_closed(path, tol, corner_threshold), Vec::new());
+    }
+    let n = path.cubics.len();
+    if tol <= 0.0 || n == 0 {
+        return (path.clone(), spans.to_vec());
+    }
+    let anchor = |i: usize| if i == 0 { path.start } else { path.cubics[i - 1].2 };
+
+    if spans.len() == 1 && spans[0].start == spans[0].end {
+        let s = spans[0];
+        let start = anchor(s.start);
+        let chain: Vec<(V, V, V)> = (0..n).map(|j| path.cubics[(s.start + j) % n]).collect();
+        let cubics = simplify_span(start, &chain, tol, corner_threshold, s.forward);
+        return (
+            TracedPath { start, cubics },
+            vec![AnchorSpan { start: 0, end: 0, forward: s.forward }],
+        );
+    }
+
+    // Spans never straddle anchor 0 (the fit starts the path at a span
+    // boundary), so one ring-order walk splices each span in place.
+    let mut span_at: Vec<Option<usize>> = vec![None; n];
+    for (si, s) in spans.iter().enumerate() {
+        span_at[s.start] = Some(si);
+    }
+
+    let mut cubics: Vec<(V, V, V)> = Vec::new();
+    let mut runs: Vec<(usize, usize, bool)> = Vec::new();
+    let mut j = 0;
+    while j < n {
+        match span_at[j] {
+            Some(si) => {
+                let s = &spans[si];
+                let count = (s.end + n - s.start) % n;
+                let chain: Vec<(V, V, V)> =
+                    (0..count).map(|t| path.cubics[(s.start + t) % n]).collect();
+                let run = simplify_span(anchor(s.start), &chain, tol, corner_threshold, s.forward);
+                runs.push((cubics.len(), run.len(), s.forward));
+                cubics.extend(run);
+                j += count;
+            }
+            None => {
+                cubics.push(path.cubics[j]);
+                j += 1;
+            }
+        }
+    }
+
+    let mid = TracedPath { start: path.start, cubics };
+    let m = mid.cubics.len();
+    let mut locked = vec![false; m];
+    for &(off, cnt, _) in &runs {
+        for t in 0..=cnt {
+            locked[(off + t) % m] = true;
+        }
+    }
+
+    let (out, order) = merge_ring(&mid, tol, corner_threshold, Some(&locked));
+    let mut new_idx = vec![usize::MAX; m];
+    for (ni, &oi) in order.iter().enumerate() {
+        new_idx[oi] = ni;
+    }
+    let spans_out = runs
+        .into_iter()
+        .map(|(off, cnt, fw)| AnchorSpan {
+            start: new_idx[off],
+            end: new_idx[(off + cnt) % m],
+            forward: fw,
+        })
+        .collect();
+    (out, spans_out)
+}
+
+/// Simplifies one span's cubic run in the stretch's canonical direction and
+/// splices it back in ring order, mirroring `fit_span`'s reversal discipline.
+fn simplify_span(
+    start: V,
+    cubics: &[(V, V, V)],
+    tol: f64,
+    corner_threshold: f64,
+    forward: bool,
+) -> Vec<(V, V, V)> {
+    if forward {
+        return simplify_open(start, cubics, tol, corner_threshold);
+    }
+    if cubics.is_empty() {
+        return Vec::new();
+    }
+    let end = cubics[cubics.len() - 1].2;
+    let rev = reverse_cubics(start, cubics);
+    let simplified = simplify_open(end, &rev, tol, corner_threshold);
+    reverse_cubics(end, &simplified)
+}
+
+/// Greedy anchor removal on an open cubic chain, the open-chain counterpart
+/// of [`simplify_closed`]: the two chain endpoints always survive, interior
+/// non-corner anchors whose merge stays within `tol` px merge away.
+fn simplify_open(start: V, cubics: &[(V, V, V)], tol: f64, corner_threshold: f64) -> Vec<(V, V, V)> {
+    let k = cubics.len();
+    if k < 2 || tol <= 0.0 {
+        return cubics.to_vec();
+    }
+    let mut a: Vec<V> = Vec::with_capacity(k + 1);
+    a.push(start);
+    for c in cubics {
+        a.push(c.2);
+    }
+    let mut out_h = vec![(0.0, 0.0); k + 1];
+    let mut in_h = vec![(0.0, 0.0); k + 1];
+    for i in 0..k {
+        out_h[i] = cubics[i].0;
+        in_h[i + 1] = cubics[i].1;
+    }
+    let mut prev: Vec<usize> = (0..=k).map(|i| i.saturating_sub(1)).collect();
+    let mut next: Vec<usize> = (0..=k).map(|i| (i + 1).min(k)).collect();
+    let mut alive = vec![true; k + 1];
+
+    let is_corner = |i: usize, a: &[V], in_h: &[V], out_h: &[V]| -> bool {
+        let incoming = norm(sub(a[i], in_h[i]));
+        let outgoing = norm(sub(out_h[i], a[i]));
+        if len(incoming) < 0.5 || len(outgoing) < 0.5 {
+            return false;
+        }
+        dot(incoming, outgoing).clamp(-1.0, 1.0).acos() >= corner_threshold
+    };
+
+    loop {
+        let mut best: Option<(usize, f64, [V; 4])> = None;
+        for j in 1..k {
+            if !alive[j] || is_corner(j, &a, &in_h, &out_h) {
+                continue;
+            }
+            let (p, q) = (prev[j], next[j]);
+            let pts = sample_pair(
+                &[a[p], out_h[p], in_h[j], a[j]],
+                &[a[j], out_h[j], in_h[q], a[q]],
+            );
+            if pts.len() < 3 {
+                continue;
+            }
+            let t1 = norm(sub(out_h[p], a[p]));
+            let t2 = norm(sub(in_h[q], a[q]));
+            if len(t1) < 1e-9 || len(t2) < 1e-9 {
+                continue;
+            }
+            let u = chord_length_param(&pts);
+            let bez = generate_bezier(&pts, &u, t1, t2);
+            let (err2, _) = max_error(&pts, &bez, &u, None);
+            let err = err2.sqrt();
+            if err <= tol && best.is_none_or(|(_, be, _)| err < be) {
+                best = Some((j, err, bez));
+            }
+        }
+        let Some((j, _, bez)) = best else { break };
+        let (p, q) = (prev[j], next[j]);
+        out_h[p] = bez[1];
+        in_h[q] = bez[2];
+        alive[j] = false;
+        next[p] = q;
+        prev[q] = p;
+    }
+
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i != k {
+        let q = next[i];
+        out.push((out_h[i], in_h[q], a[q]));
+        i = q;
+    }
+    out
+}
+
+/// The greedy closed-ring merge behind [`simplify_closed`]: `locked` anchors
+/// (when given) are never removal candidates. Returns the merged path and
+/// the surviving anchors' original indices in emission order.
+fn merge_ring(
+    path: &TracedPath,
+    tol: f64,
+    corner_threshold: f64,
+    locked: Option<&[bool]>,
+) -> (TracedPath, Vec<usize>) {
     let n = path.cubics.len();
     if n < 4 || tol <= 0.0 {
-        return path.clone();
+        return (path.clone(), (0..n).collect());
     }
     // Anchor positions with their incoming and outgoing control handles.
     // Segment i runs a[i] -> a[i+1] with controls out_h[i] and in_h[i+1].
@@ -283,7 +695,10 @@ pub fn simplify_closed(path: &TracedPath, tol: f64, corner_threshold: f64) -> Tr
         // Removable anchor with the smallest merge error under tol.
         let mut best: Option<(usize, f64, [V; 4])> = None;
         for j in 0..n {
-            if !alive[j] || is_corner(j, &a, &in_h, &out_h) {
+            if !alive[j]
+                || locked.is_some_and(|l| l[j])
+                || is_corner(j, &a, &in_h, &out_h)
+            {
                 continue;
             }
             let (p, q) = (prev[j], next[j]);
@@ -319,8 +734,10 @@ pub fn simplify_closed(path: &TracedPath, tol: f64, corner_threshold: f64) -> Tr
 
     let start = (0..n).find(|&i| alive[i]).unwrap();
     let mut cubics = Vec::with_capacity(count);
+    let mut order = Vec::with_capacity(count);
     let mut i = start;
     loop {
+        order.push(i);
         let q = next[i];
         cubics.push((out_h[i], in_h[q], a[q]));
         i = q;
@@ -328,7 +745,7 @@ pub fn simplify_closed(path: &TracedPath, tol: f64, corner_threshold: f64) -> Tr
             break;
         }
     }
-    TracedPath { start: a[start], cubics }
+    (TracedPath { start: a[start], cubics }, order)
 }
 
 /// Samples two adjacent cubic segments into a single polyline, dropping the
@@ -744,6 +1161,26 @@ mod tests {
         let fit = fit_closed(&pts, &corners, tol, None).unwrap();
         let dev = fit_deviation(&fit, &pts);
         assert!(dev <= tol + 0.5, "max deviation {dev} > tol {tol}");
+    }
+
+    #[test]
+    fn seamed_fit_without_spans_is_fit_closed() {
+        // The seamed entry with no spans must reproduce fit_closed exactly,
+        // so a shape with no shared stretch stays byte-identical.
+        let (pts, corners, _) = bumped_ring();
+        let base = fit_closed(&pts, &corners, 0.5, None).unwrap();
+        let (same, spans) = fit_closed_seamed(&pts, &corners, 0.5, None, &[], 1.0).unwrap();
+        assert!(spans.is_empty());
+        assert_eq!(base.start, same.start);
+        assert_eq!(base.cubics, same.cubics);
+    }
+
+    #[test]
+    fn seamed_simplify_without_spans_is_simplify_closed() {
+        let h = hexagon();
+        let (same, spans) = simplify_closed_seamed(&h, 1000.0, PI, &[]);
+        assert!(spans.is_empty());
+        assert_eq!(simplify_closed(&h, 1000.0, PI).cubics, same.cubics);
     }
 
     #[test]

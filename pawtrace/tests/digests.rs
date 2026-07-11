@@ -162,10 +162,10 @@ fn layer_digests(
         (prep.alpha, regs, h.hex())
     };
 
-    let fit = pipeline::trace_regions(&regs, &alpha, cfg, doc_dim, &pins);
+    let (fit, seams) = pipeline::trace_regions(&regs, &alpha, cfg, doc_dim, &pins);
     let fit_digest = trace_digest(&fit);
 
-    let mut out = pipeline::simplify_paths(fit, &pipeline::SimplifyParams::of(cfg));
+    let (mut out, _) = pipeline::simplify_paths(fit, &seams, &pipeline::SimplifyParams::of(cfg));
     let (sx, sy) = ((ox * cfg.scale) as f64, (oy * cfg.scale) as f64);
     for (_, paths) in &mut out {
         for p in paths {

@@ -10,5 +10,6 @@ pub mod profiles;
 pub mod psd_import;
 pub mod raster;
 pub mod regions;
+pub mod seams;
 pub mod timing;
 pub mod trace;

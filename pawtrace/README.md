@@ -53,7 +53,7 @@ module):
 | region-containment shapes, no global stacking | stacked cumulative masks retraced upper regions once per level below them (duplicated geometry); per-region solids trace every boundary once and paint correctly in area order |
 | holes with opposite winding, one SVG path per color | separate path elements never cut holes; a ring without its hole paints solid over everything inside (the wrong-color-forearm bug) |
 | transition absorption on the region graph | quantized gradients cost shapes; a band that is near a neighbor in color, thin everywhere, two-sided, and colored between its dominant neighbors is an AA artifact. Islands (highlights), extrema, wide spikes (layered fur), and nested families (soft strokes) all fail at least one test and survive |
-| 1px shape dilation | abutting siblings are fit independently; sub-pixel cracks would show through. Speckle floor applies pre-dilation or dilation resurrects speckles |
+| shared-stretch seam stitching, no dilation | abutting siblings walk the same pixel seam; each shared stretch is canonicalized once and both shapes splice the identical curve, so a fit wobble cannot open a sub-pixel crack. Dilation was rejected: the speckle floor must apply pre-dilation or dilation resurrects speckles |
 | Schneider fitting, not visioncortex splines | splines fit one cubic per ~45° of direction change with no error-driven merging: anchors every few px |
 | fit tolerance in scaled px | potrace's opttolerance units (it ran on the supersampled bitmap); source-px tolerance visibly wobbles thin line widths |
 | deterministic tie-breaks | HashMap iteration order is randomized per process; boundary/count ties must not change output run to run |

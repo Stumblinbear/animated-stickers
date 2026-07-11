@@ -4,10 +4,16 @@
 //! traced shape per region (trace + fit), painted as an outside-in stack.
 
 use crate::color::Srgb;
-use crate::trace::{ContourParams, FitParams, TracedPath};
-use crate::{config::Config, palette, raster, regions, timing, trace};
+use crate::fit::AnchorSpan;
+use crate::trace::{ContourParams, FitParams, FittedPath, TracedPath};
+use crate::{config::Config, palette, raster, regions, seams, timing, trace};
 use anyhow::Result;
 use image::{GrayImage, RgbaImage};
+
+/// The shared-stretch sidecar of a traced layer: per color run, per path, the
+/// anchor runs of the seams the fit spliced. Parallel to the trace's own
+/// nesting; empty vectors mark paths with no shared stretch.
+pub type TraceSeams = Vec<Vec<Vec<AnchorSpan>>>;
 
 /// Every config value the shape build ([`planned_shapes`] /
 /// `surviving_shapes`) reads.
@@ -102,10 +108,8 @@ pub fn run(
         (prep.alpha, regs)
     };
 
-    let mut out = simplify_paths(
-        trace_regions(&regs, &alpha, cfg, doc_dim, &pins),
-        &SimplifyParams::of(cfg),
-    );
+    let (traced, seams) = trace_regions(&regs, &alpha, cfg, doc_dim, &pins);
+    let (mut out, _) = simplify_paths(traced, &seams, &SimplifyParams::of(cfg));
 
     // Crop offset in scaled (traced) coordinate space.
     let (sx, sy) = ((ox * cfg.scale) as f64, (oy * cfg.scale) as f64);
@@ -122,26 +126,46 @@ pub fn run(
 /// Runs the final anchor-reduction pass over every traced path when
 /// `cfg.simplify > 0`; a no-op (returned unchanged) otherwise. Corner
 /// threshold matches the tracer's, so a corner kept at fit time is kept
-/// here.
+/// here. `seams` is the trace's shared-stretch sidecar: a path's spans
+/// simplify by their canonical open-chain pass so both siblings stay
+/// bitwise equal. Returns the simplified colors paired with the sidecar
+/// remapped onto the post-simplify anchors, same grouping.
 pub fn simplify_paths(
     mut colors: Vec<(String, Vec<TracedPath>)>,
+    seams: &TraceSeams,
     cfg: &SimplifyParams,
-) -> Vec<(String, Vec<TracedPath>)> {
+) -> (Vec<(String, Vec<TracedPath>)>, TraceSeams) {
     use rayon::prelude::*;
 
     if cfg.simplify <= 0.0 {
-        return colors;
+        return (colors, seams.clone());
     }
 
     let corner_threshold = crate::config::corner_threshold(cfg.alphamax);
+    static NONE: &[AnchorSpan] = &[];
 
-    colors.par_iter_mut().for_each(|(_, paths)| {
-        for p in paths.iter_mut() {
-            *p = crate::fit::simplify_closed(p, cfg.simplify, corner_threshold);
-        }
-    });
+    let remapped: TraceSeams = colors
+        .par_iter_mut()
+        .enumerate()
+        .map(|(ci, (_, paths))| {
+            paths
+                .iter_mut()
+                .enumerate()
+                .map(|(pi, p)| {
+                    let spans = seams
+                        .get(ci)
+                        .and_then(|c| c.get(pi))
+                        .map_or(NONE, |s| s.as_slice());
+                    let (simplified, spans) =
+                        crate::fit::simplify_closed_seamed(p, cfg.simplify, corner_threshold, spans);
+                    *p = simplified;
+                    spans
+                })
+                .collect()
+        })
+        .collect();
 
-    colors
+    (colors, remapped)
 }
 
 /// Converts document-space pin points into the scaled space of a crop at
@@ -173,7 +197,7 @@ pub fn trace_regions(
     cfg: &Config,
     doc_dim: u32,
     pins: &[(u32, u32)],
-) -> Vec<(String, Vec<TracedPath>)> {
+) -> (Vec<(String, Vec<TracedPath>)>, TraceSeams) {
     trace_planned(
         &regions::merge_plan(regs, alpha, &regions::PlanParams::of(cfg), doc_dim, pins),
         alpha,
@@ -188,7 +212,7 @@ pub fn trace_planned(
     plan: &regions::MergePlan,
     alpha: &GrayImage,
     cfg: &Config,
-) -> Vec<(String, Vec<TracedPath>)> {
+) -> (Vec<(String, Vec<TracedPath>)>, TraceSeams) {
     use rayon::prelude::*;
 
     // Shapes and traces run in parallel (nested rayon inside the per-layer
@@ -198,17 +222,19 @@ pub fn trace_planned(
 
     let contour = ContourParams::of(cfg);
     let fit = FitParams::of(cfg);
+    let stitch = seams::StitchParams::of(cfg);
 
-    let traced: Vec<(Srgb, Vec<TracedPath>)> = timing::TRACE.time(|| {
-        shapes
+    let traced: Vec<(Srgb, Vec<FittedPath>)> = timing::TRACE.time(|| {
+        let stitched = seams::stitched_contours(&shapes, &contour, &stitch);
+
+        stitched
             .par_iter()
-            .map(|(color, mask, slack, (bx, by))| {
-                let mut paths = trace::trace_mask(mask, &contour, &fit, slack.as_ref());
+            .zip(&shapes)
+            .map(|((contours, (tx, ty)), (color, ..))| {
+                let mut paths = trace::fit_contours(contours, &fit);
 
-                // -1.0: the shape mask's origin sits one border pixel above
-                // and left of the region bbox (see region_shape).
-                for p in &mut paths {
-                    p.translate(*bx as f64 - 1.0, *by as f64 - 1.0);
+                for (p, _) in &mut paths {
+                    p.translate(*tx, *ty);
                 }
 
                 (*color, paths)
@@ -221,26 +247,36 @@ pub fn trace_planned(
 
 /// Groups per-shape traces, in paint order, into the color-hex runs the
 /// output format wants: adjacent shapes of one color join a single entry,
-/// empty traces drop out.
+/// empty traces drop out. The per-path seam spans regroup alongside, so the
+/// sidecar's nesting mirrors the trace's.
 pub(crate) fn group_traced(
-    traced: Vec<(Srgb, Vec<TracedPath>)>,
-) -> Vec<(String, Vec<TracedPath>)> {
+    traced: Vec<(Srgb, Vec<FittedPath>)>,
+) -> (Vec<(String, Vec<TracedPath>)>, TraceSeams) {
     let mut out: Vec<(String, Vec<TracedPath>)> = Vec::new();
+    let mut seams: TraceSeams = Vec::new();
 
-    for (c, mut paths) in traced {
-        if paths.is_empty() {
+    for (c, fitted) in traced {
+        if fitted.is_empty() {
             continue;
         }
 
         let hex = c.to_hex();
+        let (mut paths, mut spans): (Vec<TracedPath>, Vec<Vec<AnchorSpan>>) =
+            fitted.into_iter().unzip();
 
         match out.last_mut() {
-            Some((last_hex, last_paths)) if *last_hex == hex => last_paths.append(&mut paths),
-            _ => out.push((hex, paths)),
+            Some((last_hex, last_paths)) if *last_hex == hex => {
+                last_paths.append(&mut paths);
+                seams.last_mut().unwrap().append(&mut spans);
+            }
+            _ => {
+                out.push((hex, paths));
+                seams.push(spans);
+            }
         }
     }
 
-    out
+    (out, seams)
 }
 
 /// A paintable shape in paint order: `(region color, shape mask, seam-slack
@@ -850,10 +886,8 @@ mod tests {
         let pins = scale_pins(&[], (0, 0), cfg.scale, img.dimensions());
         let regs =
             regions::segment_absorbed(&quant, &prep.alpha, &regions::SegmentParams::of(&cfg));
-        let uncropped = simplify_paths(
-            trace_regions(&regs, &prep.alpha, &cfg, doc_dim, &pins),
-            &SimplifyParams::of(&cfg),
-        );
+        let (traced, seams) = trace_regions(&regs, &prep.alpha, &cfg, doc_dim, &pins);
+        let (uncropped, _) = simplify_paths(traced, &seams, &SimplifyParams::of(&cfg));
 
         assert_eq!(cropped.len(), uncropped.len());
         assert!(!cropped.is_empty());
@@ -896,14 +930,14 @@ mod tests {
             out.into_iter().map(|(h, _)| h).collect()
         };
 
-        let plain = hexes(trace_regions(&regs, &alpha, &cfg, 512, &[]));
+        let plain = hexes(trace_regions(&regs, &alpha, &cfg, 512, &[]).0);
         assert!(!plain.contains(&"#ffffff".to_string()), "{plain:?}");
 
         // A pin inside the patch keeps it; one outside does not.
-        let pinned = hexes(trace_regions(&regs, &alpha, &cfg, 512, &[(7, 8)]));
+        let pinned = hexes(trace_regions(&regs, &alpha, &cfg, 512, &[(7, 8)]).0);
         assert!(pinned.contains(&"#ffffff".to_string()), "{pinned:?}");
 
-        let missed = hexes(trace_regions(&regs, &alpha, &cfg, 512, &[(2, 2)]));
+        let missed = hexes(trace_regions(&regs, &alpha, &cfg, 512, &[(2, 2)]).0);
         assert!(!missed.contains(&"#ffffff".to_string()), "{missed:?}");
     }
 
@@ -934,6 +968,92 @@ mod tests {
         assert_eq!(on(&shapes[0].1), 144);
         assert_eq!(on(&shapes[1].1), 96);
         assert_eq!(on(&shapes[2].1), 48);
+    }
+
+    #[test]
+    fn seam_stitch_off_is_identity_without_siblings() {
+        // A disk strictly inside a fill: the only seam is the tree edge, the
+        // disk's ring is interior, and the fill's ring is the silhouette, so
+        // no boundary is walked twice. The stitched trace must be
+        // byte-identical to the switched-off one, which runs the pre-stitch
+        // code path unchanged.
+        let fill = Srgb([96, 96, 96]);
+        let disk = Srgb([200, 40, 40]);
+        let mut quant = image::RgbImage::from_pixel(32, 32, fill.into());
+        for y in 0..32i32 {
+            for x in 0..32i32 {
+                if (x - 16).pow(2) + (y - 16).pow(2) <= 49 {
+                    quant.put_pixel(x as u32, y as u32, disk.into());
+                }
+            }
+        }
+        let alpha = GrayImage::from_pixel(32, 32, image::Luma([255]));
+        let cfg = Config {
+            scale: 1,
+            detail: 5.0,
+            ..Default::default()
+        };
+        assert!(cfg.seam_stitch, "stitching defaults on");
+
+        let regs = regions::segment(&quant, &alpha);
+        let plan = regions::merge_plan(&regs, &alpha, &regions::PlanParams::of(&cfg), 512, &[]);
+
+        let (on, seams) = trace_planned(&plan, &alpha, &cfg);
+        let (off, _) = trace_planned(
+            &plan,
+            &alpha,
+            &Config {
+                seam_stitch: false,
+                ..cfg
+            },
+        );
+
+        assert!(seams.iter().flatten().all(|s| s.is_empty()));
+        assert_eq!(on.len(), off.len());
+        assert!(!on.is_empty());
+        for ((h1, p1), (h2, p2)) in on.iter().zip(&off) {
+            assert_eq!(h1, h2);
+            assert_eq!(p1.len(), p2.len());
+            for (a, b) in p1.iter().zip(p2) {
+                assert_eq!(a.start, b.start);
+                assert_eq!(a.cubics, b.cubics);
+            }
+        }
+    }
+
+    #[test]
+    fn sibling_seams_stitch_through_the_plan() {
+        // A left half, B right-top, C right-bottom, seam lengths picked so
+        // Prim's keeps A-B and B-C and drops A-C: the A|C seam is walked by
+        // both shape C and shape B (whose mask is B's subtree, B and C), so
+        // the match couples them there.
+        let a = Srgb([230, 40, 40]);
+        let b = Srgb([40, 230, 40]);
+        let c = Srgb([40, 40, 230]);
+        let quant = image::RgbImage::from_fn(24, 24, |x, y| {
+            if x < 12 {
+                a.into()
+            } else if y < 16 {
+                b.into()
+            } else {
+                c.into()
+            }
+        });
+        let alpha = GrayImage::from_pixel(24, 24, image::Luma([255]));
+        let cfg = Config {
+            scale: 1,
+            detail: 5.0,
+            ..Default::default()
+        };
+
+        let regs = regions::segment(&quant, &alpha);
+        let plan = regions::merge_plan(&regs, &alpha, &regions::PlanParams::of(&cfg), 512, &[]);
+        let (_, seams) = trace_planned(&plan, &alpha, &cfg);
+
+        assert!(
+            seams.iter().flatten().any(|s| !s.is_empty()),
+            "a non-tree seam produces shared spans"
+        );
     }
 
     #[test]
@@ -970,6 +1090,7 @@ mod tests {
             };
 
             trace_regions(&regs, &alpha, &cfg, 512, &[])
+                .0
                 .iter()
                 .flat_map(|(_, ps)| ps.iter())
                 .map(|p| p.cubics.len())

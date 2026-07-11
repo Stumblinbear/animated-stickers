@@ -188,10 +188,12 @@ mod tests {
             shapes: Artifact::new(Arc::new(Vec::new())),
             contour: ContourParams::of(&cfg),
             fit: FitParams::of(&cfg),
+            stitch: crate::seams::StitchParams::of(&cfg),
         };
         let out = TraceOutput {
             trace: Arc::new(Vec::new()),
             bboxes: Arc::new(Vec::new()),
+            seams: Arc::new(Vec::new()),
             scale,
         };
         StagePart::Fit(key, out)

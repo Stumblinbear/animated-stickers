@@ -11,15 +11,16 @@
 
 mod anchors;
 mod fates;
+mod hit;
 mod pins;
+mod seams;
 
 use super::app::App;
-use super::compute::{Img, LayerTrace};
+use super::compute::{Img, TraceOutput};
 use super::msg::{Msg, StripView};
 use super::phases::SubView;
 use iced::widget::canvas::{Frame, LineDash, Path, Stroke};
 use iced::{Element, Vector};
-use std::sync::Arc;
 use std::time::Instant;
 
 /// The read-only view of app state an overlay draws from. Every field is here
@@ -47,12 +48,13 @@ pub struct OverlayCtx<'a> {
     /// The trace-fate tint over the segmentation, when the Regions stage has
     /// produced one.
     fate_tint: Option<&'a Img>,
-    /// The active subview's finalized trace and the supersample scale its
-    /// coordinates are expressed at, `None` off the Fit and Simplify views or
-    /// before that stage has produced one.
-    active_trace: Option<(Arc<LayerTrace>, u32)>,
-    /// Whether the show-all modifier is held, drawing every path's anchors
-    /// rather than only the hovered path's.
+    /// The active subview's finalized trace output, read off the fit or
+    /// simplify memo, `None` off the Fit and Simplify views or before that
+    /// stage has produced one. The anchors and seams overlays both derive from
+    /// it, so they draw the trace the view is actually showing.
+    active_trace: Option<TraceOutput>,
+    /// Whether the show-all modifier is held, drawing every path's anchors and
+    /// seams rather than only the hovered path's.
     show_all_anchors: bool,
 }
 
@@ -96,9 +98,10 @@ impl OverlayCtx<'_> {
 type Overlay = for<'a> fn(&OverlayCtx<'a>) -> Option<Element<'a, Msg>>;
 
 /// Every overlay, in composite order: earlier entries draw under later ones.
-/// The fate tint sits over the art, the anchors overlay over the tint, and the
-/// pins over the anchors.
-pub const ALL: &[Overlay] = &[fates::overlay, anchors::overlay, pins::overlay];
+/// The fate tint sits over the art, the seam highlights over the tint, the
+/// anchors over the seams so their outline stays legible, and the pins on top.
+pub const ALL: &[Overlay] =
+    &[fates::overlay, seams::overlay, anchors::overlay, pins::overlay];
 
 /// Strokes `path` as a marching-ants outline: a thin dashed accent line whose
 /// dash phase advances from `now`, so the dashes crawl along the path over a

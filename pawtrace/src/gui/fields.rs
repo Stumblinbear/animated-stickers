@@ -19,6 +19,7 @@ pub enum Field {
     Alphamax,
     Opttolerance,
     SeamSlack,
+    SeamStitch,
     Simplify,
     StrokeWidth,
 }
@@ -38,6 +39,7 @@ pub fn apply(cfg: &mut Config, field: Field, v: f64) {
         Field::Alphamax => cfg.alphamax = v,
         Field::Opttolerance => cfg.opttolerance = v,
         Field::SeamSlack => cfg.seam_slack = v,
+        Field::SeamStitch => cfg.seam_stitch = v >= 0.5,
         Field::Simplify => cfg.simplify = v,
         Field::StrokeWidth => cfg.stroke_width = v as f32,
     }
@@ -58,6 +60,7 @@ pub fn set(ov: &mut Overrides, field: Field, cfg: &Config) {
         Field::Alphamax => ov.alphamax = Some(cfg.alphamax),
         Field::Opttolerance => ov.opttolerance = Some(cfg.opttolerance),
         Field::SeamSlack => ov.seam_slack = Some(cfg.seam_slack),
+        Field::SeamStitch => ov.seam_stitch = Some(cfg.seam_stitch),
         Field::Simplify => ov.simplify = Some(cfg.simplify),
         Field::StrokeWidth => ov.stroke_width = Some(cfg.stroke_width),
     }
@@ -78,6 +81,7 @@ pub fn clear(ov: &mut Overrides, field: Field) {
         Field::Alphamax => ov.alphamax = None,
         Field::Opttolerance => ov.opttolerance = None,
         Field::SeamSlack => ov.seam_slack = None,
+        Field::SeamStitch => ov.seam_stitch = None,
         Field::Simplify => ov.simplify = None,
         Field::StrokeWidth => ov.stroke_width = None,
     }
@@ -98,13 +102,14 @@ pub fn is_set(ov: &Overrides, field: Field) -> bool {
         Field::Alphamax => ov.alphamax.is_some(),
         Field::Opttolerance => ov.opttolerance.is_some(),
         Field::SeamSlack => ov.seam_slack.is_some(),
+        Field::SeamStitch => ov.seam_stitch.is_some(),
         Field::Simplify => ov.simplify.is_some(),
         Field::StrokeWidth => ov.stroke_width.is_some(),
     }
 }
 
 /// Every field, grouped by stage in strip order.
-pub const ALL: [Field; 14] = [
+pub const ALL: [Field; 15] = [
     Field::Scale,
     Field::AlphaThreshold,
     Field::Detail,
@@ -117,6 +122,7 @@ pub const ALL: [Field; 14] = [
     Field::Alphamax,
     Field::Opttolerance,
     Field::SeamSlack,
+    Field::SeamStitch,
     Field::Simplify,
     Field::StrokeWidth,
 ];

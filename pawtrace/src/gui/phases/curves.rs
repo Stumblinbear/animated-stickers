@@ -88,6 +88,21 @@ pub fn inspector(app: &App) -> Element<'_, Msg> {
         ),
         setting(
             app,
+            "Seam stitch",
+            if cfg.seam_stitch { "on" } else { "off" }.into(),
+            "Fits each boundary stretch shared by two sibling shapes once \
+             and reuses the same curve on both sides, so a fit wobble \
+             cannot open a hairline gap along the seam. Points where a \
+             third color meets a seam become anchors. Off fits every \
+             shape independently.",
+            Field::SeamStitch,
+            slider(0.0..=1.0, cfg.seam_stitch as u8 as f64, |v| {
+                Msg::Edit(EditMsg::Set(Field::SeamStitch, v))
+            })
+            .step(1.0),
+        ),
+        setting(
+            app,
             "Simplify tolerance",
             format!("{:.2} px", cfg.simplify),
             "Max deviation in supersampled pixels (source px times the \

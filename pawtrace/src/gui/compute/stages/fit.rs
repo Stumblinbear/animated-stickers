@@ -1,40 +1,44 @@
-//! Fit stage: the boundary walk and the cubic fit of every shape into the
-//! pre-simplify trace. Shapes are independent, so each is cached by its own
-//! contour content and the fit params, and a recompute re-fits only the shapes
-//! that changed: a pin toggle re-fits one shape, an absorb tweak only the
-//! shapes it moved. The cache holds the paths mask-local, so one entry serves a
-//! shape wherever its bbox sits.
+//! Fit stage: the boundary walk, the cross-shape seam match, and the cubic
+//! fit of every shape into the pre-simplify trace. Shapes are independent at
+//! the fit: each ring embeds its shared-span bytes during the (uncached) walk
+//! preamble, so each shape is cached by its own contour content and the fit
+//! params, and a recompute re-fits only the shapes whose contours changed: a
+//! pin toggle re-fits one shape, an absorb tweak only the shapes it moved.
+//! The cache holds a seam-free shape's paths mask-local, so one entry serves
+//! it wherever its bbox sits.
 
 use crate::color::Srgb;
 use super::super::artifact::Artifact;
 use super::super::cache::ShapeCache;
 use super::super::{layer_bboxes, LayerBboxes, LayerTrace};
-use crate::pipeline::{self, Shape};
-use crate::trace::{self, ContourParams, FitParams, SmoothedContour, TracedPath};
+use crate::pipeline::{self, Shape, TraceSeams};
+use crate::seams::{self, StitchParams};
+use crate::trace::{ContourParams, FitParams, FittedPath, SmoothedContour};
 use rayon::prelude::*;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
-/// One shape's mask-local contours: its color, its smoothed boundary polylines
-/// with corners and seam-slack flags, and the mask bbox origin a consumer
-/// translates by to reach scaled space. Internal to the walk-then-fit step;
-/// nothing outside this module reads pre-fit geometry.
+/// One shape's contours: its color, its smoothed boundary polylines with
+/// corners, seam-slack flags, and seam spans, and the translation from the
+/// contours' coordinate space to scaled space. Internal to the
+/// walk-then-fit step; nothing outside this module reads pre-fit geometry.
 #[derive(Debug)]
 struct ShapeContours {
     color: Srgb,
     contours: Vec<SmoothedContour>,
-    origin: (u32, u32),
+    translate: (f64, f64),
 }
 
 /// Pre-simplify trace inputs: the shapes to walk and fit, the contour-walk
-/// params, and the fit params. The pins and every upstream edit ride in through
-/// the chained shapes artifact.
+/// params, the fit params, and the seam-match params. The pins and every
+/// upstream edit ride in through the chained shapes artifact.
 #[derive(Clone, Debug, PartialEq)]
 pub(in crate::gui) struct FitInputs {
     pub shapes: Artifact<Vec<Shape>>,
     pub contour: ContourParams,
     pub fit: FitParams,
+    pub stitch: StitchParams,
 }
 
 /// A finalized trace and the supersample scale its coordinates are expressed
@@ -48,33 +52,44 @@ pub(in crate::gui) struct TraceOutput {
     /// match `trace` run for run. A consumer pairing them reads both from the
     /// same output so the grouping lines up.
     pub bboxes: Arc<LayerBboxes>,
+    /// The shared-stretch sidecar of `trace`, same grouping. Both stages carry
+    /// it: the simplify stage remaps its spans onto the post-simplify anchors,
+    /// so the seams overlay reads it off whichever stage's output is current.
+    pub seams: Arc<TraceSeams>,
     pub scale: u32,
 }
 
 pub(super) fn compute_fit(k: &FitInputs, cache: ShapeCache) -> TraceOutput {
+    // The cross-shape seam match runs uncached: shapes are independent only
+    // from here on, once each ring carries its shared-span bytes.
+    let stitched = seams::stitched_contours(&k.shapes, &k.contour, &k.stitch);
+
     let contours: Vec<ShapeContours> = k
         .shapes
-        .par_iter()
-        .map(|(color, mask, slack, origin)| ShapeContours {
+        .iter()
+        .zip(stitched)
+        .map(|((color, ..), (contours, translate))| ShapeContours {
             color: *color,
-            contours: trace::smoothed_contours(mask, &k.contour, slack.as_ref()),
-            origin: *origin,
+            contours,
+            translate,
         })
         .collect();
 
-    let trace = fit_contours(&cache, &contours, &k.fit);
+    let (trace, seams) = fit_contours(&cache, &contours, &k.fit);
     let bboxes = layer_bboxes(&trace);
 
     TraceOutput {
         trace: Arc::new(trace),
         bboxes: Arc::new(bboxes),
+        seams: Arc::new(seams),
         scale: k.contour.scale,
     }
 }
 
 /// Key of one shape's fitted paths: the fit params plus the shape's contour
-/// content. Color and origin are excluded: the paths are fit mask-local, so
-/// two shapes with identical contours fit identically wherever they sit.
+/// content, seam spans included. Color and translation are excluded: the
+/// paths are fit in the contours' own coordinate space, so two shapes with
+/// identical contours fit identically wherever they sit.
 fn contour_key(cfg: &FitParams, shape: &ShapeContours) -> u64 {
     let mut h = DefaultHasher::new();
 
@@ -82,14 +97,15 @@ fn contour_key(cfg: &FitParams, shape: &ShapeContours) -> u64 {
     cfg.seam_slack.to_bits().hash(&mut h);
 
     shape.contours.len().hash(&mut h);
-    for (pts, corners, flags) in &shape.contours {
-        pts.len().hash(&mut h);
-        for &(x, y) in pts {
+    for c in &shape.contours {
+        c.pts.len().hash(&mut h);
+        for &(x, y) in &c.pts {
             x.to_bits().hash(&mut h);
             y.to_bits().hash(&mut h);
         }
-        corners.hash(&mut h);
-        flags.hash(&mut h);
+        c.corners.hash(&mut h);
+        c.flags.hash(&mut h);
+        c.seams.hash(&mut h);
     }
 
     h.finish()
@@ -97,21 +113,25 @@ fn contour_key(cfg: &FitParams, shape: &ShapeContours) -> u64 {
 
 /// Fits every shape's contours with per-shape reuse: cached shapes skip the
 /// fit, misses are fitted in parallel and stored. The paths match an uncached
-/// trace; each shape's paths are translated from mask-local to scaled space and
-/// grouped into the color runs the output wants.
-fn fit_contours(cache: &ShapeCache, shapes: &[ShapeContours], cfg: &FitParams) -> LayerTrace {
+/// trace; each shape's paths are translated to scaled space and grouped into
+/// the color runs the output wants, the seam sidecar alongside.
+fn fit_contours(
+    cache: &ShapeCache,
+    shapes: &[ShapeContours],
+    cfg: &FitParams,
+) -> (LayerTrace, TraceSeams) {
     let keys: Vec<u64> = shapes.par_iter().map(|s| contour_key(cfg, s)).collect();
 
-    let mut fitted: Vec<Option<Arc<Vec<TracedPath>>>> = {
+    let mut fitted: Vec<Option<Arc<Vec<FittedPath>>>> = {
         let mut c = cache.lock().unwrap();
         keys.iter().map(|k| c.get(k).cloned()).collect()
     };
 
-    let fresh: Vec<(usize, Arc<Vec<TracedPath>>)> = shapes
+    let fresh: Vec<(usize, Arc<Vec<FittedPath>>)> = shapes
         .par_iter()
         .enumerate()
         .filter(|&(i, _)| fitted[i].is_none())
-        .map(|(i, s)| (i, Arc::new(trace::fit_contours(&s.contours, cfg))))
+        .map(|(i, s)| (i, Arc::new(crate::trace::fit_contours(&s.contours, cfg))))
         .collect();
     {
         let mut c = cache.lock().unwrap();
@@ -126,12 +146,10 @@ fn fit_contours(cache: &ShapeCache, shapes: &[ShapeContours], cfg: &FitParams) -
         .iter()
         .zip(fitted)
         .map(|(s, t)| {
-            let mut paths: Vec<TracedPath> = t.unwrap().as_ref().clone();
+            let mut paths: Vec<FittedPath> = t.unwrap().as_ref().clone();
 
-            // -1.0: the shape mask's origin sits one border pixel above and
-            // left of the region bbox (see regions::region_shape).
-            for p in &mut paths {
-                p.translate(s.origin.0 as f64 - 1.0, s.origin.1 as f64 - 1.0);
+            for (p, _) in &mut paths {
+                p.translate(s.translate.0, s.translate.1);
             }
 
             (s.color, paths)
@@ -157,13 +175,14 @@ mod tests {
         Arc::new(Mutex::new(LruCache::new(NonZeroUsize::new(64).unwrap())))
     }
 
-    fn contours_of(shapes: &[Shape], cp: &ContourParams) -> Vec<ShapeContours> {
-        shapes
-            .iter()
-            .map(|(color, mask, slack, origin)| ShapeContours {
+    fn contours_of(shapes: &[Shape], cp: &ContourParams, sp: &StitchParams) -> Vec<ShapeContours> {
+        seams::stitched_contours(shapes, cp, sp)
+            .into_iter()
+            .zip(shapes)
+            .map(|((contours, translate), (color, ..))| ShapeContours {
                 color: *color,
-                contours: trace::smoothed_contours(mask, cp, slack.as_ref()),
-                origin: *origin,
+                contours,
+                translate,
             })
             .collect()
     }
@@ -217,14 +236,14 @@ mod tests {
         let regs = regions::segment(&quant, &alpha);
         let plan = regions::merge_plan(&regs, &alpha, &PlanParams::of(&cfg), 512, &[]);
         let shapes = pipeline::planned_shapes(&plan, &alpha, &ShapeParams::of(&cfg));
-        let plain = pipeline::trace_planned(&plan, &alpha, &cfg);
+        let (plain, _) = pipeline::trace_planned(&plan, &alpha, &cfg);
 
-        let contours = contours_of(&shapes, &ContourParams::of(&cfg));
+        let contours = contours_of(&shapes, &ContourParams::of(&cfg), &StitchParams::of(&cfg));
         let fp = FitParams::of(&cfg);
 
         let c = cache();
-        let cold = fit_contours(&c, &contours, &fp);
-        let warm = fit_contours(&c, &contours, &fp);
+        let (cold, _) = fit_contours(&c, &contours, &fp);
+        let (warm, _) = fit_contours(&c, &contours, &fp);
 
         assert_same(&plain, &cold);
         assert_same(&plain, &warm);
@@ -242,10 +261,11 @@ mod tests {
         let c = cache();
         let cp = ContourParams::of(&cfg);
         let fp = FitParams::of(&cfg);
+        let sp = StitchParams::of(&cfg);
 
         let plan = regions::merge_plan(&regs, &alpha, &PlanParams::of(&cfg), 512, &[]);
         let shapes = pipeline::planned_shapes(&plan, &alpha, &ShapeParams::of(&cfg));
-        fit_contours(&c, &contours_of(&shapes, &cp), &fp);
+        fit_contours(&c, &contours_of(&shapes, &cp, &sp), &fp);
         assert_eq!(shapes.len(), 1, "the speck is culled without a pin");
 
         let before = c.lock().unwrap().len();
@@ -257,8 +277,61 @@ mod tests {
         let shapes = pipeline::planned_shapes(&plan, &alpha, &ShapeParams::of(&cfg));
         assert_eq!(shapes.len(), 2);
 
-        let memoed = fit_contours(&c, &contours_of(&shapes, &cp), &fp);
+        let (memoed, _) = fit_contours(&c, &contours_of(&shapes, &cp, &sp), &fp);
         assert_eq!(c.lock().unwrap().len(), before + 1);
-        assert_same(&pipeline::trace_planned(&plan, &alpha, &cfg), &memoed);
+        assert_same(&pipeline::trace_planned(&plan, &alpha, &cfg).0, &memoed);
+    }
+
+    /// A shape whose art covers the scaled pixels `[x, x+w) x [y, y+h)`:
+    /// bbox origin `(x, y)`, mask with the pipeline's 1px border.
+    fn rect_shape(color: Srgb, (x, y): (u32, u32), w: u32, h: u32) -> Shape {
+        let mut mask = GrayImage::new(w + 2, h + 2);
+        for my in 1..=h {
+            for mx in 1..=w {
+                mask.put_pixel(mx, my, Luma([255]));
+            }
+        }
+        (color, mask, None, (x, y))
+    }
+
+    #[test]
+    fn sibling_fixture_is_identical_cold_and_warm() {
+        // Two abutting siblings plus a detached block: the memoed fit must
+        // reproduce itself warm (spans included), and an edit to the detached
+        // shape must re-fit it alone while the siblings hit the cache.
+        let shapes = vec![
+            rect_shape(Srgb([200, 30, 30]), (1, 1), 8, 6),
+            rect_shape(Srgb([30, 30, 200]), (9, 1), 8, 6),
+            rect_shape(Srgb([30, 200, 30]), (24, 1), 4, 4),
+        ];
+        let cfg = Config {
+            scale: 1,
+            ..Default::default()
+        };
+        let cp = ContourParams::of(&cfg);
+        let fp = FitParams::of(&cfg);
+        let sp = StitchParams::of(&cfg);
+        let c = cache();
+
+        let contours = contours_of(&shapes, &cp, &sp);
+        let (cold, cold_seams) = fit_contours(&c, &contours, &fp);
+        let entries = c.lock().unwrap().len();
+        let (warm, warm_seams) = fit_contours(&c, &contours, &fp);
+
+        assert_same(&cold, &warm);
+        assert_eq!(cold_seams, warm_seams);
+        assert!(cold_seams.iter().flatten().any(|s| !s.is_empty()));
+        assert_eq!(c.lock().unwrap().len(), entries, "a warm run adds nothing");
+
+        let mut grown = shapes.clone();
+        grown[2] = rect_shape(Srgb([30, 200, 30]), (24, 1), 4, 5);
+        let (regrown, _) = fit_contours(&c, &contours_of(&grown, &cp, &sp), &fp);
+        assert_eq!(
+            c.lock().unwrap().len(),
+            entries + 1,
+            "only the edited shape's contour content changed"
+        );
+        assert_same(&cold, &fit_contours(&c, &contours, &fp).0);
+        assert_ne!(regrown.len(), 0);
     }
 }

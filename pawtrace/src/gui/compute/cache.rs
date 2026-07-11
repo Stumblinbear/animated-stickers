@@ -15,7 +15,7 @@
 
 use super::stages::LayerStages;
 use crate::gui::ids::LayerId;
-use crate::trace::TracedPath;
+use crate::trace::FittedPath;
 use lru::LruCache;
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
@@ -27,10 +27,10 @@ const SLOT_LAYERS: usize = 12;
 /// Total per-shape fitted-path entries across every layer.
 const SHAPE_ENTRIES: usize = 4096;
 
-/// Fitted paths per shape, keyed by contour content and fit params (see
-/// [`super::stages`]'s fit stage), shared with the stage worker across
-/// recomputes.
-pub(in crate::gui) type ShapeCache = Arc<Mutex<LruCache<u64, Arc<Vec<TracedPath>>>>>;
+/// Fitted paths per shape, each with its seam-span anchor runs, keyed by
+/// contour content and fit params (see [`super::stages`]'s fit stage),
+/// shared with the stage worker across recomputes.
+pub(in crate::gui) type ShapeCache = Arc<Mutex<LruCache<u64, Arc<Vec<FittedPath>>>>>;
 
 /// A document's per-layer pipeline stage outputs: hand it a layer, get that
 /// layer's [`LayerStages`]. The last several layers are retained in an LRU;

@@ -67,6 +67,12 @@ pub struct Config {
     /// sits within `2 * stroke_merge_dist` (OKLab ΔE) of the shape's own
     /// color. 1.0 = off (base tolerance everywhere).
     pub seam_slack: f64, // default 1.0 (off)
+    /// Couples the fit along boundary stretches shared by two sibling shapes:
+    /// each shared stretch is canonicalized once and both shapes emit the
+    /// identical curve there, so a fit wobble cannot open a hairline gap
+    /// between them. Points where a third color meets a seam become anchors.
+    /// Off fits every shape independently.
+    pub seam_stitch: bool, // default true
     /// Final anchor-reduction pass: removes any anchor whose deletion keeps
     /// the path within this many scaled px, merging its two segments into
     /// one cubic. Corners survive. Independent of opttolerance, which sets
@@ -97,6 +103,7 @@ impl Default for Config {
             alphamax: 1.15,
             opttolerance: 0.4,
             seam_slack: 1.0,
+            seam_stitch: true,
             simplify: 0.0,
             stroke_width: 0.0,
             stroke_color: Srgb([255, 255, 255]),

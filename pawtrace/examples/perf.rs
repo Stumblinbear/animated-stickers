@@ -112,10 +112,10 @@ fn run_layer(
     std::hint::black_box(&report);
 
     let t = Instant::now();
-    let traced = pipeline::trace_planned(&plan, &alpha, cfg);
+    let (traced, seams) = pipeline::trace_planned(&plan, &alpha, cfg);
     times.add(6, t);
     let t = Instant::now();
-    let mut out = pipeline::simplify_paths(traced, &pipeline::SimplifyParams::of(cfg));
+    let (mut out, _) = pipeline::simplify_paths(traced, &seams, &pipeline::SimplifyParams::of(cfg));
     times.add(7, t);
 
     let (sx, sy) = ((ox * cfg.scale) as f64, (oy * cfg.scale) as f64);

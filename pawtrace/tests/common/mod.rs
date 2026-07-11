@@ -325,12 +325,11 @@ pub fn layer_stages(img: &RgbaImage, cfg: &Config, doc_dim: u32) -> Option<Stage
         )
     };
 
-    let fit_paths = pipeline::trace_regions(&regs, &alpha, cfg, doc_dim, &pins);
+    let (fit_paths, seams) = pipeline::trace_regions(&regs, &alpha, cfg, doc_dim, &pins);
     let fit = render_trace(&fit_paths);
-    let simplify = render_trace(&pipeline::simplify_paths(
-        fit_paths,
-        &pipeline::SimplifyParams::of(cfg),
-    ));
+    let simplify = render_trace(
+        &pipeline::simplify_paths(fit_paths, &seams, &pipeline::SimplifyParams::of(cfg)).0,
+    );
 
     Some(Stages {
         crop: src,
