@@ -1,4 +1,4 @@
-//! Preprocessing: supersample, alpha threshold, optional mode filter.
+//! Preprocessing: supersample and alpha threshold.
 //! Ported from vectorize.py with deliberate deviations; see the README
 //! "provenance" table before changing any step.
 
@@ -24,7 +24,6 @@ pub struct Prepared {
 pub struct PrepParams {
     pub scale: u32,
     pub alpha_threshold: u8,
-    pub mode_filter: u32,
 }
 
 impl PrepParams {
@@ -32,7 +31,6 @@ impl PrepParams {
         Self {
             scale: cfg.scale,
             alpha_threshold: cfg.alpha_threshold,
-            mode_filter: cfg.mode_filter,
         }
     }
 }
@@ -97,7 +95,6 @@ pub fn prepare(src: &RgbaImage, cfg: &PrepParams) -> Prepared {
     // scaled alpha alone determines its regions. The alpha plane resizes
     // identically whether taken alone or from the full RGBA resample, so the
     // mask matches the four-plane path byte for byte, at a quarter of its cost.
-    // The mode filter is a majority vote, which leaves a solid fill unchanged.
     if let Some(color) = uniform_color(src, cfg.alpha_threshold) {
         let alpha = scale_alpha_plane(src, cfg.scale, cfg.alpha_threshold);
 
@@ -165,89 +162,9 @@ pub fn prepare(src: &RgbaImage, cfg: &PrepParams) -> Prepared {
         }
     }
 
-    if cfg.mode_filter > 0 {
-        flat = mode_filter(&flat, &alpha, cfg.mode_filter);
-    }
-
     Prepared {
         flat,
         alpha,
         uniform: None,
     }
-}
-
-/// Snaps AA blend pixels to their neighborhood's dominant color. Only art
-/// pixels (alpha on) vote, and only art pixels change.
-fn mode_filter(img: &RgbImage, alpha: &GrayImage, k: u32) -> RgbImage {
-    majority_vote(img, alpha, k)
-}
-
-/// Per-pixel k x k majority vote over art pixels: each art pixel becomes its
-/// window's dominant color (ties to the last-seen candidate in row-major
-/// window order); background pixels neither vote nor change. Backs both the
-/// pre-quantization mode filter and post-remap label smoothing.
-pub(crate) fn majority_vote(img: &RgbImage, alpha: &GrayImage, k: u32) -> RgbImage {
-    use rayon::prelude::*;
-
-    let (w, h) = img.dimensions();
-    let r = (k / 2) as i64;
-    let src = img.as_raw();
-    let amask = alpha.as_raw();
-    let mut out = img.clone();
-    let out_buf: &mut [u8] = &mut out;
-
-    out_buf
-        .par_chunks_exact_mut(w as usize * 3)
-        .enumerate()
-        .for_each(|(y, row)| {
-            let y = y as i64;
-            // A window holds at most k*k distinct colors, small enough that a
-            // linear scan beats hashing.
-            let mut counts: Vec<(Srgb, u32)> = Vec::with_capacity((k * k) as usize);
-
-            for x in 0..w as i64 {
-                // Background must not vote: a majority-background window
-                // would snap the silhouette's edge pixels to the meaningless
-                // zero fill, and the remap turns that into a 1px ring.
-                if amask[(y * w as i64 + x) as usize] == 0 {
-                    continue;
-                }
-
-                counts.clear();
-
-                for dy in -r..=r {
-                    let ny = y + dy;
-
-                    if ny < 0 || ny >= h as i64 {
-                        continue;
-                    }
-
-                    for dx in -r..=r {
-                        let nx = x + dx;
-
-                        if nx < 0 || nx >= w as i64 {
-                            continue;
-                        }
-
-                        let ni = (ny * w as i64 + nx) as usize;
-
-                        if amask[ni] != 0 {
-                            let c = Srgb([src[3 * ni], src[3 * ni + 1], src[3 * ni + 2]]);
-
-                            match counts.iter_mut().find(|(cc, _)| *cc == c) {
-                                Some((_, n)) => *n += 1,
-                                None => counts.push((c, 1)),
-                            }
-                        }
-                    }
-                }
-
-                if let Some(best) = counts.iter().max_by_key(|(_, n)| *n) {
-                    let xi = x as usize * 3;
-
-                    row[xi..xi + 3].copy_from_slice(&(best.0).0);
-                }
-            }
-        });
-    out
 }

@@ -62,11 +62,11 @@ fit = "d73783e8e75a8c42"
 output = "6dc4518747974471"
 
 [seff_deer_a.009]
-quant = "b4e8a345641647e4"
-region_count = 20
-regions = "6fe98df62d0c914c"
-fit = "1a01354e4d53d588"
-output = "77eb75b798aa98fb"
+quant = "836112049c156eb4"
+region_count = 27
+regions = "8d10fbfae420d6c8"
+fit = "0d5313380184a404"
+output = "498aee694423b6f2"
 
 [seff_deer_a.010]
 quant = "1a2e3c623d725ee5"
@@ -230,17 +230,17 @@ fit = "8fdc6860073f49b7"
 output = "35a0790867b812e8"
 
 [seff_deer_b.015]
-quant = "37c4d87e0eb4386d"
-region_count = 4
-regions = "21c6400a3719eaf9"
-fit = "88ebf2568dc2fd3d"
-output = "4baf5bbf2b2a558a"
+quant = "26a4c3eb99ac57c5"
+region_count = 5
+regions = "014aab507474dcf4"
+fit = "b4aa999f10d4b0bc"
+output = "4a1da04cecb98f31"
 
 [seff_deer_b.016]
-quant = "e1b48db19fb7707d"
+quant = "da7e15ff95cd4eb5"
 region_count = 2
-regions = "ec34e86a3d2bcabc"
-fit = "57b7124dd95a84a6"
+regions = "e23e75fd18a510d3"
+fit = "0546260e8a816fb7"
 output = "54387ec91e35c0a5"
 
 [seff_deer_b.017]
@@ -251,59 +251,59 @@ fit = "a583f76fb585f3fc"
 output = "01908fbff6001034"
 
 [seff_deer_b.018]
-quant = "28645c5bd22e5af6"
-region_count = 5
-regions = "a1fdffe9d1c7ecca"
-fit = "48ac6975c09e016a"
-output = "353da89c8d71851b"
+quant = "4ec634fbb69c7a18"
+region_count = 4
+regions = "9b1c18ea9033c6f5"
+fit = "47a4dd382280f7ed"
+output = "5ba1b7e3fc8e87c0"
 
 [seff_deer_b.019]
-quant = "f7f34fcf110f076d"
-region_count = 9
-regions = "ae0a32d818dfbb25"
-fit = "1ad49499f3057da3"
-output = "2942b9c9e680fd1a"
+quant = "9d1ef0e55f3331dd"
+region_count = 6
+regions = "c7fd09c7e70b9803"
+fit = "7a7292be1dbdb6fe"
+output = "f2f3877e3322b6d4"
 
 [seff_deer_b.020]
-quant = "86a5feaf615bbfc1"
-region_count = 41
-regions = "803ff1472730f050"
-fit = "c61ee806de70f88d"
-output = "ef71456f007c6af1"
+quant = "355d88b0ac9980cc"
+region_count = 52
+regions = "b69150708f11fc09"
+fit = "3aed973e2e89f691"
+output = "e540af9a509192b8"
 
 [seff_deer_b.021]
-quant = "6f8323f6f3ffa7f1"
+quant = "36bdfea2e3205c1c"
 region_count = 2
-regions = "21e2ba30b8f2ee1f"
-fit = "ac7f3564554bdd1d"
-output = "28f4bed55ea27238"
+regions = "4cbcf934b131de5e"
+fit = "9a3c8fcad442556c"
+output = "42f7af1a88375e62"
 
 [seff_deer_b.022]
-quant = "c821eb72bffe9c7c"
+quant = "88ffc09fd3a7ba04"
 region_count = 2
-regions = "a96a2394efc02de7"
-fit = "6d39467e68e1affc"
-output = "4a01073fab89a316"
+regions = "18650ee79085f5fa"
+fit = "3bf021a91c8a8a30"
+output = "233c3f5da93fd02f"
 
 [seff_deer_b.023]
-quant = "b7724306b0334584"
-region_count = 10
-regions = "bf6c27150df53548"
-fit = "083ed2ddeebd0cf6"
-output = "3a47e453ad526a6b"
+quant = "cb8983bfa50bb70c"
+region_count = 13
+regions = "62c9f0719c96db87"
+fit = "6dbe8fdcc70ddf84"
+output = "6f12f1397b887ffd"
 
 [seff_deer_b.024]
-quant = "e5c2eccdc9b06e7a"
+quant = "e13bb58b9d222c76"
 region_count = 1
-regions = "a3c2f75364d04cbb"
-fit = "30b197ab57041288"
+regions = "10e7eb790b28239f"
+fit = "be3374bbaa481de6"
 output = "3208d96ea6904d79"
 
 [seff_deer_b.025]
-quant = "9806faea5cbffba9"
+quant = "9fc7c0fa49e48e4b"
 region_count = 2
-regions = "4cce8ef7131ae10d"
-fit = "1fb54f1e14ba6670"
+regions = "325107537a662637"
+fit = "62d5719576e01093"
 output = "4b2ad79340d44af0"
 
 [seff_deer_b.026]
@@ -328,11 +328,11 @@ fit = "d15cdb98ca50a535"
 output = "44dd0cb46d0324b5"
 
 [seff_deer_b.029]
-quant = "a6a990ce09c70559"
+quant = "0b7bde6b14ca59c8"
 region_count = 8
-regions = "a49549799479cf1f"
-fit = "068be321be19fd8a"
-output = "9af156dc62f3e227"
+regions = "d0a097a52eda3a34"
+fit = "f5a830625857e441"
+output = "33d2d3f261e965e6"
 
 [seff_deer_b.030]
 quant = "59da08a69cc2c835"
@@ -384,15 +384,15 @@ fit = "2ee40baa4c940dc0"
 output = "18d0204e95a0e404"
 
 [seff_deer_b.037]
-quant = "ce89b09d01969a1f"
-region_count = 10
-regions = "974e7d1ab2068cf3"
-fit = "29f2d1201a610bc6"
-output = "bb367c0b55cc17fa"
+quant = "83feee96bcea5306"
+region_count = 13
+regions = "678ccb7fc4940d55"
+fit = "a2910f41bd4aa6f3"
+output = "0043883a8efc736d"
 
 [seff_deer_b.038]
-quant = "cdf55591c8570088"
-region_count = 12
-regions = "6e9164fc535f9b96"
-fit = "c7bbbab9939ed7ac"
-output = "9bf5ebefee7be59e"
+quant = "795b71c3c4059d93"
+region_count = 11
+regions = "c13a94116b0b21cd"
+fit = "e984b7dedb8453c3"
+output = "256cb6fe68302621"

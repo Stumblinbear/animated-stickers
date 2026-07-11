@@ -9,10 +9,8 @@ use crate::profiles::Overrides;
 pub enum Field {
     Scale,
     AlphaThreshold,
-    ModeFilter,
     Detail,
     MaxColors,
-    ColorCleanup,
     Smoothing,
     AbsorbDist,
     AbsorbAggr,
@@ -30,10 +28,8 @@ pub fn apply(cfg: &mut Config, field: Field, v: f64) {
     match field {
         Field::Scale => cfg.scale = v as u32,
         Field::AlphaThreshold => cfg.alpha_threshold = v as u8,
-        Field::ModeFilter => cfg.mode_filter = v as u32,
         Field::Detail => cfg.detail = v as f32,
         Field::MaxColors => cfg.max_colors = v as usize,
-        Field::ColorCleanup => cfg.color_cleanup = v as u32,
         Field::Smoothing => cfg.smoothing = v as f32,
         Field::AbsorbDist => cfg.absorb_dist = v as f32,
         Field::AbsorbAggr => cfg.absorb_aggr = v as f32,
@@ -52,10 +48,8 @@ pub fn set(ov: &mut Overrides, field: Field, cfg: &Config) {
     match field {
         Field::Scale => ov.scale = Some(cfg.scale),
         Field::AlphaThreshold => ov.alpha_threshold = Some(cfg.alpha_threshold),
-        Field::ModeFilter => ov.mode_filter = Some(cfg.mode_filter),
         Field::Detail => ov.detail = Some(cfg.detail),
         Field::MaxColors => ov.max_colors = Some(cfg.max_colors),
-        Field::ColorCleanup => ov.color_cleanup = Some(cfg.color_cleanup),
         Field::Smoothing => ov.smoothing = Some(cfg.smoothing),
         Field::AbsorbDist => ov.absorb_dist = Some(cfg.absorb_dist),
         Field::AbsorbAggr => ov.absorb_aggr = Some(cfg.absorb_aggr),
@@ -74,10 +68,8 @@ pub fn clear(ov: &mut Overrides, field: Field) {
     match field {
         Field::Scale => ov.scale = None,
         Field::AlphaThreshold => ov.alpha_threshold = None,
-        Field::ModeFilter => ov.mode_filter = None,
         Field::Detail => ov.detail = None,
         Field::MaxColors => ov.max_colors = None,
-        Field::ColorCleanup => ov.color_cleanup = None,
         Field::Smoothing => ov.smoothing = None,
         Field::AbsorbDist => ov.absorb_dist = None,
         Field::AbsorbAggr => ov.absorb_aggr = None,
@@ -96,10 +88,8 @@ pub fn is_set(ov: &Overrides, field: Field) -> bool {
     match field {
         Field::Scale => ov.scale.is_some(),
         Field::AlphaThreshold => ov.alpha_threshold.is_some(),
-        Field::ModeFilter => ov.mode_filter.is_some(),
         Field::Detail => ov.detail.is_some(),
         Field::MaxColors => ov.max_colors.is_some(),
-        Field::ColorCleanup => ov.color_cleanup.is_some(),
         Field::Smoothing => ov.smoothing.is_some(),
         Field::AbsorbDist => ov.absorb_dist.is_some(),
         Field::AbsorbAggr => ov.absorb_aggr.is_some(),
@@ -114,13 +104,11 @@ pub fn is_set(ov: &Overrides, field: Field) -> bool {
 }
 
 /// Every field, grouped by stage in strip order.
-pub const ALL: [Field; 16] = [
+pub const ALL: [Field; 14] = [
     Field::Scale,
     Field::AlphaThreshold,
-    Field::ModeFilter,
     Field::Detail,
     Field::MaxColors,
-    Field::ColorCleanup,
     Field::Smoothing,
     Field::AbsorbDist,
     Field::AbsorbAggr,

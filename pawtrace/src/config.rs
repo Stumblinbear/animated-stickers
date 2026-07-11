@@ -5,17 +5,12 @@ use crate::color::Srgb;
 pub struct Config {
     /// Smallest feature (px at output/512 scale) worth keeping.
     pub detail: f32, // default 5.0
-    /// Supersample factor. 3 keeps ~1px linework alive through the mode filter.
+    /// Supersample factor: boundary precision is 1/scale source px, at
+    /// quadratic cost.
     pub scale: u32, // default 3
     pub alpha_threshold: u8, // default 128 (50%)
     /// Palette safety cap; extraction self-terminates below it.
     pub max_colors: usize, // default 24
-    /// Pre-quantization mode-filter kernel (odd, scaled px). 0 = off.
-    pub mode_filter: u32, // default 0
-    /// Majority-vote kernel (odd, scaled px) over the quantized colors,
-    /// after remap. Settles jagged or speckled boundaries where two similar
-    /// palette colors were assigned noisily. 0 = off.
-    pub color_cleanup: u32, // default 0
     /// Moving-average window applied to pixel-boundary vertices before curve
     /// fitting, corners pinned, as a multiple of the supersample scale (the
     /// wobble's own wavelength). Larger rounds off more of the pixel
@@ -94,8 +89,6 @@ impl Default for Config {
             locked: Vec::new(),
             shade_split: 0.03,
             shade_noise: 0.14,
-            mode_filter: 0,
-            color_cleanup: 0,
             smoothing: 1.0,
             absorb_dist: 0.08,
             absorb_aggr: 1.0,

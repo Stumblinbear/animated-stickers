@@ -3,7 +3,7 @@
 //! which renders `App::view()` through iced_test's headless renderer, then
 //! decodes each PNG to confirm it is non-trivial.
 //!
-//! Run: `cargo run --features gui --example uishot [output_dir]`.
+//! Run: `cargo run --example uishot [output_dir]`.
 //!
 //! Document-loaded scenes populate the panels, but their preview and stage
 //! images stay blank. The compute pipeline is async and a headless render does

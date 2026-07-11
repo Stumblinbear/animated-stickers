@@ -300,11 +300,7 @@ pub fn layer_stages(img: &RgbaImage, cfg: &Config, doc_dim: u32) -> Option<Stage
     } else {
         let prep = raster::prepare(&src, &raster::PrepParams::of(cfg));
         let plan = merged.plan(&palette::SelectParams::of(cfg));
-        let mut quant = palette::remap_constrained(&prep.flat, &prep.alpha, &plan, cfg.scale);
-
-        if cfg.color_cleanup > 0 {
-            quant = palette::label_smooth(&quant, &prep.alpha, cfg.color_cleanup);
-        }
+        let quant = palette::remap_constrained(&prep.flat, &prep.alpha, &plan, cfg.scale);
 
         let regs = regions::segment_absorbed(&quant, &prep.alpha, &regions::SegmentParams::of(cfg));
         (prep.alpha, prep.flat, quant, regs)

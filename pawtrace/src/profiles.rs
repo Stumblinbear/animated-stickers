@@ -35,8 +35,6 @@ pub struct Overrides {
     pub opttolerance: Option<f64>,
     pub seam_slack: Option<f64>,
     pub simplify: Option<f64>,
-    pub mode_filter: Option<u32>,
-    pub color_cleanup: Option<u32>,
     pub smoothing: Option<f32>,
     pub absorb_dist: Option<f32>,
     pub absorb_aggr: Option<f32>,
@@ -63,8 +61,6 @@ impl Overrides {
             opttolerance,
             seam_slack,
             simplify,
-            mode_filter,
-            color_cleanup,
             smoothing,
             absorb_dist,
             absorb_aggr,
@@ -105,12 +101,6 @@ impl Overrides {
         }
         if let Some(v) = *simplify {
             c.simplify = v;
-        }
-        if let Some(v) = *mode_filter {
-            c.mode_filter = v;
-        }
-        if let Some(v) = *color_cleanup {
-            c.color_cleanup = v;
         }
         if let Some(v) = *smoothing {
             c.smoothing = v;
@@ -460,8 +450,6 @@ pub fn diff(base: &Config, cfg: &Config) -> Overrides {
         opttolerance: d(base.opttolerance, cfg.opttolerance),
         seam_slack: d(base.seam_slack, cfg.seam_slack),
         simplify: d(base.simplify, cfg.simplify),
-        mode_filter: d(base.mode_filter, cfg.mode_filter),
-        color_cleanup: d(base.color_cleanup, cfg.color_cleanup),
         smoothing: d(base.smoothing, cfg.smoothing),
         absorb_dist: d(base.absorb_dist, cfg.absorb_dist),
         absorb_aggr: d(base.absorb_aggr, cfg.absorb_aggr),

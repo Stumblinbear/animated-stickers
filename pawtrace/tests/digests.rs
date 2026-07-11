@@ -6,7 +6,7 @@
 //! which stage moved.
 //!
 //! Run: `cargo test --features preview --test digests`
-//! Re-bless: `UPDATE_GOLDENS=1 cargo test --features preview --test digests`
+//! Re-bless: `UPDATE_GOLDENS=1 cargo test --test digests`
 //! rewrites `fixtures/golden/digests.toml`.
 
 use std::collections::BTreeMap;
@@ -153,11 +153,7 @@ fn layer_digests(
     } else {
         let prep = raster::prepare(&src, &raster::PrepParams::of(cfg));
         let plan = palette::Partition::build(&src, cfg).plan(&palette::SelectParams::of(cfg));
-        let mut quant = palette::remap_constrained(&prep.flat, &prep.alpha, &plan, cfg.scale);
-
-        if cfg.color_cleanup > 0 {
-            quant = palette::label_smooth(&quant, &prep.alpha, cfg.color_cleanup);
-        }
+        let quant = palette::remap_constrained(&prep.flat, &prep.alpha, &plan, cfg.scale);
 
         let mut h = Fnv::new();
         h.write(quant.as_raw());

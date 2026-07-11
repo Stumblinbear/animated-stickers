@@ -178,16 +178,6 @@ pub fn remap_constrained(
     out
 }
 
-/// Mode-filters the quantized labels so color boundaries settle where the
-/// local majority sits. Nearest-color remap assigns the resize blend band
-/// noisily when two palette colors are perceptually close (dark linework
-/// against dark fur), pinching thin lines to nothing in places; majority
-/// voting reclaims those pixels. Only art pixels vote: nothing outside the
-/// alpha can outvote art, so the silhouette cannot erode.
-pub fn label_smooth(quant: &RgbImage, alpha: &GrayImage, k: u32) -> RgbImage {
-    crate::raster::majority_vote(quant, alpha, k)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

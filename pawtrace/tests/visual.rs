@@ -18,9 +18,9 @@
 //! The pipeline is deterministic, so a correct regeneration matches byte for
 //! byte; the budgets are headroom, not expected drift.
 //!
-//! Run: `cargo test --features preview --test visual`
-//! Re-bless: `PAWTRACE_BLESS=1 cargo test --features preview --test visual`
-//! rewrites every golden and `counts.toml`, then passes.
+//! Run: `cargo test --test visual`
+//! Re-bless: `PAWTRACE_BLESS=1 cargo test --test visual` rewrites every golden
+//! and `counts.toml`, then passes.
 
 mod common;
 

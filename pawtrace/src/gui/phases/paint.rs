@@ -1,6 +1,6 @@
 //! The Paint phase: supersample and flatten the layer into a clean raster.
 //! Owns the phase's sub-views and its inspector section (scale, alpha
-//! threshold, mode filter).
+//! threshold).
 
 use super::SubView;
 use crate::gui::app::App;
@@ -47,24 +47,6 @@ pub fn inspector(app: &App) -> Element<'_, Msg> {
                 cfg.alpha_threshold as f64 / 255.0 * 100.0,
                 |pct| Msg::Edit(EditMsg::Set(Field::AlphaThreshold, pct / 100.0 * 255.0)),
             )
-            .step(1.0),
-        ),
-        setting(
-            app,
-            "Mode filter",
-            if cfg.mode_filter == 0 {
-                "off".into()
-            } else {
-                format!("{} px", cfg.mode_filter)
-            },
-            "Majority-vote denoise before quantization: kernel width in \
-             supersampled pixels (source px times the supersample \
-             scale), odd, 0 = off. Off by default: the smooth upsample \
-             plus perceptual remap already cover its job.",
-            Field::ModeFilter,
-            slider(0.0..=15.0, cfg.mode_filter as f64, |v| {
-                Msg::Edit(EditMsg::Set(Field::ModeFilter, v))
-            })
             .step(1.0),
         ),
     ]

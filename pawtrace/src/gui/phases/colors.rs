@@ -1,7 +1,7 @@
 //! The Colors phase: source pixels through feature merge to the extracted
 //! palette and its remap. Owns the phase's sub-views and its inspector section
-//! (detail, palette cap, color cleanup, and the palette swatches with their
-//! nearest-neighbor distance and click-to-lock).
+//! (detail, palette cap, and the palette swatches with their nearest-neighbor
+//! distance and click-to-lock).
 
 use super::SubView;
 use crate::gui::app::App;
@@ -55,26 +55,6 @@ pub fn inspector(app: &App) -> Element<'_, Msg> {
             Field::MaxColors,
             slider(2.0..=64.0, cfg.max_colors as f64, |v| {
                 Msg::Edit(EditMsg::Set(Field::MaxColors, v))
-            })
-            .step(1.0),
-        ),
-        setting(
-            app,
-            "Color cleanup",
-            if cfg.color_cleanup == 0 {
-                "off".into()
-            } else {
-                format!("{} px", cfg.color_cleanup)
-            },
-            "Reassigns each pixel to the majority color in a window \
-             (kernel width in supersampled px, 0 = off). Cleans jagged \
-             or speckled edges where two similar palette colors (a dark \
-             line on dark fur) got assigned noisily. Larger kernels also \
-             swallow 1px detail strokes, so raise it only when a \
-             boundary looks ragged.",
-            Field::ColorCleanup,
-            slider(0.0..=9.0, cfg.color_cleanup as f64, |v| {
-                Msg::Edit(EditMsg::Set(Field::ColorCleanup, v))
             })
             .step(1.0),
         ),

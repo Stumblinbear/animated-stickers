@@ -89,11 +89,6 @@ fn run_layer(
 
         let t = Instant::now();
         let quant = palette::remap_constrained(&prep.flat, &prep.alpha, &plan, cfg.scale);
-        let quant = if cfg.color_cleanup > 0 {
-            palette::label_smooth(&quant, &prep.alpha, cfg.color_cleanup)
-        } else {
-            quant
-        };
         times.add(3, t);
 
         let t = Instant::now();

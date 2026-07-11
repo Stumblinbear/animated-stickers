@@ -11,12 +11,12 @@ paths = 12
 anchors = 165
 
 [buck_deer_head]
-paths = 62
-anchors = 580
+paths = 64
+anchors = 585
 
 [buck_deer_leg]
-paths = 19
-anchors = 239
+paths = 20
+anchors = 251
 
 [fingagun]
 paths = 122
@@ -36,8 +36,8 @@ anchors = 66
 
 [seff_face]
 paths = 63
-anchors = 571
+anchors = 595
 
 [seff_head]
-paths = 92
-anchors = 1111
+paths = 91
+anchors = 1115

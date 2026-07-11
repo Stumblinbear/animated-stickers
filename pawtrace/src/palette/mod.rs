@@ -13,7 +13,7 @@ mod remap;
 mod residue;
 mod select;
 
-pub use remap::{label_smooth, remap_constrained, RemapPlan};
+pub use remap::{remap_constrained, RemapPlan};
 pub use select::{group_features, select_features, FeatureGroup};
 
 use crate::color::Srgb;
@@ -60,16 +60,15 @@ impl SelectParams {
 }
 
 /// Every config value the palette remap reads: `scale` for
-/// [`remap_constrained`] and `color_cleanup` for [`label_smooth`].
+/// [`remap_constrained`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct RemapParams {
     pub scale: u32,
-    pub color_cleanup: u32,
 }
 
 impl RemapParams {
     pub fn of(cfg: &Config) -> Self {
-        Self { scale: cfg.scale, color_cleanup: cfg.color_cleanup }
+        Self { scale: cfg.scale }
     }
 }
 

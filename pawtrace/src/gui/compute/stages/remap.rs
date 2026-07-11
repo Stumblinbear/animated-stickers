@@ -9,9 +9,8 @@ use image::RgbImage;
 use std::sync::Arc;
 
 /// Palette-remap inputs: the flattened raster, the detected partition, the
-/// consolidation and selection params, and the remap params (`scale` and
-/// `color_cleanup`) the remap passes to the constrained remap and the label
-/// smooth.
+/// consolidation and selection params, and the remap params (`scale`) the
+/// remap passes to the constrained remap.
 #[derive(Clone, Debug, PartialEq)]
 pub(in crate::gui) struct RemapInputs {
     pub prep: Artifact<Prepared>,
@@ -53,12 +52,7 @@ pub(super) fn compute_remap(k: &RemapInputs, _ctx: ()) -> RemapOutput {
     }
     let plan = part.plan(&k.select);
 
-    let mut remapped =
-        palette::remap_constrained(&k.prep.flat, &k.prep.alpha, &plan, k.remap.scale);
-
-    if k.remap.color_cleanup > 0 {
-        remapped = palette::label_smooth(&remapped, &k.prep.alpha, k.remap.color_cleanup);
-    }
+    let remapped = palette::remap_constrained(&k.prep.flat, &k.prep.alpha, &plan, k.remap.scale);
 
     let remap = Artifact::new_with(Arc::new(remapped), |q, h| write_raster(h, q));
 

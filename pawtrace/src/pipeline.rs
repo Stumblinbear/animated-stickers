@@ -89,14 +89,8 @@ pub fn run(
         let plan = timing::PALETTE
             .time(|| palette::Partition::build(&src, cfg).plan(&palette::SelectParams::of(cfg)));
 
-        let quant = timing::REMAP.time(|| {
-            let quant = palette::remap_constrained(&prep.flat, &prep.alpha, &plan, cfg.scale);
-            if cfg.color_cleanup > 0 {
-                palette::label_smooth(&quant, &prep.alpha, cfg.color_cleanup)
-            } else {
-                quant
-            }
-        });
+        let quant = timing::REMAP
+            .time(|| palette::remap_constrained(&prep.flat, &prep.alpha, &plan, cfg.scale));
 
         // One solid shape per connected same-color region (transition bands
         // absorbed), painted as a containment forest: a shape covers its
@@ -684,10 +678,9 @@ pub fn crop_to_alpha(src: &RgbaImage, cfg: &Config) -> Option<(RgbaImage, u32, u
         return None;
     }
 
-    // Pad so the mode filter has room at the crop edges. It operates in
-    // scaled space, hence the division by scale. The +1 keeps a transparent
-    // ring around the silhouette.
-    let pad = 1 + (cfg.mode_filter / 2).div_ceil(cfg.scale.max(1));
+    // A one-pixel transparent ring around the silhouette so the supersample
+    // resolves the edge against background, not the crop boundary.
+    let pad = 1;
     let x0 = x0.saturating_sub(pad);
     let y0 = y0.saturating_sub(pad);
     let x1 = (x1 + pad).min(w - 1);
@@ -852,11 +845,7 @@ mod tests {
 
         let prep = raster::prepare(&img, &raster::PrepParams::of(&cfg));
         let plan = palette::Partition::build(&img, &cfg).plan(&palette::SelectParams::of(&cfg));
-        let mut quant = palette::remap_constrained(&prep.flat, &prep.alpha, &plan, cfg.scale);
-
-        if cfg.color_cleanup > 0 {
-            quant = palette::label_smooth(&quant, &prep.alpha, cfg.color_cleanup);
-        }
+        let quant = palette::remap_constrained(&prep.flat, &prep.alpha, &plan, cfg.scale);
 
         let pins = scale_pins(&[], (0, 0), cfg.scale, img.dimensions());
         let regs =
