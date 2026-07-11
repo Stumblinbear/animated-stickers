@@ -11,7 +11,6 @@
 //! it threads the artifacts between stages and keys each slot, but holds no
 //! per-stage compute logic of its own.
 
-mod contours;
 mod detect;
 mod fit;
 mod plan;
@@ -21,17 +20,15 @@ mod remap;
 mod shapes;
 mod simplify;
 
-pub(in crate::gui) use contours::ContoursInputs;
 pub(in crate::gui) use detect::DetectInputs;
-pub(in crate::gui) use fit::FitInputs;
+pub(in crate::gui) use fit::{FitInputs, TraceOutput};
 pub(in crate::gui) use plan::PlanInputs;
 pub(in crate::gui) use prep::PrepInputs;
 pub(in crate::gui) use regions::RegionsInputs;
-pub(in crate::gui) use remap::{RemapInputs, RemapOut};
+pub(in crate::gui) use remap::{RemapInputs, RemapOutput};
 pub(in crate::gui) use shapes::ShapesInputs;
 pub(in crate::gui) use simplify::SimplifyInputs;
 
-use contours::compute_contours;
 use detect::compute_detect;
 use fit::compute_fit;
 use plan::compute_plan;
@@ -44,7 +41,7 @@ use simplify::compute_simplify;
 use super::artifact::Artifact;
 use super::cache::ShapeCache;
 use super::memo::Memo;
-use super::render::{fate_tint_handle, masked, regions_handle, render_svg, rgba_img};
+use super::render::{masked, render_svg, rgba_img};
 use super::{Img, LayerTrace, Shown, StagePart};
 use crate::config::Config;
 use crate::gui::ids::{DocId, LayerId};
@@ -54,6 +51,7 @@ use crate::palette::Partition;
 use crate::pipeline::Shape;
 use crate::raster::Prepared;
 use crate::regions::{MergePlan, Region};
+use crate::trace::{ContourParams, FitParams};
 use crate::{output, palette, pipeline};
 use iced::Task;
 use image::RgbaImage;
@@ -67,13 +65,12 @@ use std::sync::Arc;
 pub(in crate::gui) struct LayerStages {
     pub prep: Memo<PrepInputs, Artifact<Prepared>>,
     pub detect: Memo<DetectInputs, Artifact<Partition>>,
-    pub remap: Memo<RemapInputs, RemapOut>,
+    pub remap: Memo<RemapInputs, RemapOutput>,
     pub regions: Memo<RegionsInputs, Artifact<Vec<Region>>>,
     pub plan: Memo<PlanInputs, Artifact<MergePlan>>,
     pub shapes: Memo<ShapesInputs, Artifact<Vec<Shape>>>,
-    pub contours: Memo<ContoursInputs, Option<Img>>,
-    pub fit: Memo<FitInputs, Arc<LayerTrace>>,
-    pub simplify: Memo<SimplifyInputs, Arc<LayerTrace>>,
+    pub fit: Memo<FitInputs, TraceOutput>,
+    pub simplify: Memo<SimplifyInputs, TraceOutput>,
 }
 
 /// Everything one stage run needs, moved into the worker.
@@ -201,14 +198,14 @@ pub(super) fn stream(job: StageJob) -> Task<Msg> {
                 &regions_key,
             ) {
                 emit!(StagePart::Regions(
-                    regions_handle(&regs, remap.dimensions()),
+                    regions::regions_handle(&regs, remap.dimensions()),
                     regs.len(),
                 ));
             } else {
                 emit!(StagePart::Unchanged(Stage::Regions));
             }
 
-            // Merge plan feeds the fates, the contours, and the trace.
+            // Merge plan feeds the fates and, through the shapes it plans, the trace.
             let plan_key = PlanInputs {
                 regs: regs.clone(),
                 prep: prep.clone(),
@@ -225,34 +222,18 @@ pub(super) fn stream(job: StageJob) -> Task<Msg> {
             // the segmentation raster. No busy flag, so only emit on a change.
             if stale(shown.as_ref().and_then(|s| s.plan.as_ref()), &plan_key) {
                 let report = crate::regions::report_of(&plan);
-                let tint = fate_tint_handle(&regs, remap.dimensions(), &report.fates);
+                let tint = plan::fate_tint_handle(&regs, remap.dimensions(), &report.fates);
                 emit!(StagePart::Fates(tint, report));
             }
 
-            // One shape build serves the contour view and the trace.
+            // One shape build feeds the fit stage, which walks each shape's
+            // contours before fitting them.
             let shapes_key = ShapesInputs {
                 plan: plan.clone(),
                 prep: prep.clone(),
                 params: pipeline::ShapeParams::of(&cfg),
             };
             let shapes = slots.shapes.get_or(shapes_key, (), compute_shapes);
-
-            // Contours.
-            let contours_key = ContoursInputs {
-                shapes: shapes.clone(),
-                params: crate::trace::TraceParams::of(&cfg),
-            };
-            let contours = slots
-                .contours
-                .get_or(contours_key.clone(), (w, h), compute_contours);
-            if stale(
-                shown.as_ref().and_then(|s| s.contours.as_ref()),
-                &contours_key,
-            ) {
-                emit!(StagePart::Contours(contours));
-            } else {
-                emit!(StagePart::Unchanged(Stage::Contours));
-            }
 
             let pad = cfg.stroke_width * cfg.scale as f32 / 2.0;
             let stroke = output::stroke_of(&cfg);
@@ -276,30 +257,33 @@ pub(super) fn stream(job: StageJob) -> Task<Msg> {
                 (render_svg(&svg, w * 2, h * 2), anchors)
             };
 
-            // Fit: the pre-simplify trace, keyed on every input its geometry
-            // reads so the full render shares it.
-            let fit_key = FitInputs::of(&cfg, &pins);
-            let fit = slots
-                .fit
-                .get_or(fit_key.clone(), (shapes.arc(), shape_cache), compute_fit);
+            // Fit: the boundary walk and the cubic fit, keyed on the shapes
+            // artifact so the full render shares it.
+            let fit_key = FitInputs {
+                shapes: shapes.clone(),
+                contour: ContourParams::of(&cfg),
+                fit: FitParams::of(&cfg),
+            };
+            let fit = slots.fit.get_or(fit_key.clone(), shape_cache, compute_fit);
             let fit_stale =
                 !stroke_same || stale(shown.as_ref().and_then(|s| s.fit.as_ref()), &fit_key);
             if fit_stale {
-                let (im, an) = render_paths(&fit);
+                let (im, an) = render_paths(&fit.trace);
                 emit!(StagePart::Fit(im, an));
             } else {
                 emit!(StagePart::Unchanged(Stage::Fit));
             }
 
             // Simplify: the final trace (the fit trace when simplify is off).
-            let simp_key = SimplifyInputs::of(&cfg, &pins);
-            let simpl = slots
-                .simplify
-                .get_or(simp_key.clone(), fit, compute_simplify);
+            let simp_key = SimplifyInputs {
+                fit: fit_key.clone(),
+                params: crate::pipeline::SimplifyParams::of(&cfg),
+            };
+            let simpl = slots.simplify.get_or(simp_key.clone(), fit, compute_simplify);
             let simp_stale =
                 !stroke_same || stale(shown.as_ref().and_then(|s| s.simplify.as_ref()), &simp_key);
             if simp_stale {
-                let (im, an) = render_paths(&simpl);
+                let (im, an) = render_paths(&simpl.trace);
                 emit!(StagePart::Simplify(im, an));
             } else {
                 emit!(StagePart::Unchanged(Stage::Simplify));
@@ -315,7 +299,6 @@ pub(super) fn stream(job: StageJob) -> Task<Msg> {
                 remap: Some(remap_key),
                 regions: Some(regions_key),
                 plan: Some(plan_key),
-                contours: Some(contours_key),
                 fit: Some(fit_key),
                 simplify: Some(simp_key),
             };
@@ -324,14 +307,99 @@ pub(super) fn stream(job: StageJob) -> Task<Msg> {
     ))
 }
 
+impl LayerStages {
+    /// Runs the per-layer stage chain into these memo slots and returns the
+    /// final trace, emitting no images and recording no shown keys. A slot hit
+    /// reuses its cached value.
+    pub(super) fn trace(
+        &mut self,
+        img: &RgbaImage,
+        cfg: &Config,
+        pins: &[[u32; 2]],
+        plan_ctx: PlanCtx,
+        shape_cache: &ShapeCache,
+    ) -> Arc<LayerTrace> {
+        // The get_or sequence mirrors stream's, so the strip and the full
+        // render share every slot they both touch.
+        let prep = self.prep.get_or(PrepInputs::of(cfg), img, compute_prep);
+
+        let detect = self
+            .detect
+            .get_or(DetectInputs::of(cfg), img, compute_detect);
+        let (remap, _palette) = self.remap.get_or(
+            RemapInputs {
+                prep: prep.clone(),
+                detect,
+                merge: palette::MergeParams::of(cfg),
+                select: palette::SelectParams::of(cfg),
+                remap: palette::RemapParams::of(cfg),
+            },
+            (),
+            compute_remap,
+        );
+
+        let regs = self.regions.get_or(
+            RegionsInputs {
+                remap,
+                prep: prep.clone(),
+                params: crate::regions::SegmentParams::of(cfg),
+            },
+            (),
+            compute_regions,
+        );
+
+        let plan = self.plan.get_or(
+            PlanInputs {
+                regs,
+                prep: prep.clone(),
+                pins: pins.to_vec(),
+                params: crate::regions::PlanParams::of(cfg),
+            },
+            plan_ctx,
+            compute_plan,
+        );
+
+        let shapes = self.shapes.get_or(
+            ShapesInputs {
+                plan,
+                prep: prep.clone(),
+                params: pipeline::ShapeParams::of(cfg),
+            },
+            (),
+            compute_shapes,
+        );
+
+        let fit_key = FitInputs {
+            shapes,
+            contour: ContourParams::of(cfg),
+            fit: FitParams::of(cfg),
+        };
+        let fit = self
+            .fit
+            .get_or(fit_key.clone(), shape_cache.clone(), compute_fit);
+
+        self.simplify
+            .get_or(
+                SimplifyInputs {
+                    fit: fit_key,
+                    params: pipeline::SimplifyParams::of(cfg),
+                },
+                fit,
+                compute_simplify,
+            )
+            .trace
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::super::artifact::{write_raster, Artifact};
+    use super::super::artifact::Artifact;
     use super::*;
     use crate::palette::DetectParams;
+    use crate::pipeline::SimplifyParams;
     use crate::raster::{PrepParams, Prepared};
     use crate::regions::{PlanParams, Region, SegmentParams};
-    use crate::trace::TraceParams;
+    use crate::trace::{ContourParams, FitParams};
     use image::RgbImage;
     use std::hash::Hasher;
     use std::sync::Arc;
@@ -366,7 +434,6 @@ mod tests {
         let a = rgb([0, 0, 0]);
         let b = rgb([0, 0, 0]);
         let c = rgb([9, 9, 9]);
-        assert!(!Arc::ptr_eq(&a.arc(), &b.arc()), "distinct allocations");
         assert_eq!(a, b, "equal content hashes compare equal");
         assert_ne!(a, c, "different content hashes compare unequal");
 
@@ -381,10 +448,11 @@ mod tests {
         assert_ne!(key(a), key(c), "a content change moves the key");
     }
 
-    // A pin edit changes the plan key (and thus fates and trace) but leaves the
+    // Pins enter at the plan: a pin edit moves the plan key (and thus the fates
+    // and, through the chained shapes artifact, the trace), but leaves the
     // segmentation keys untouched.
     #[test]
-    fn a_pin_edit_moves_the_plan_and_trace_keys_only() {
+    fn a_pin_edit_moves_the_plan_key_only() {
         let prep = dummy_prep();
         let remap = rgb([0, 0, 0]);
         let regs = Artifact::new(Arc::new(Vec::<Region>::new()));
@@ -401,49 +469,13 @@ mod tests {
         };
         assert_eq!(regions, regions.clone(), "segmentation is pin-independent");
         assert_ne!(plan(vec![]), plan(vec![[3, 4]]), "the plan folds the pins");
-
-        let cfg = Config::default();
-        let fit0 = FitInputs::of(&cfg, &[]);
-        let fit1 = FitInputs::of(&cfg, &[[3, 4]]);
-        assert_ne!(fit0, fit1, "the trace folds the pins");
     }
 
-    // A pin-only edit leaves every key up to the segmentation raster equal.
-    // Only the plan key (fates) and the trace keys move.
-    #[test]
-    fn a_pin_edit_dirties_only_the_plan_and_the_trace() {
-        let cfg = Config::default();
-        let prep = {
-            let p = crate::raster::prepare(&RgbaImage::new(2, 2), &PrepParams::of(&cfg));
-            Artifact::new_with(Arc::new(p), |_, _| {})
-        };
-        let remap = Artifact::new_with(Arc::new(RgbImage::new(1, 1)), |q, h| write_raster(h, q));
-        let regs = Artifact::new(Arc::new(Vec::<Region>::new()));
-        let regions = RegionsInputs {
-            remap,
-            prep: prep.clone(),
-            params: SegmentParams::of(&cfg),
-        };
-        let plan = |pins: Vec<[u32; 2]>| PlanInputs {
-            regs: regs.clone(),
-            prep: prep.clone(),
-            pins,
-            params: PlanParams::of(&cfg),
-        };
-        // Segmentation is pin-independent; the plan and the trace fold pins.
-        assert_eq!(regions, regions.clone());
-        assert_ne!(plan(vec![]), plan(vec![[3, 4]]));
-        assert_ne!(FitInputs::of(&cfg, &[]), FitInputs::of(&cfg, &[[3, 4]]));
-        assert_ne!(
-            SimplifyInputs::of(&cfg, &[]),
-            SimplifyInputs::of(&cfg, &[[3, 4]])
-        );
-    }
-
-    // A config edit ripples exactly as far as its params reach: simplify only
-    // to the final trace, detail to the plan (the speckle floor) and the
-    // trace, scale to segmentation, alphamax to the contours and the trace,
-    // alpha_threshold to detection.
+    // A config edit ripples exactly as far as its params reach. Stage keys
+    // downstream of the split chain by content, so a config field is tracked to
+    // the param struct that reads it: simplify to the simplify params, opttol
+    // and seam_slack to the fit params, alphamax to the contour params, detail
+    // to the plan, scale to segmentation, alpha_threshold to detection.
     #[test]
     fn config_edits_ripple_by_field() {
         let base = Config::default();
@@ -452,18 +484,35 @@ mod tests {
             ..base.clone()
         };
         assert_eq!(
-            FitInputs::of(&base, &[]),
-            FitInputs::of(&simp, &[]),
-            "fit is simplify-independent"
+            FitParams::of(&base),
+            FitParams::of(&simp),
+            "the fit is simplify-independent"
         );
         assert_ne!(
-            SimplifyInputs::of(&base, &[]),
-            SimplifyInputs::of(&simp, &[]),
+            SimplifyParams::of(&base),
+            SimplifyParams::of(&simp),
             "simplify moves the final trace"
         );
 
+        // opttolerance and seam_slack are the fit's alone: they move the fit
+        // params, never the contour walk.
+        let optt = Config {
+            opttolerance: base.opttolerance + 0.1,
+            ..base.clone()
+        };
+        assert_ne!(
+            FitParams::of(&base),
+            FitParams::of(&optt),
+            "opttolerance moves the fit"
+        );
+        assert_eq!(
+            ContourParams::of(&base),
+            ContourParams::of(&optt),
+            "opttolerance leaves the contour walk"
+        );
+
         // detail drives the speckle floor: the plan params move, the
-        // segmentation params do not, and the trace inherits the ripple.
+        // segmentation params do not.
         let detail = Config {
             detail: 9.0,
             ..base.clone()
@@ -474,11 +523,6 @@ mod tests {
             "detail moves the plan"
         );
         assert_eq!(SegmentParams::of(&base), SegmentParams::of(&detail));
-        assert_ne!(
-            FitInputs::of(&base, &[]),
-            FitInputs::of(&detail, &[]),
-            "detail reaches the trace"
-        );
 
         // scale sizes the absorption ceilings, so it moves the segmentation.
         let scale = Config {
@@ -491,24 +535,24 @@ mod tests {
             "scale moves segmentation"
         );
 
-        // alphamax is the corner threshold: the contour walk and the trace
-        // move, segmentation and the plan do not.
+        // alphamax is the corner threshold: the contour walk moves,
+        // segmentation and the plan do not.
         let alpha_max = Config {
             alphamax: 1.3,
             ..base.clone()
         };
         assert_ne!(
-            TraceParams::of(&base),
-            TraceParams::of(&alpha_max),
+            ContourParams::of(&base),
+            ContourParams::of(&alpha_max),
             "alphamax moves the contours"
+        );
+        assert_eq!(
+            FitParams::of(&base),
+            FitParams::of(&alpha_max),
+            "alphamax leaves the fit params (it reaches the fit through the contours)"
         );
         assert_eq!(SegmentParams::of(&base), SegmentParams::of(&alpha_max));
         assert_eq!(PlanParams::of(&base), PlanParams::of(&alpha_max));
-        assert_ne!(
-            FitInputs::of(&base, &[]),
-            FitInputs::of(&alpha_max, &[]),
-            "alphamax reaches the trace"
-        );
 
         // Detection reads only alpha_threshold; a palette-shaping edit leaves it.
         let bands = Config {
@@ -525,5 +569,55 @@ mod tests {
             DetectParams::of(&alpha),
             "alpha_threshold invalidates detection"
         );
+    }
+
+    // A uniform-color layer must trace identically through the staged chain and
+    // the monolithic run: the run skips palette and remap for a solid layer, so
+    // the chain's regions stage segments straight from the mask to match. The
+    // art is a strict interior crop, so this also exercises the crop's
+    // shift-equivariance the run relies on.
+    #[test]
+    fn a_uniform_layer_traces_identically_through_the_staged_chain() {
+        use lru::LruCache;
+        use std::num::NonZeroUsize;
+        use std::sync::Mutex;
+
+        let mut img = RgbaImage::new(40, 40);
+        for y in 8..32u32 {
+            for x in 8..32u32 {
+                img.put_pixel(x, y, image::Rgba([40, 160, 150, 255]));
+            }
+        }
+
+        let cfg = Config {
+            scale: 3,
+            detail: 1.0,
+            ..Default::default()
+        };
+        let doc_dim = 40;
+
+        let mono = pipeline::run(&img, &cfg, doc_dim, (0, 0), &[]).unwrap();
+
+        let mut slots = LayerStages::default();
+        let cache: ShapeCache = Arc::new(Mutex::new(LruCache::new(NonZeroUsize::new(64).unwrap())));
+        let plan_ctx = PlanCtx {
+            offset: (0, 0),
+            dims: img.dimensions(),
+            doc_dim,
+        };
+        let staged = slots.trace(&img, &cfg, &[], plan_ctx, &cache);
+
+        assert_eq!(mono.len(), staged.len());
+        assert!(!mono.is_empty());
+
+        for ((h1, p1), (h2, p2)) in mono.iter().zip(staged.iter()) {
+            assert_eq!(h1, h2);
+            assert_eq!(p1.len(), p2.len());
+
+            for (a, b) in p1.iter().zip(p2) {
+                assert_eq!(a.start, b.start);
+                assert_eq!(a.cubics, b.cubics);
+            }
+        }
     }
 }

@@ -58,10 +58,6 @@ fn stage_part(app: &mut App, doc: DocId, generation: u64, part: StagePart) -> Ta
                     s.preview.fate_tint = tint;
                     s.preview.region_report = Some(report);
                 }
-                StagePart::Contours(img) => {
-                    s.preview.contours = img;
-                    s.stage_pending[Stage::Contours] = false;
-                }
                 StagePart::Fit(img, anchors) => {
                     s.preview.render = img;
                     s.preview.anchor_count = anchors;
@@ -141,12 +137,11 @@ fn full_ready(
                 Ok(r) => {
                     let r = *r;
 
-                    for m in r.merges {
-                        let sl = s.stages.stages_mut(m.layer);
-                        sl.simplify.put(m.simplify_key, m.trace.clone());
-                        if let Some(fk) = m.fit_key {
-                            sl.fit.put(fk, m.trace);
-                        }
+                    // Reinstall each layer's filled slots. A concurrent strip
+                    // worker may install its own set for the selected layer over
+                    // this one; both hold the same values for the same inputs.
+                    for (layer, slots) in r.stages {
+                        s.stages.install(layer, slots);
                     }
 
                     s.layer_outputs = r.outputs;
@@ -175,12 +170,12 @@ fn full_ready(
     }
 
     if let Some(e) = err {
-        // Attribute the red treatment to the layer that failed, falling back to
-        // the selected layer when the failure names none. The render does not
-        // report which stage failed, so the phase is the final one, Curves.
+        // A composite render failure is not tied to a layer, so the selected
+        // layer takes the red treatment. The render does not report which stage
+        // failed, so the phase is the final one, Curves.
         if selected {
             if let Some(s) = app.session_mut() {
-                let layer = e.layer.unwrap_or(s.selected_layer);
+                let layer = s.selected_layer;
 
                 s.trace_error = Some(crate::gui::app::LayerError {
                     layer,
@@ -255,7 +250,6 @@ mod tests {
 
         // `gone`'s final full result arrives after the close.
         let err = FullError {
-            layer: Some(LayerId::from_raw(0)),
             msg: "dead stream".into(),
         };
         let _ = update(&mut app, ComputeMsg::FullReady(gone, 1, Err(err)));

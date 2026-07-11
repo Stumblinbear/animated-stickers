@@ -3,6 +3,7 @@
 use super::super::artifact::{write_raster, Artifact};
 use crate::raster::{PrepParams, Prepared};
 use image::RgbaImage;
+use std::hash::Hasher;
 use std::sync::Arc;
 
 /// Supersampled, flattened raster inputs.
@@ -14,5 +15,12 @@ pub(super) fn compute_prep(k: &PrepInputs, img: &RgbaImage) -> Artifact<Prepared
     Artifact::new_with(Arc::new(prep), |p, h| {
         write_raster(h, &p.flat);
         write_raster(h, &p.alpha);
+        match p.uniform {
+            Some(c) => {
+                h.write_u8(1);
+                h.write(&c);
+            }
+            None => h.write_u8(0),
+        }
     })
 }

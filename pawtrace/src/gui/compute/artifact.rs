@@ -48,11 +48,6 @@ impl<T> Artifact<T> {
         }
     }
 
-    /// The wrapped `Arc`, for handing the inner value to a stage that consumes
-    /// it directly rather than through the key.
-    pub fn arc(&self) -> Arc<T> {
-        self.value.clone()
-    }
 }
 
 // The manual impls below deliberately carry no bound on `T`: identity is the
@@ -118,9 +113,10 @@ mod tests {
             pixels: vec![(0, 0)],
         };
         let regs = vec![region([1, 2, 3])];
-        let a = Artifact::new(Arc::new(regs.clone()));
-        let b = Artifact::new(Arc::new(regs.clone()));
-        assert!(!Arc::ptr_eq(&a.arc(), &b.arc()), "distinct allocations");
+        let (ra, rb) = (Arc::new(regs.clone()), Arc::new(regs.clone()));
+        let a = Artifact::new(ra.clone());
+        let b = Artifact::new(rb.clone());
+        assert!(!Arc::ptr_eq(&ra, &rb), "distinct allocations");
         assert_eq!(a, b, "equal content compares equal");
 
         let other = vec![region([9, 9, 9])];

@@ -8,7 +8,6 @@ mod cache;
 mod full;
 mod memo;
 mod render;
-mod shape_memo;
 mod stages;
 
 use super::app::App;
@@ -16,7 +15,6 @@ use crate::regions;
 use iced::widget::image as iced_image;
 use iced::Task;
 use image::RgbaImage;
-use std::sync::Arc;
 
 pub(in crate::gui) use cache::DocStages;
 pub(super) use full::export_doc;
@@ -53,7 +51,6 @@ pub(super) struct Shown {
     pub(super) remap: Option<stages::RemapInputs>,
     pub(super) regions: Option<stages::RegionsInputs>,
     pub(super) plan: Option<stages::PlanInputs>,
-    pub(super) contours: Option<stages::ContoursInputs>,
     pub(super) fit: Option<stages::FitInputs>,
     pub(super) simplify: Option<stages::SimplifyInputs>,
 }
@@ -79,7 +76,6 @@ impl Shown {
             remap: None,
             regions: None,
             plan: None,
-            contours: None,
             fit: None,
             simplify: None,
         }
@@ -102,8 +98,6 @@ pub(super) struct StageImages {
     /// Per-region trace fates and floor for the regions hover readout,
     /// aligned with the cached regions.
     pub(super) region_report: Option<regions::RegionReport>,
-    /// Smoothed boundary with corner markers, pre-fit.
-    pub(super) contours: Option<Img>,
     /// Fitted render, pre-simplification.
     pub(super) render: Option<Img>,
     /// Final render, after the simplify pass.
@@ -122,24 +116,22 @@ pub struct DocStats {
     pub anchors: usize,
 }
 
-/// A failed full render: the human-readable message and, when the failure was
-/// one layer's trace, which layer it came from. `layer` is `None` for a failure
-/// not tied to a specific layer, such as the final composite render.
+/// A failed full render, holding the human-readable message. The staged chain
+/// does not fail, so the only failure is the final composite render.
 #[derive(Debug, Clone)]
 pub struct FullError {
-    pub layer: Option<super::ids::LayerId>,
     pub msg: String,
 }
 
 /// Full-preview result: the composite image, totals, per-layer derived render
-/// outputs keyed by layer id, and the pre-transform traces newly computed this
-/// run, for the memo.
+/// outputs keyed by layer id, and each recomputed layer's filled stage slots to
+/// reinstall in the cache.
 #[derive(Debug, Clone)]
 pub struct FullResult {
     pub(super) img: Img,
     pub(super) stats: DocStats,
     pub(super) outputs: rustc_hash::FxHashMap<super::ids::LayerId, super::doc::LayerOutputs>,
-    pub(super) merges: Vec<full::FullMerge>,
+    pub(super) stages: rustc_hash::FxHashMap<super::ids::LayerId, LayerStages>,
 }
 
 /// One stage's display output, streamed the moment it finishes so the fast
@@ -156,7 +148,6 @@ pub enum StagePart {
     /// The fate tint (`None` when every region survives) and the region report,
     /// emitted whenever the merge plan changes, including on a pin edit.
     Fates(Option<Img>, regions::RegionReport),
-    Contours(Option<Img>),
     /// Fitted render and its anchor count.
     Fit(Option<Img>, usize),
     /// Simplified render and its anchor count.
@@ -298,26 +289,19 @@ impl App {
         let profiles = self.stack(pos).to_owned();
         let doc_dim = size.0.max(size.1);
 
-        // Snapshot each enabled layer's cached simplify trace, so an unchanged
-        // layer is reused rather than re-traced.
-        let snap: Vec<Option<Arc<LayerTrace>>> = {
-            let m = &self.docs[pos].session.stages;
+        // Clone each enabled layer's stage slots for the worker to run its
+        // chain against, so a layer already traced hits its cached values.
+        let (slots, shape_cache) = {
+            let m = &mut self.docs[pos].session.stages;
+            m.ensure_layers(layers.len());
 
-            layers
+            let slots: rustc_hash::FxHashMap<_, _> = layers
                 .iter()
-                .map(|l| {
-                    let inp = &inputs[&l.id];
+                .filter(|l| inputs[&l.id].enabled)
+                .map(|l| (l.id, m.stages(l.id)))
+                .collect();
 
-                    if !inp.enabled {
-                        return None;
-                    }
-
-                    let cfg = profiles.resolve(&l.name).0;
-
-                    m.peek(l.id)
-                        .and_then(|s| s.simplify.get(&stages::SimplifyInputs::of(&cfg, &inp.pins)))
-                })
-                .collect()
+            (slots, m.shape_cache())
         };
 
         self.full_gen += 1;
@@ -331,7 +315,15 @@ impl App {
 
         Task::perform(
             async move {
-                let result = full::render_full(&layers, &inputs, size, &profiles, doc_dim, snap);
+                let result = full::render_full(
+                    &layers,
+                    &inputs,
+                    size,
+                    &profiles,
+                    doc_dim,
+                    slots,
+                    shape_cache,
+                );
                 (generation, result)
             },
             move |(generation, result)| {
@@ -348,6 +340,7 @@ mod tests {
     use super::*;
     use crate::gui::doc::{Doc, Layer, LayerInputs};
     use crate::gui::ids::{DocId, LayerId};
+    use std::sync::Arc;
 
     #[test]
     fn unchanged_stage_config_still_drains_a_queued_full_render() {

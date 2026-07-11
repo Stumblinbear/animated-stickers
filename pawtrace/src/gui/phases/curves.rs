@@ -11,7 +11,7 @@ use crate::gui::view::{theme, widgets};
 use iced::widget::{column, row, slider, text, text_input};
 use iced::{Alignment, Element};
 
-pub const SUBVIEWS: &[SubView] = &[SubView::Contours, SubView::Fit, SubView::Simplify];
+pub const SUBVIEWS: &[SubView] = &[SubView::Fit, SubView::Simplify];
 pub const DEFAULT_SUBVIEW: SubView = SubView::Simplify;
 
 pub fn inspector(app: &App) -> Element<'_, Msg> {

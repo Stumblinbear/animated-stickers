@@ -9,15 +9,17 @@
 //! frame because iced draws a canvas's images above its meshes within one
 //! layer, so an overlay drawn in the preview frame would fall under the art.
 
+mod anchors;
 mod fates;
 mod pins;
 
 use super::app::App;
-use super::compute::Img;
+use super::compute::{Img, LayerTrace};
 use super::msg::{Msg, StripView};
 use super::phases::SubView;
 use iced::widget::canvas::{Frame, LineDash, Path, Stroke};
 use iced::{Element, Vector};
+use std::sync::Arc;
 use std::time::Instant;
 
 /// The read-only view of app state an overlay draws from. Every field is here
@@ -46,6 +48,13 @@ pub struct OverlayCtx<'a> {
     /// The trace-fate tint over the segmentation, when the Regions stage has
     /// produced one.
     fate_tint: Option<&'a Img>,
+    /// The active subview's finalized trace and the supersample scale its
+    /// coordinates are expressed at, `None` off the Fit and Simplify views or
+    /// before that stage has produced one.
+    active_trace: Option<(Arc<LayerTrace>, u32)>,
+    /// Whether the show-all modifier is held, drawing every path's anchors
+    /// rather than only the hovered path's.
+    show_all_anchors: bool,
 }
 
 impl OverlayCtx<'_> {
@@ -58,10 +67,11 @@ impl OverlayCtx<'_> {
             .and_then(|(s, doc)| doc.layer(s.selected_layer))
             .map(|l| l.offset)
             .unwrap_or((0, 0));
+        let subview = app.active_subview();
 
         OverlayCtx {
             view: session.map(|s| s.view).unwrap_or_default(),
-            subview: app.active_subview(),
+            subview,
             img: app.active_image().map(|i| i.size),
             zoom: session.and_then(|s| s.zoom()),
             pan: session.map(|s| s.pan()).unwrap_or(Vector::ZERO),
@@ -77,6 +87,8 @@ impl OverlayCtx<'_> {
                 &[]
             },
             fate_tint: session.and_then(|s| s.preview.fate_tint.as_ref()),
+            active_trace: anchors::read(app, subview),
+            show_all_anchors: app.modifiers.alt(),
         }
     }
 }
@@ -86,8 +98,9 @@ impl OverlayCtx<'_> {
 type Overlay = for<'a> fn(&OverlayCtx<'a>) -> Option<Element<'a, Msg>>;
 
 /// Every overlay, in composite order: earlier entries draw under later ones.
-/// The fate tint sits over the art and the pins sit over the tint.
-pub const ALL: &[Overlay] = &[fates::overlay, pins::overlay];
+/// The fate tint sits over the art, the anchors overlay over the tint, and the
+/// pins over the anchors.
+pub const ALL: &[Overlay] = &[fates::overlay, anchors::overlay, pins::overlay];
 
 /// Strokes `path` as a marching-ants outline: a thin dashed accent line whose
 /// dash phase advances from `now`, so the dashes crawl along the path over a

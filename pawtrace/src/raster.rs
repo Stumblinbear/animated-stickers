@@ -13,6 +13,9 @@ pub struct Prepared {
     pub flat: RgbImage,
     /// Binary alpha at scaled size (255 = art).
     pub alpha: GrayImage,
+    /// The single color when every opaque source pixel shares it, letting a
+    /// consumer segment straight from the mask and skip palette selection.
+    pub uniform: Option<[u8; 3]>,
 }
 
 /// Every config value [`prepare`] reads.
@@ -58,8 +61,12 @@ pub fn uniform_color(src: &RgbaImage, alpha_threshold: u8) -> Option<[u8; 3]> {
 /// Binary alpha at scaled size for a uniform-color layer: the same bilinear
 /// resample and threshold as `prepare`, on the alpha plane alone.
 pub fn scale_alpha(src: &RgbaImage, cfg: &Config) -> GrayImage {
+    scale_alpha_plane(src, cfg.scale, cfg.alpha_threshold)
+}
+
+fn scale_alpha_plane(src: &RgbaImage, scale: u32, alpha_threshold: u8) -> GrayImage {
     let (w, h) = src.dimensions();
-    let (sw, sh) = (w * cfg.scale, h * cfg.scale);
+    let (sw, sh) = (w * scale, h * scale);
     let plane: Vec<u8> = src.pixels().map(|p| p.0[3]).collect();
     let src_view = fir::images::ImageRef::new(w, h, &plane, fir::PixelType::U8)
         .expect("buffer matches dimensions");
@@ -78,17 +85,38 @@ pub fn scale_alpha(src: &RgbaImage, cfg: &Config) -> GrayImage {
     let mut alpha = GrayImage::from_raw(sw, sh, dst.into_vec()).unwrap();
 
     for p in alpha.pixels_mut() {
-        p.0[0] = if p.0[0] >= cfg.alpha_threshold {
-            255
-        } else {
-            0
-        };
+        p.0[0] = if p.0[0] >= alpha_threshold { 255 } else { 0 };
     }
 
     alpha
 }
 
 pub fn prepare(src: &RgbaImage, cfg: &PrepParams) -> Prepared {
+    // A uniform-color layer needs no palette, remap, or quantization: the
+    // scaled alpha alone determines its regions. The alpha plane resizes
+    // identically whether taken alone or from the full RGBA resample, so the
+    // mask matches the four-plane path byte for byte, at a quarter of its cost.
+    // The mode filter is a majority vote, which leaves a solid fill unchanged.
+    if let Some(color) = uniform_color(src, cfg.alpha_threshold) {
+        let alpha = scale_alpha_plane(src, cfg.scale, cfg.alpha_threshold);
+
+        let mut flat = RgbImage::new(alpha.width(), alpha.height());
+        {
+            let fr: &mut [u8] = &mut flat;
+            for (i, &a) in alpha.as_raw().iter().enumerate() {
+                if a != 0 {
+                    fr[3 * i..3 * i + 3].copy_from_slice(&color);
+                }
+            }
+        }
+
+        return Prepared {
+            flat,
+            alpha,
+            uniform: Some(color),
+        };
+    }
+
     // Supersample with a SMOOTH filter, like the reference (vectorize.py uses
     // ImageMagick's default -resize). Nearest-neighbor looks safer ("zero new
     // blend colors") but clones every source AA blend color scale^2 times,
@@ -140,7 +168,11 @@ pub fn prepare(src: &RgbaImage, cfg: &PrepParams) -> Prepared {
         flat = mode_filter(&flat, &alpha, cfg.mode_filter);
     }
 
-    Prepared { flat, alpha }
+    Prepared {
+        flat,
+        alpha,
+        uniform: None,
+    }
 }
 
 /// Snaps AA blend pixels to their neighborhood's dominant color. Only art

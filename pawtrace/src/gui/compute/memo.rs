@@ -20,11 +20,6 @@ impl<K: PartialEq, V: Clone> Memo<K, V> {
         }
     }
 
-    /// Stores `(key, value)`, replacing any prior entry.
-    pub fn put(&mut self, key: K, value: V) {
-        self.0 = Some((key, value));
-    }
-
     /// The stored value regardless of its key, for a consumer that wants
     /// whatever the memo currently holds (the pin hit test reads the regions
     /// the strip last produced).

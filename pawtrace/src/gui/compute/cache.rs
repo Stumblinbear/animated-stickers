@@ -8,11 +8,10 @@
 //! chain is the whole invalidation rule: a content change moves the artifact,
 //! which moves every downstream key that embeds it.
 //!
-//! The intermediate strip outputs (prep through shapes) chain by `Artifact`.
-//! The per-layer traces (fit, simplify) instead key on the full layer config:
-//! the full-document render produces its traces monolithically, exposing no
-//! intermediate artifacts to chain from, so the one cache both it and the strip
-//! share keys on the inputs both can name.
+//! Every stage chains by `Artifact`, the fit and simplify included: the fit
+//! keys on the shapes artifact and the simplify on the fit inputs. The
+//! full-document render runs the same staged chain the strip does, so both fill
+//! the same slots and share every cache entry the chain produces.
 
 use super::stages::LayerStages;
 use crate::gui::ids::LayerId;
@@ -21,14 +20,16 @@ use lru::LruCache;
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
 
-/// Per-layer stage sets are held for at most this many distinct layers. A dozen
-/// keeps typical layer switching warm at a few MB per layer.
+/// Floor on retained per-layer stage sets. Capacity grows to the document's
+/// layer count when larger, so a full render keeps every layer warm; a dozen
+/// keeps typical layer switching warm at a few MB per layer for small docs.
 const SLOT_LAYERS: usize = 12;
 /// Total per-shape fitted-path entries across every layer.
 const SHAPE_ENTRIES: usize = 4096;
 
-/// Fitted paths per shape, keyed by shape content and fit params (see
-/// [`super::shape_memo`]), shared with the stage worker across recomputes.
+/// Fitted paths per shape, keyed by contour content and fit params (see
+/// [`super::stages`]'s fit stage), shared with the stage worker across
+/// recomputes.
 pub(in crate::gui) type ShapeCache = Arc<Mutex<LruCache<u64, Arc<Vec<TracedPath>>>>>;
 
 /// A document's per-layer pipeline stage outputs: hand it a layer, get that
@@ -52,6 +53,16 @@ impl Default for DocStages {
 }
 
 impl DocStages {
+    /// Grows capacity to hold `n` layers at once, never shrinking below the
+    /// small-document floor.
+    pub fn ensure_layers(&mut self, n: usize) {
+        let want = n.max(SLOT_LAYERS);
+
+        if want > self.layers.cap().get() {
+            self.layers.resize(NonZeroUsize::new(want).unwrap());
+        }
+    }
+
     /// A read-only borrow of `layer`'s stages without touching LRU order, for
     /// off-session lookups (the pin hit test) and the full render's reuse.
     pub fn peek(&self, layer: LayerId) -> Option<&LayerStages> {
@@ -85,34 +96,14 @@ impl DocStages {
 
 #[cfg(test)]
 mod tests {
-    use super::super::artifact::Artifact;
-    use super::super::stages::PrepInputs;
     use super::*;
-    use crate::config::Config;
-    use crate::raster::Prepared;
-
-    fn dummy_prep() -> Artifact<Prepared> {
-        let prep = crate::raster::prepare(
-            &image::RgbaImage::new(2, 2),
-            &PrepInputs::of(&Config::default()),
-        );
-
-        Artifact::new_with(Arc::new(prep), |_, _| {})
-    }
 
     #[test]
     fn slots_evict_past_capacity() {
         let mut m = DocStages::default();
 
         for i in 0..=SLOT_LAYERS {
-            m.stages_mut(LayerId::from_raw(i as u128)).prep.put(
-                PrepInputs {
-                    scale: 3,
-                    alpha_threshold: 128,
-                    mode_filter: 0,
-                },
-                dummy_prep(),
-            );
+            m.stages_mut(LayerId::from_raw(i as u128));
         }
 
         assert!(
@@ -121,5 +112,20 @@ mod tests {
         );
 
         assert!(m.peek(LayerId::from_raw(SLOT_LAYERS as u128)).is_some());
+    }
+
+    #[test]
+    fn ensure_layers_grows_capacity_to_fit_the_document() {
+        let mut m = DocStages::default();
+        m.ensure_layers(SLOT_LAYERS + 8);
+
+        for i in 0..(SLOT_LAYERS + 8) {
+            m.stages_mut(LayerId::from_raw(i as u128));
+        }
+
+        assert!(
+            m.peek(LayerId::from_raw(0)).is_some(),
+            "no eviction below the raised capacity"
+        );
     }
 }

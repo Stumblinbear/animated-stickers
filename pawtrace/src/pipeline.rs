@@ -3,7 +3,7 @@
 //! transition-band absorption + region segmentation (regions), then one
 //! traced shape per region (trace + fit), painted as an outside-in stack.
 
-use crate::trace::{TraceParams, TracedPath};
+use crate::trace::{ContourParams, FitParams, TracedPath};
 use crate::{config::Config, palette, raster, regions, timing, trace};
 use anyhow::Result;
 use image::{GrayImage, RgbaImage};
@@ -201,13 +201,14 @@ pub fn trace_planned(
     // sequential, so paint order and output are unchanged.
     let shapes = surviving_shapes(plan, alpha, &ShapeParams::of(cfg));
 
-    let tp = TraceParams::of(cfg);
+    let contour = ContourParams::of(cfg);
+    let fit = FitParams::of(cfg);
 
     let traced: Vec<([u8; 3], Vec<TracedPath>)> = timing::TRACE.time(|| {
         shapes
             .par_iter()
             .map(|(color, mask, slack, (bx, by))| {
-                let mut paths = trace::trace_mask(mask, &tp, slack.as_ref());
+                let mut paths = trace::trace_mask(mask, &contour, &fit, slack.as_ref());
 
                 // -1.0: the shape mask's origin sits one border pixel above
                 // and left of the region bbox (see region_shape).
@@ -245,71 +246,6 @@ pub(crate) fn group_traced(
     }
 
     out
-}
-
-/// A smoothed boundary polyline and its corner points, in the alpha mask's
-/// scaled coordinate space, for the debug view.
-pub struct DebugContour {
-    pub points: Vec<(f64, f64)>,
-    pub corners: Vec<(f64, f64)>,
-    /// Per-vertex seam-slack flag, aligned with `points`: a set flag marks a
-    /// vertex fit at the slackened tolerance.
-    pub slack: Vec<bool>,
-}
-
-/// The smoothed boundary and detected corners for every shape that
-/// [`trace_regions`] would trace, in the same coordinate space as its paths.
-/// Shows what the fit is about to run on.
-pub fn debug_contours(
-    regs: &[regions::Region],
-    alpha: &GrayImage,
-    cfg: &Config,
-    doc_dim: u32,
-    pins: &[(u32, u32)],
-) -> Vec<DebugContour> {
-    debug_planned(
-        &regions::merge_plan(regs, alpha, &regions::PlanParams::of(cfg), doc_dim, pins),
-        alpha,
-        cfg,
-    )
-}
-
-/// [`debug_contours`] from a prebuilt merge plan.
-pub fn debug_planned(
-    plan: &regions::MergePlan,
-    alpha: &GrayImage,
-    cfg: &Config,
-) -> Vec<DebugContour> {
-    debug_from_shapes(
-        &surviving_shapes(plan, alpha, &ShapeParams::of(cfg)),
-        &TraceParams::of(cfg),
-    )
-}
-
-/// [`debug_contours`] from prebuilt shapes, so the GUI shares one shape build
-/// between the contour view and the trace.
-pub(crate) fn debug_from_shapes(shapes: &[Shape], cfg: &TraceParams) -> Vec<DebugContour> {
-    use rayon::prelude::*;
-    shapes
-        .par_iter()
-        .flat_map(|(_, mask, slack, (bx, by))| {
-            let (dx, dy) = (*bx as f64 - 1.0, *by as f64 - 1.0);
-
-            trace::smoothed_contours(mask, cfg, slack.as_ref())
-                .into_iter()
-                .map(|(pts, corners, flags)| {
-                    let shift = |&(x, y): &(f64, f64)| (x + dx, y + dy);
-                    let corners = corners.iter().map(|&i| shift(&pts[i])).collect();
-
-                    DebugContour {
-                        points: pts.iter().map(shift).collect(),
-                        corners,
-                        slack: flags,
-                    }
-                })
-                .collect::<Vec<_>>()
-        })
-        .collect()
 }
 
 /// A paintable shape in paint order: `(region color, shape mask, seam-slack

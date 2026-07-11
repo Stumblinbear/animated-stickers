@@ -21,9 +21,29 @@ pub(in crate::gui) struct RemapInputs {
 }
 
 /// The remapped raster and its palette, produced together by the remap stage.
-pub(in crate::gui) type RemapOut = (Artifact<RgbImage>, Arc<Vec<[u8; 3]>>);
+pub(in crate::gui) type RemapOutput = (Artifact<RgbImage>, Arc<Vec<[u8; 3]>>);
 
-pub(super) fn compute_remap(k: &RemapInputs, _ctx: ()) -> RemapOut {
+pub(super) fn compute_remap(k: &RemapInputs, _ctx: ()) -> RemapOutput {
+    // A uniform layer's palette is its single color, and the remap is a copy of
+    // the mask painted in it. The regions stage segments straight from the mask
+    // here, so this raster only backs the Remap preview.
+    if let Some(color) = k.prep.uniform {
+        let (w, h) = k.prep.alpha.dimensions();
+        let mut solid = RgbImage::new(w, h);
+        {
+            let sr: &mut [u8] = &mut solid;
+
+            for (i, &a) in k.prep.alpha.as_raw().iter().enumerate() {
+                if a != 0 {
+                    sr[3 * i..3 * i + 3].copy_from_slice(&color);
+                }
+            }
+        }
+        let remap = Artifact::new_with(Arc::new(solid), |q, h| write_raster(h, q));
+
+        return (remap, Arc::new(vec![color]));
+    }
+
     let mut part = (*k.detect).clone();
     {
         part.merge_shades(&k.merge);

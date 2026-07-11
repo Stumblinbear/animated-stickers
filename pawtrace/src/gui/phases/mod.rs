@@ -30,7 +30,6 @@ pub enum SubView {
     Regions,
     Fates,
     Stack,
-    Contours,
     Fit,
     Simplify,
 }
@@ -44,7 +43,7 @@ impl SubView {
             }
             SubView::Flatten | SubView::Remap => Phase::Paint,
             SubView::Regions | SubView::Fates | SubView::Stack => Phase::Shapes,
-            SubView::Contours | SubView::Fit | SubView::Simplify => Phase::Curves,
+            SubView::Fit | SubView::Simplify => Phase::Curves,
         }
     }
 
@@ -60,7 +59,6 @@ impl SubView {
             SubView::Regions => "Regions",
             SubView::Fates => "Fates",
             SubView::Stack => "Stack",
-            SubView::Contours => "Contours",
             SubView::Fit => "Fit",
             SubView::Simplify => "Simplify",
         }
@@ -75,7 +73,6 @@ impl SubView {
             SubView::Palette | SubView::Remap => Some(Stage::Remap),
             SubView::Flatten => Some(Stage::Flatten),
             SubView::Regions => Some(Stage::Regions),
-            SubView::Contours => Some(Stage::Contours),
             SubView::Fit => Some(Stage::Fit),
             SubView::Simplify => Some(Stage::Simplify),
             SubView::Features | SubView::Merged | SubView::Fates | SubView::Stack => None,
@@ -92,7 +89,6 @@ pub enum Stage {
     Flatten,
     Remap,
     Regions,
-    Contours,
     Fit,
     Simplify,
 }
@@ -100,12 +96,11 @@ pub enum Stage {
 impl Stage {
     /// Every stage in pipeline order. The one canonical ordering: positions,
     /// counts, and [`PerStage`] indexing all derive from it.
-    pub const ALL: [Stage; 7] = [
+    pub const ALL: [Stage; 6] = [
         Stage::Source,
         Stage::Flatten,
         Stage::Remap,
         Stage::Regions,
-        Stage::Contours,
         Stage::Fit,
         Stage::Simplify,
     ];
@@ -122,7 +117,7 @@ impl Stage {
         match self {
             Stage::Source => 1.0,
             Stage::Flatten | Stage::Remap | Stage::Regions => scale as f32,
-            Stage::Contours | Stage::Fit | Stage::Simplify => 2.0,
+            Stage::Fit | Stage::Simplify => 2.0,
         }
     }
 
@@ -133,7 +128,6 @@ impl Stage {
             Stage::Flatten => stages.flat.as_ref(),
             Stage::Remap => stages.remap.as_ref(),
             Stage::Regions => stages.regions.as_ref(),
-            Stage::Contours => stages.contours.as_ref(),
             Stage::Fit => stages.render.as_ref(),
             Stage::Simplify => stages.simplified.as_ref(),
         }
