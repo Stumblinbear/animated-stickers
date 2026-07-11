@@ -6,7 +6,7 @@
 
 use super::cache::ShapeCache;
 use super::stages::{LayerStages, PlanCtx};
-use super::{DocStats, FullResult, LayerTrace, VectorLayer, VectorScene};
+use super::{layer_bboxes, DocStats, FullResult, LayerTrace, VectorLayer, VectorScene};
 use crate::config::Config;
 use crate::gui::doc::{Doc, Layer, LayerInputs, LayerOutputs};
 use crate::gui::ids::LayerId;
@@ -101,9 +101,15 @@ pub(super) fn render_full(
     let scene_layers: Vec<VectorLayer> = done
         .iter()
         .filter(|(i, _, _, _)| inputs[&layers[*i].id].visible)
-        .map(|(i, cfg, _, pre)| VectorLayer {
-            colors: Arc::new(output::place(pre, cfg.scale, doc_scale, layers[*i].offset)),
-            stroke: output::stroke_of(cfg),
+        .map(|(i, cfg, _, pre)| {
+            let placed = output::place(pre, cfg.scale, doc_scale, layers[*i].offset);
+            let bboxes = layer_bboxes(&placed);
+
+            VectorLayer {
+                colors: Arc::new(placed),
+                bboxes: Arc::new(bboxes),
+                stroke: output::stroke_of(cfg),
+            }
         })
         .collect();
 

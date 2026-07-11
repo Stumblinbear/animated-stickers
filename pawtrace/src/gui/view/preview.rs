@@ -2,24 +2,27 @@
 //! with drag-to-pan and cursor-anchored scroll-to-zoom. Pin presses are
 //! published in the shown view's image pixels; the pan/zoom gestures are
 //! resolved here and published as a viewport.
+//!
+//! Raster views (the stage images) draw through an iced [`canvas`]; the vector
+//! views draw the whole visible scene in one [`vello`](super::vector) GPU pass
+//! behind a [`shader`](iced::widget::shader) widget. The two share this module's
+//! gesture handling, so pan, zoom, and tool presses behave identically whichever
+//! is shown.
 
-use super::checkerboard::checkerboard;
+use super::checkerboard::Checkerboard;
+use super::vector::VectorPrimitive;
 use super::viewport::Viewport;
-use crate::color::Srgb;
 use crate::gui::app::App;
-use crate::gui::compute::{Art, ArtKey, VectorScene};
+use crate::gui::compute::Art;
 use crate::gui::msg::{CanvasMsg, Msg};
 use crate::gui::overlays::{self, OverlayCtx};
 use crate::gui::tools::Tool;
 use iced::advanced::image as core_image;
 use iced::mouse;
-use iced::widget::canvas::fill::Rule;
-use iced::widget::canvas::{
-    Action, Cache, Event, Fill, Frame, Geometry, Path, Program, Stroke, Style,
-};
+use iced::widget::canvas::{self, Frame, Geometry};
+use iced::widget::shader;
 use iced::widget::Stack;
-use iced::{Color, Element, Length, Point, Rectangle, Size, Vector};
-use std::cell::Cell;
+use iced::{Element, Length, Point, Rectangle, Size, Vector};
 
 const ZOOM_MIN: f32 = 0.05;
 const ZOOM_MAX: f32 = 32.0;
@@ -39,13 +42,24 @@ pub fn preview(app: &App) -> Element<'_, Msg> {
         doc_view: app.session().is_some_and(|s| s.is_doc_view()),
     };
 
-    let base = iced::widget::canvas(program)
+    // Vector views rasterize on the GPU behind a shader widget; raster views
+    // blit their image through a canvas. Both carry the same gestures.
+    let art: Element<'_, Msg> = if matches!(program.art, Some(Art::Vector(_))) {
+        shader(program).width(Length::Fill).height(Length::Fill).into()
+    } else {
+        iced::widget::canvas(program)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into()
+    };
+
+    let checker = iced::widget::canvas(Checkerboard)
         .width(Length::Fill)
         .height(Length::Fill);
 
     let ctx = OverlayCtx::from_app(app);
 
-    let mut stack = Stack::new().push(base);
+    let mut stack = Stack::new().push(checker).push(art);
 
     for overlay in overlays::ALL {
         if let Some(element) = overlay(&ctx) {
@@ -78,21 +92,6 @@ struct State {
     /// Screen position where a Select-tool left press began; a release near it
     /// is a click, farther away was a pan.
     press: Option<Point>,
-    /// The checkerboard and art, redrawn only when the viewport or image
-    /// changes so other widgets' animation frames don't re-tessellate them.
-    statics: Cache,
-    /// The inputs `statics` was last drawn for. A mismatch clears the cache.
-    statics_key: Cell<Option<StaticKey>>,
-}
-
-/// The viewport inputs that determine the cached static layers. When any
-/// differ from the last draw, the checkerboard and art are stale.
-#[derive(Clone, Copy, PartialEq)]
-struct StaticKey {
-    art: Option<ArtKey>,
-    zoom: Option<f32>,
-    pan: (f32, f32),
-    bounds: (f32, f32),
 }
 
 impl Preview<'_> {
@@ -111,7 +110,7 @@ impl Preview<'_> {
         press: Option<Point>,
         cursor: mouse::Cursor,
         bounds: Rectangle,
-    ) -> Option<Action<Msg>> {
+    ) -> Option<shader::Action<Msg>> {
         let press = press?;
         let released = cursor.position_in(bounds)?;
 
@@ -126,24 +125,26 @@ impl Preview<'_> {
         let vp = Viewport::resolve(bounds.size(), (cw, ch), self.zoom, self.pan);
         let doc_px = vp.to_image(released);
 
-        Some(Action::publish(Msg::Canvas(CanvasMsg::SelectAt(doc_px))))
+        Some(shader::Action::publish(Msg::Canvas(CanvasMsg::SelectAt(
+            doc_px,
+        ))))
     }
-}
 
-impl Program<Msg> for Preview<'_> {
-    type State = State;
-
-    fn update(
+    /// The shared pan/zoom/tool gesture handler. `canvas::Event` and
+    /// `shader::Event` are the same core event, and both programs publish the
+    /// same [`shader::Action`], so raster and vector previews resolve gestures
+    /// through this one path.
+    fn gesture(
         &self,
         state: &mut State,
-        event: &Event,
+        event: &canvas::Event,
         bounds: Rectangle,
         cursor: mouse::Cursor,
-    ) -> Option<Action<Msg>> {
+    ) -> Option<shader::Action<Msg>> {
         // A release outside the canvas still ends a drag; handling it before
         // the cursor-in-bounds gate keeps a pan from sticking to the cursor
         // when it re-enters with no button held.
-        if let Event::Mouse(mouse::Event::ButtonReleased(_)) = event {
+        if let canvas::Event::Mouse(mouse::Event::ButtonReleased(_)) = event {
             if state.panning || state.tool_active {
                 let was_tool = state.tool_active;
                 let press = state.press.take();
@@ -153,7 +154,7 @@ impl Program<Msg> for Preview<'_> {
                 state.last = None;
 
                 if was_tool {
-                    return Some(Action::publish(Msg::Canvas(CanvasMsg::ToolRelease)));
+                    return Some(shader::Action::publish(Msg::Canvas(CanvasMsg::ToolRelease)));
                 }
 
                 return self.click_on_release(press, cursor, bounds);
@@ -167,7 +168,7 @@ impl Program<Msg> for Preview<'_> {
         let to_img = |p: Point| vp.to_image(p);
 
         match event {
-            Event::Mouse(mouse::Event::ButtonPressed(button)) => {
+            canvas::Event::Mouse(mouse::Event::ButtonPressed(button)) => {
                 let mid = matches!(button, mouse::Button::Middle);
                 let left = matches!(button, mouse::Button::Left);
                 let captures = left && self.tool.captures_press();
@@ -180,7 +181,7 @@ impl Program<Msg> for Preview<'_> {
                     // never selects.
                     state.press = (left && !captures).then_some(pos);
 
-                    return Some(Action::capture());
+                    return Some(shader::Action::capture());
                 }
 
                 if captures {
@@ -190,13 +191,14 @@ impl Program<Msg> for Preview<'_> {
                         state.tool_active = true;
 
                         return Some(
-                            Action::publish(Msg::Canvas(CanvasMsg::ToolPress(ip))).and_capture(),
+                            shader::Action::publish(Msg::Canvas(CanvasMsg::ToolPress(ip)))
+                                .and_capture(),
                         );
                     }
                 }
                 None
             }
-            Event::Mouse(mouse::Event::CursorMoved { .. }) => {
+            canvas::Event::Mouse(mouse::Event::CursorMoved { .. }) => {
                 if state.panning {
                     let last = state.last?;
 
@@ -204,21 +206,21 @@ impl Program<Msg> for Preview<'_> {
 
                     let pan = self.pan + Vector::new(pos.x - last.x, pos.y - last.y);
 
-                    return Some(Action::publish(Msg::Canvas(CanvasMsg::SetViewport {
+                    return Some(shader::Action::publish(Msg::Canvas(CanvasMsg::SetViewport {
                         zoom,
                         pan,
                     })));
                 }
 
                 if state.tool_active {
-                    return Some(Action::publish(Msg::Canvas(CanvasMsg::ToolDrag(to_img(
-                        pos,
-                    )))));
+                    return Some(shader::Action::publish(Msg::Canvas(CanvasMsg::ToolDrag(
+                        to_img(pos),
+                    ))));
                 }
 
                 None
             }
-            Event::Mouse(mouse::Event::WheelScrolled { delta }) => {
+            canvas::Event::Mouse(mouse::Event::WheelScrolled { delta }) => {
                 let amount = match delta {
                     mouse::ScrollDelta::Lines { y, .. } => *y,
                     mouse::ScrollDelta::Pixels { y, .. } => *y / 40.0,
@@ -237,7 +239,7 @@ impl Program<Msg> for Preview<'_> {
                 let pan = Vector::new(pos.x - s.x, pos.y - s.y);
 
                 Some(
-                    Action::publish(Msg::Canvas(CanvasMsg::SetViewport {
+                    shader::Action::publish(Msg::Canvas(CanvasMsg::SetViewport {
                         zoom: new_zoom,
                         pan,
                     }))
@@ -248,68 +250,9 @@ impl Program<Msg> for Preview<'_> {
         }
     }
 
-    fn draw(
-        &self,
-        state: &State,
-        renderer: &iced::Renderer,
-        _theme: &iced::Theme,
-        bounds: Rectangle,
-        _cursor: mouse::Cursor,
-    ) -> Vec<Geometry> {
-        let key = StaticKey {
-            art: self.art.as_ref().map(Art::key),
-            zoom: self.zoom,
-            pan: (self.pan.x, self.pan.y),
-            bounds: (bounds.width, bounds.height),
-        };
-
-        if state.statics_key.get() != Some(key) {
-            state.statics.clear();
-            state.statics_key.set(Some(key));
-        }
-
-        let statics = state.statics.draw(renderer, bounds.size(), |frame| {
-            checkerboard(
-                frame,
-                Point::ORIGIN,
-                bounds.width,
-                bounds.height,
-                bounds.size(),
-            );
-
-            if let Some(art) = &self.art {
-                let dims = art.dims();
-                let vp = Viewport::resolve(bounds.size(), dims, self.zoom, self.pan);
-
-                match art {
-                    Art::Raster { img, factor } => {
-                        let disp = Rectangle::new(
-                            vp.origin,
-                            Size::new(dims.0 * vp.zoom, dims.1 * vp.zoom),
-                        );
-
-                        // The raster is denser than crop space by `factor`, so
-                        // its per-pixel screen size is the crop zoom over that.
-                        let filter = if vp.zoom / factor >= 3.0 {
-                            core_image::FilterMethod::Nearest
-                        } else {
-                            core_image::FilterMethod::Linear
-                        };
-
-                        frame.draw_image(
-                            disp,
-                            core_image::Image::new(img.handle.clone()).filter_method(filter),
-                        );
-                    }
-
-                    Art::Vector(scene) => draw_vector(frame, scene, &vp),
-                }
-            }
-        });
-        vec![statics]
-    }
-
-    fn mouse_interaction(
+    /// The cursor shown over the preview: a grabbing hand while panning, else
+    /// the active tool's cursor when the pointer is over the pane.
+    fn interaction(
         &self,
         state: &State,
         bounds: Rectangle,
@@ -323,135 +266,112 @@ impl Program<Msg> for Preview<'_> {
             mouse::Interaction::default()
         }
     }
-}
 
-/// Screen position of a supersample-space point: dividing by `scale` gives crop
-/// px, which `vp` maps to screen, baking the zoom into the coordinate.
-fn scene_to_screen(scale: u32, vp: &Viewport, (x, y): (f64, f64)) -> Point {
-    let s = scale as f32;
-    vp.to_screen(x as f32 / s, y as f32 / s)
-}
+    /// Draws the active raster image at the live viewport, or nothing when the
+    /// active view is not a raster (the vector views draw through the shader
+    /// widget) or has not rendered yet.
+    fn draw_raster(&self, renderer: &iced::Renderer, bounds: Rectangle) -> Vec<Geometry> {
+        let Some(Art::Raster { img, factor }) = &self.art else {
+            return Vec::new();
+        };
 
-/// Fills each color run of `scene` under the nonzero rule, bottom layer first,
-/// stroking runs whose layer carries a stroke over their own fill so a later
-/// run covers an earlier run's stroke exactly as the SVG export paints them.
-fn draw_vector(frame: &mut Frame, scene: &VectorScene, vp: &Viewport) {
-    let pt = |p: (f64, f64)| scene_to_screen(scene.scale, vp, p);
+        let dims = self.art.as_ref().map(Art::dims).unwrap_or((1.0, 1.0));
+        let live = Viewport::resolve(bounds.size(), dims, self.zoom, self.pan);
+        let zoom = live.zoom;
 
-    for layer in &scene.layers {
-        // A source-px stroke width scales with the crop-space zoom to stay a
-        // fixed source-px width on screen.
-        let stroke = layer
-            .stroke
-            .as_ref()
-            .and_then(|st| Some((Srgb::from_hex(&st.hex)?, st.width * vp.zoom)));
+        // One frame sized to the pane clips anything past the edge so the art
+        // never bleeds over adjacent panes.
+        let mut frame = Frame::new(renderer, bounds.size());
+        let disp = Rectangle::new(live.origin, Size::new(dims.0 * zoom, dims.1 * zoom));
 
-        for (hex, paths) in layer.colors.iter() {
-            let path = Path::new(|b| {
-                for p in paths {
-                    b.move_to(pt(p.start));
-                    for &(c1, c2, end) in &p.cubics {
-                        b.bezier_curve_to(pt(c1), pt(c2), pt(end));
-                    }
-                    b.close();
-                }
-            });
+        // The raster is denser than crop space by `factor`, so its per-pixel
+        // screen size is the crop zoom over that.
+        let filter = if zoom / factor >= 3.0 {
+            core_image::FilterMethod::Nearest
+        } else {
+            core_image::FilterMethod::Linear
+        };
 
-            if let Some(fill) = Srgb::from_hex(hex) {
-                frame.fill(
-                    &path,
-                    Fill {
-                        style: Style::Solid(to_color(fill)),
-                        rule: Rule::NonZero,
-                    },
-                );
-            }
-
-            if let Some((color, width)) = stroke {
-                frame.stroke(
-                    &path,
-                    Stroke::default()
-                        .with_color(to_color(color))
-                        .with_width(width),
-                );
-            }
-        }
-    }
-}
-
-fn to_color(c: Srgb) -> Color {
-    Color::from_rgb8(c.r(), c.g(), c.b())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::gui::compute::{LayerTrace, VectorLayer};
-    use std::sync::Arc;
-
-    fn vp() -> Viewport {
-        // An explicit zoom keeps the transform independent of canvas bounds.
-        Viewport::resolve(
-            Size::new(100.0, 100.0),
-            (10.0, 10.0),
-            Some(4.0),
-            Vector::ZERO,
-        )
-    }
-
-    // A supersample coordinate is divided by the scale to reach crop px, then
-    // placed by the same viewport the anchors overlay uses, so a filled path and
-    // its anchor dots land on identical screen points.
-    #[test]
-    fn scene_point_divides_by_scale_then_places() {
-        let vp = vp();
-        let scale = 5;
-
-        // (20, 35) at scale 5 is crop px (4, 7).
-        assert_eq!(
-            scene_to_screen(scale, &vp, (20.0, 35.0)),
-            vp.to_screen(4.0, 7.0)
+        frame.draw_image(
+            disp,
+            core_image::Image::new(img.handle.clone()).filter_method(filter),
         );
 
-        // The origin maps to the art's screen origin.
-        assert_eq!(scene_to_screen(scale, &vp, (0.0, 0.0)), vp.origin);
+        vec![frame.into_geometry()]
+    }
+}
+
+impl canvas::Program<Msg> for Preview<'_> {
+    type State = State;
+
+    fn update(
+        &self,
+        state: &mut State,
+        event: &canvas::Event,
+        bounds: Rectangle,
+        cursor: mouse::Cursor,
+    ) -> Option<canvas::Action<Msg>> {
+        self.gesture(state, event, bounds, cursor)
     }
 
-    fn scene(colors: Arc<LayerTrace>) -> VectorScene {
-        VectorScene {
-            dims: (10, 10),
-            scale: 5,
-            layers: vec![VectorLayer {
-                colors,
-                stroke: None,
-            }],
-        }
+    fn draw(
+        &self,
+        _state: &State,
+        renderer: &iced::Renderer,
+        _theme: &iced::Theme,
+        bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Vec<Geometry> {
+        self.draw_raster(renderer, bounds)
     }
 
-    // The geometry cache keys on art content: the same trace `Arc` keeps the key
-    // fixed (so an unrelated animation frame reuses the tessellation), a new
-    // trace `Arc` moves it, and a stroke change moves it even on the same trace.
-    #[test]
-    fn vector_art_key_tracks_content_not_frames() {
-        let trace: Arc<LayerTrace> = Arc::new(vec![]);
-        let a = Art::Vector(scene(trace.clone()));
-        let b = Art::Vector(scene(trace.clone()));
-        assert_eq!(a.key(), b.key(), "same trace Arc keeps the cache key");
+    fn mouse_interaction(
+        &self,
+        state: &State,
+        bounds: Rectangle,
+        cursor: mouse::Cursor,
+    ) -> mouse::Interaction {
+        self.interaction(state, bounds, cursor)
+    }
+}
 
-        let c = Art::Vector(scene(Arc::new(vec![])));
-        assert_ne!(a.key(), c.key(), "a fresh trace Arc moves the key");
+impl shader::Program<Msg> for Preview<'_> {
+    type State = State;
+    type Primitive = VectorPrimitive;
 
-        let stroked = Art::Vector(VectorScene {
-            dims: (10, 10),
-            scale: 5,
-            layers: vec![VectorLayer {
-                colors: trace,
-                stroke: Some(crate::output::Stroke {
-                    hex: "#ffffff".into(),
-                    width: 4.0,
-                }),
-            }],
-        });
-        assert_ne!(a.key(), stroked.key(), "adding a stroke moves the key");
+    fn update(
+        &self,
+        state: &mut State,
+        event: &iced::Event,
+        bounds: Rectangle,
+        cursor: mouse::Cursor,
+    ) -> Option<shader::Action<Msg>> {
+        self.gesture(state, event, bounds, cursor)
+    }
+
+    fn draw(&self, _state: &State, _cursor: mouse::Cursor, bounds: Rectangle) -> VectorPrimitive {
+        // The live viewport places the art at its centered, panned position and
+        // resolves the concrete zoom; the primitive derives the physical
+        // transform from this and the render viewport's scale factor.
+        let dims = self.art.as_ref().map(Art::dims).unwrap_or((1.0, 1.0));
+        let live = Viewport::resolve(bounds.size(), dims, self.zoom, self.pan);
+
+        let scene = match &self.art {
+            Some(Art::Vector(scene)) => scene.clone(),
+            // preview() only wraps a vector view in the shader widget, so this
+            // is unreachable; an empty scene renders transparent if it is hit.
+            _ => crate::gui::compute::VectorScene::empty(),
+        };
+
+        VectorPrimitive::new(scene, (live.origin.x, live.origin.y), live.zoom)
+    }
+
+    fn mouse_interaction(
+        &self,
+        state: &State,
+        bounds: Rectangle,
+        cursor: mouse::Cursor,
+    ) -> mouse::Interaction {
+        self.interaction(state, bounds, cursor)
     }
 }

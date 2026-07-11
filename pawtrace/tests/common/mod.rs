@@ -11,12 +11,12 @@
 #![allow(dead_code)]
 
 mod font;
+mod vello_render;
 
 use std::path::{Path, PathBuf};
 
 use image::{GrayImage, RgbImage, Rgba, RgbaImage};
 use rayon::prelude::*;
-use resvg::{tiny_skia, usvg};
 use serde::Deserialize;
 
 use pawtrace::color::Srgb;
@@ -233,25 +233,15 @@ pub fn render(doc: &Document) -> RgbaImage {
 }
 
 fn rasterize(w: u32, h: u32, scale: u32, layers: &[SvgLayer]) -> RgbaImage {
-    let svg = output::svg(w, h, scale, 0.0, layers);
-    let tree = usvg::Tree::from_data(svg.as_bytes(), &usvg::Options::default()).unwrap();
-    let mut pix = tiny_skia::Pixmap::new(w, h).unwrap();
-    resvg::render(&tree, tiny_skia::Transform::identity(), &mut pix.as_mut());
-    RgbaImage::from_raw(w, h, pix.take()).unwrap()
+    vello_render::rasterize(w, h, scale, layers)
 }
 
-/// Like [`rasterize`] but renders into a `scale`x larger pixmap, so vector
-/// output lands at the same supersampled density as the flat/quant/region
-/// rasters instead of at the 1x crop size. `w`/`h` are the unscaled crop size
-/// and `scale` the supersample the paths were built in.
+/// Like [`rasterize`] but renders at the `scale`x supersampled density, so
+/// vector output lands at the same density as the flat/quant/region rasters
+/// instead of at the 1x crop size. `w`/`h` are the unscaled crop size and
+/// `scale` the supersample the paths were built in.
 fn rasterize_scaled(w: u32, h: u32, scale: u32, layers: &[SvgLayer]) -> RgbaImage {
-    let svg = output::svg(w, h, scale, 0.0, layers);
-    let tree = usvg::Tree::from_data(svg.as_bytes(), &usvg::Options::default()).unwrap();
-    let (sw, sh) = (w * scale, h * scale);
-    let mut pix = tiny_skia::Pixmap::new(sw, sh).unwrap();
-    let t = tiny_skia::Transform::from_scale(scale as f32, scale as f32);
-    resvg::render(&tree, t, &mut pix.as_mut());
-    RgbaImage::from_raw(sw, sh, pix.take()).unwrap()
+    vello_render::rasterize_scaled(w, h, scale, layers)
 }
 
 /// Total traced path count and anchor count over a document. A closed cubic

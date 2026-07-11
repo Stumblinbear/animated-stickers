@@ -1,5 +1,6 @@
 //! Simplify stage: the final trace (the fit trace when simplify is off).
 
+use super::super::layer_bboxes;
 use super::{FitInputs, TraceOutput};
 use crate::pipeline::{self, SimplifyParams};
 use std::sync::Arc;
@@ -20,8 +21,12 @@ pub(super) fn compute_simplify(k: &SimplifyInputs, fit: TraceOutput) -> TraceOut
         return fit;
     }
 
+    let trace = pipeline::simplify_paths((*fit.trace).clone(), &k.params);
+    let bboxes = layer_bboxes(&trace);
+
     TraceOutput {
-        trace: Arc::new(pipeline::simplify_paths((*fit.trace).clone(), &k.params)),
+        trace: Arc::new(trace),
+        bboxes: Arc::new(bboxes),
         scale: fit.scale,
     }
 }

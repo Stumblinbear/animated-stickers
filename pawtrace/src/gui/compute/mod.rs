@@ -16,7 +16,6 @@ use crate::pipeline::Shape;
 use crate::raster::Prepared;
 use crate::regions::{self, MergePlan, Region};
 pub(in crate::gui) use artifact::Artifact;
-use iced::advanced::image as core_image;
 use iced::widget::image as iced_image;
 use iced::Task;
 use image::RgbaImage;
@@ -55,35 +54,78 @@ pub(super) struct VectorScene {
     pub(super) layers: Vec<VectorLayer>,
 }
 
-/// One layer of a [`VectorScene`]: its color runs and the optional centered
-/// stroke drawn on every run, matching the SVG export.
+/// One layer of a [`VectorScene`]: its color runs, the per-path culling boxes
+/// aligned with those runs, and the optional centered stroke drawn on every
+/// run, matching the SVG export.
 #[derive(Debug, Clone)]
 pub(super) struct VectorLayer {
     pub(super) colors: Arc<LayerTrace>,
+    /// Per-path bounding boxes grouped exactly like `colors`, so `bboxes[r][p]`
+    /// bounds `colors[r].1[p]`. Derived from `colors` at production, cloned as
+    /// an `Arc` alongside it.
+    pub(super) bboxes: Arc<LayerBboxes>,
     pub(super) stroke: Option<crate::output::Stroke>,
 }
 
+/// An axis-aligned bounding box in a trace's supersample coordinate space (a
+/// path coordinate before the `/scale` to crop px). Conservative: taken over
+/// each path's start point and every cubic control point, so it contains the
+/// curve without evaluating it.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct Bbox {
+    pub(super) min: (f64, f64),
+    pub(super) max: (f64, f64),
+}
+
+impl Bbox {
+    /// Whether this box overlaps the axis-aligned rect `[lo, hi]`, touching
+    /// edges included. Used to cull paths against the visible viewport.
+    pub(super) fn overlaps(&self, lo: (f64, f64), hi: (f64, f64)) -> bool {
+        self.max.0 >= lo.0 && self.min.0 <= hi.0 && self.max.1 >= lo.1 && self.min.1 <= hi.1
+    }
+}
+
+/// Per-path bounding boxes for one layer's trace, grouped like the trace's
+/// color runs.
+pub(super) type LayerBboxes = Vec<Vec<Bbox>>;
+
+/// The conservative box of one path: the hull of its start point and every
+/// cubic control point.
+fn path_bbox(p: &crate::trace::TracedPath) -> Bbox {
+    let mut min = p.start;
+    let mut max = p.start;
+    let mut fold = |(x, y): (f64, f64)| {
+        min.0 = min.0.min(x);
+        min.1 = min.1.min(y);
+        max.0 = max.0.max(x);
+        max.1 = max.1.max(y);
+    };
+    for &(c1, c2, end) in &p.cubics {
+        fold(c1);
+        fold(c2);
+        fold(end);
+    }
+    Bbox { min, max }
+}
+
+/// The per-path culling boxes for `trace`, grouped like its color runs so
+/// `result[r][p]` bounds `trace[r].1[p]`.
+pub(super) fn layer_bboxes(trace: &LayerTrace) -> LayerBboxes {
+    trace
+        .iter()
+        .map(|(_, paths)| paths.iter().map(path_bbox).collect())
+        .collect()
+}
+
 impl VectorScene {
-    /// A content stamp folding each run's `Arc` identity, the stroke, and the
-    /// placement scale and size. A recompute moves the `Arc` pointer, so this
-    /// shifts on a content change without hashing the path data.
-    fn stamp(&self) -> u64 {
-        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-        let mut mix = |v: u64| {
-            h ^= v;
-            h = h.wrapping_mul(0x0000_0100_0000_01b3);
-        };
-        mix(self.scale as u64);
-        mix(self.dims.0 as u64);
-        mix(self.dims.1 as u64);
-        for l in &self.layers {
-            mix(Arc::as_ptr(&l.colors) as u64);
-            if let Some(st) = &l.stroke {
-                mix(st.width.to_bits() as u64);
-                st.hex.bytes().for_each(|b| mix(b as u64));
-            }
+    /// An empty scene that renders nothing, for the moment before an active
+    /// vector view has produced content.
+    pub(super) fn empty() -> Self {
+        Self {
+            dims: (1, 1),
+            scale: 1,
+            layers: Vec::new(),
         }
-        h
     }
 }
 
@@ -96,14 +138,6 @@ pub(super) enum Art<'a> {
     Vector(VectorScene),
 }
 
-/// The identity of an [`Art`]'s content for the preview's geometry cache: the
-/// raster's image handle, or a vector content stamp.
-#[derive(Clone, Copy, PartialEq, Debug)]
-pub(super) enum ArtKey {
-    Raster(core_image::Id),
-    Vector(u64),
-}
-
 impl Art<'_> {
     /// The crop-space dimensions the art fills, the size the viewport places it
     /// against.
@@ -111,15 +145,6 @@ impl Art<'_> {
         match self {
             Art::Raster { img, factor } => (img.size.0 as f32 / factor, img.size.1 as f32 / factor),
             Art::Vector(s) => (s.dims.0 as f32, s.dims.1 as f32),
-        }
-    }
-
-    /// This art's cache identity, unchanged frame to frame unless the drawn
-    /// content changes.
-    pub(super) fn key(&self) -> ArtKey {
-        match self {
-            Art::Raster { img, .. } => ArtKey::Raster(img.handle.id()),
-            Art::Vector(s) => ArtKey::Vector(s.stamp()),
         }
     }
 }

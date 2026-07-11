@@ -17,10 +17,13 @@ fast_image_resize = "5"
 # Tracing backend — pure Rust (vtracer's engine). VERIFY exact API against docs.rs.
 visioncortex = "0.8"
 lru = "0.12"
-resvg = "0.45"
 getrandom = "0.3"
 rustc-hash = "2"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
+# Pinned to 0.7 deliberately: it shares wgpu 27 with iced 0.14, so vello renders
+# into iced's own wgpu device (see gui::view::vector). Later vello majors pull a
+# newer wgpu that cannot share iced's context.
+vello = "0.7"
 
 [dependencies.iced]
 version = "0.14"
@@ -37,9 +40,10 @@ version = "0.15"
 [dependencies.iced_test]
 version = "0.14"
 
-# vecspike example only: direct fill tessellation timing, matching iced's lyon.
-[dev-dependencies.lyon]
-version = "1.0"
+# pollster drives vello's async headless device setup in the golden harness
+# (tests/common/vello_render.rs); no library/binary code uses it.
+[dev-dependencies]
+pollster = "0.4"
 
 # The full trace + rasterize pipeline is unusably slow at opt-level 0, so
 # optimize the crate under test and its dependencies for `cargo test`.
@@ -47,4 +51,7 @@ version = "1.0"
 opt-level = 2
 
 [profile.test.package."*"]
+opt-level = 2
+
+[profile.dev.package."*"]
 opt-level = 2

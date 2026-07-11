@@ -17,6 +17,7 @@ mod status_bar;
 mod strip;
 mod tabs;
 pub mod theme;
+mod vector;
 mod tool_rail;
 pub(in crate::gui) mod viewport;
 mod welcome;

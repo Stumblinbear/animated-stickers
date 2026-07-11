@@ -723,6 +723,7 @@ impl App {
             scale: out.scale,
             layers: vec![VectorLayer {
                 colors: out.trace,
+                bboxes: out.bboxes,
                 stroke: crate::output::stroke_of(&sess.cfg),
             }],
         })

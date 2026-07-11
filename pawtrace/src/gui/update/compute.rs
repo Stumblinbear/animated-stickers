@@ -191,6 +191,7 @@ mod tests {
         };
         let out = TraceOutput {
             trace: Arc::new(Vec::new()),
+            bboxes: Arc::new(Vec::new()),
             scale,
         };
         StagePart::Fit(key, out)

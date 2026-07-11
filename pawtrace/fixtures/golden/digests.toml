@@ -265,11 +265,11 @@ fit = "1ad49499f3057da3"
 output = "2942b9c9e680fd1a"
 
 [seff_deer_b.020]
-quant = "eea097daa06c0e40"
-region_count = 37
-regions = "79684337d1e3ac58"
-fit = "c12d3c860badff24"
-output = "216ea37502e78e6a"
+quant = "86a5feaf615bbfc1"
+region_count = 41
+regions = "803ff1472730f050"
+fit = "c61ee806de70f88d"
+output = "ef71456f007c6af1"
 
 [seff_deer_b.021]
 quant = "6f8323f6f3ffa7f1"

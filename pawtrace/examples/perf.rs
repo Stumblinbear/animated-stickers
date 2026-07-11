@@ -1,8 +1,8 @@
 //! Per-stage wall-time harness over the fixture PSDs: runs the full pipeline
-//! per layer exactly as `pipeline::run` does (stages timed individually),
-//! plus the document SVG rasterization the GUI preview uses.
+//! per layer exactly as `pipeline::run` does (stages timed individually), plus
+//! the document SVG serialization the CLI export emits.
 //!
-//! Run: `cargo run --release --example perf --features preview`
+//! Run: `cargo run --release --example perf`
 
 use std::path::Path;
 use std::time::Instant;
@@ -27,7 +27,6 @@ const STAGES: &[&str] = &[
     "shapes + trace + fit",
     "simplify",
     "svg string",
-    "svg render (usvg+resvg)",
 ];
 
 #[derive(Default, Clone)]
@@ -201,19 +200,7 @@ fn main() {
             let t = Instant::now();
             let svg = output::svg(w, h, doc_scale, 0.0, &svg_layers);
             times.add(8, t);
-
-            let t = Instant::now();
-            let tree =
-                resvg::usvg::Tree::from_data(svg.as_bytes(), &resvg::usvg::Options::default())
-                    .unwrap();
-            let mut pix = resvg::tiny_skia::Pixmap::new(w, h).unwrap();
-            resvg::render(
-                &tree,
-                resvg::tiny_skia::Transform::identity(),
-                &mut pix.as_mut(),
-            );
-            times.add(9, t);
-            std::hint::black_box(&pix);
+            std::hint::black_box(&svg);
 
             // Iteration 0 is warmup (page faults, pool spin-up); keep the
             // fastest of the rest as the least-noisy estimate.

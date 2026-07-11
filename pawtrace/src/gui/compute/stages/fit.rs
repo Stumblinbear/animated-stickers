@@ -8,7 +8,7 @@
 use crate::color::Srgb;
 use super::super::artifact::Artifact;
 use super::super::cache::ShapeCache;
-use super::super::LayerTrace;
+use super::super::{layer_bboxes, LayerBboxes, LayerTrace};
 use crate::pipeline::{self, Shape};
 use crate::trace::{self, ContourParams, FitParams, SmoothedContour, TracedPath};
 use rayon::prelude::*;
@@ -44,6 +44,10 @@ pub(in crate::gui) struct FitInputs {
 #[derive(Clone, Debug)]
 pub(in crate::gui) struct TraceOutput {
     pub trace: Arc<LayerTrace>,
+    /// Per-path culling boxes for `trace`, in its supersample space, grouped to
+    /// match `trace` run for run. A consumer pairing them reads both from the
+    /// same output so the grouping lines up.
+    pub bboxes: Arc<LayerBboxes>,
     pub scale: u32,
 }
 
@@ -58,8 +62,12 @@ pub(super) fn compute_fit(k: &FitInputs, cache: ShapeCache) -> TraceOutput {
         })
         .collect();
 
+    let trace = fit_contours(&cache, &contours, &k.fit);
+    let bboxes = layer_bboxes(&trace);
+
     TraceOutput {
-        trace: Arc::new(fit_contours(&cache, &contours, &k.fit)),
+        trace: Arc::new(trace),
+        bboxes: Arc::new(bboxes),
         scale: k.contour.scale,
     }
 }
