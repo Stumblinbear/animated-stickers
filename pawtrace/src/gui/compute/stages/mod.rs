@@ -41,8 +41,8 @@ use simplify::compute_simplify;
 use super::artifact::Artifact;
 use super::cache::ShapeCache;
 use super::memo::Memo;
-use super::render::{masked, render_svg, rgba_img};
-use super::{Img, LayerTrace, Shown, StagePart};
+use super::render::{masked, rgba_img};
+use super::{LayerTrace, Shown, StagePart};
 use crate::config::Config;
 use crate::gui::ids::{DocId, LayerId};
 use crate::gui::msg::{ComputeMsg, Msg};
@@ -52,7 +52,7 @@ use crate::pipeline::Shape;
 use crate::raster::Prepared;
 use crate::regions::{MergePlan, Region};
 use crate::trace::{ContourParams, FitParams};
-use crate::{output, palette, pipeline};
+use crate::{palette, pipeline};
 use iced::Task;
 use image::RgbaImage;
 use std::sync::Arc;
@@ -84,8 +84,6 @@ pub(super) struct StageJob {
     pub cfg: Config,
     /// The selected layer's speckle-floor exemption points, document source px.
     pub pins: Vec<[u32; 2]>,
-    pub stroke_bits: u32,
-    pub stroke_color: crate::color::Srgb,
     /// The keys and inputs the currently shown images reflect, or `None` when
     /// nothing is shown for this layer yet.
     pub shown: Option<Shown>,
@@ -114,6 +112,7 @@ pub(super) fn stream(job: StageJob) -> Task<Msg> {
         0,
         move |mut tx: iced::futures::channel::mpsc::Sender<Msg>| async move {
             use iced::futures::SinkExt;
+
             let StageJob {
                 doc,
                 generation,
@@ -123,8 +122,6 @@ pub(super) fn stream(job: StageJob) -> Task<Msg> {
                 doc_dim,
                 cfg,
                 pins,
-                stroke_bits,
-                stroke_color,
                 shown,
                 mut slots,
                 shape_cache,
@@ -144,9 +141,6 @@ pub(super) fn stream(job: StageJob) -> Task<Msg> {
                 };
             }
 
-            let stroke_same = shown
-                .as_ref()
-                .is_some_and(|s| s.stroke_bits == stroke_bits && s.stroke_color == stroke_color);
             let (w, h) = img.dimensions();
 
             // Source: the raw layer raster, unchanged unless nothing was shown.
@@ -235,26 +229,14 @@ pub(super) fn stream(job: StageJob) -> Task<Msg> {
             };
             let shapes = slots.shapes.get_or(shapes_key, (), compute_shapes);
 
-            let pad = cfg.stroke_width * cfg.scale as f32 / 2.0;
-            let stroke = output::stroke_of(&cfg);
-            let render_paths = |colors: &LayerTrace| -> (Option<Img>, usize) {
-                let anchors = colors
+            // The fit and simplify views draw the trace as vectors from the
+            // memo, so the worker ships only each trace's anchor count.
+            let anchor_count = |colors: &LayerTrace| -> usize {
+                colors
                     .iter()
                     .flat_map(|(_, ps)| ps.iter())
                     .map(|p| p.cubics.len())
-                    .sum();
-                let svg = output::svg(
-                    w,
-                    h,
-                    cfg.scale,
-                    pad,
-                    &[output::SvgLayer {
-                        name: "layer",
-                        stroke: stroke.as_ref(),
-                        colors,
-                    }],
-                );
-                (render_svg(&svg, w * 2, h * 2), anchors)
+                    .sum()
             };
 
             // Fit: the boundary walk and the cubic fit, keyed on the shapes
@@ -265,11 +247,8 @@ pub(super) fn stream(job: StageJob) -> Task<Msg> {
                 fit: FitParams::of(&cfg),
             };
             let fit = slots.fit.get_or(fit_key.clone(), shape_cache, compute_fit);
-            let fit_stale =
-                !stroke_same || stale(shown.as_ref().and_then(|s| s.fit.as_ref()), &fit_key);
-            if fit_stale {
-                let (im, an) = render_paths(&fit.trace);
-                emit!(StagePart::Fit(im, an));
+            if stale(shown.as_ref().and_then(|s| s.fit.as_ref()), &fit_key) {
+                emit!(StagePart::Fit(anchor_count(&fit.trace)));
             } else {
                 emit!(StagePart::Unchanged(Stage::Fit));
             }
@@ -279,12 +258,11 @@ pub(super) fn stream(job: StageJob) -> Task<Msg> {
                 fit: fit_key.clone(),
                 params: crate::pipeline::SimplifyParams::of(&cfg),
             };
-            let simpl = slots.simplify.get_or(simp_key.clone(), fit, compute_simplify);
-            let simp_stale =
-                !stroke_same || stale(shown.as_ref().and_then(|s| s.simplify.as_ref()), &simp_key);
-            if simp_stale {
-                let (im, an) = render_paths(&simpl.trace);
-                emit!(StagePart::Simplify(im, an));
+            let simpl = slots
+                .simplify
+                .get_or(simp_key.clone(), fit, compute_simplify);
+            if stale(shown.as_ref().and_then(|s| s.simplify.as_ref()), &simp_key) {
+                emit!(StagePart::Simplify(anchor_count(&simpl.trace)));
             } else {
                 emit!(StagePart::Unchanged(Stage::Simplify));
             }
@@ -293,8 +271,6 @@ pub(super) fn stream(job: StageJob) -> Task<Msg> {
                 layer,
                 cfg,
                 pins,
-                stroke_bits,
-                stroke_color,
                 prep: Some(prep_key),
                 remap: Some(remap_key),
                 regions: Some(regions_key),

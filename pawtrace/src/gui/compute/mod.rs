@@ -13,9 +13,11 @@ mod stages;
 use crate::color::Srgb;
 use super::app::App;
 use crate::regions;
+use iced::advanced::image as core_image;
 use iced::widget::image as iced_image;
 use iced::Task;
 use image::RgbaImage;
+use std::sync::Arc;
 
 pub(in crate::gui) use cache::DocStages;
 pub(super) use full::export_doc;
@@ -34,6 +36,88 @@ pub struct Img {
 /// One layer's traced colors: color hex -> paths, in bottom-first paint order.
 pub(super) type LayerTrace = crate::output::LayerColors;
 
+/// A drawable vector view: bottom-first color-run layers in a supersample
+/// coordinate space, and the crop-space size they fill. Dividing a path
+/// coordinate by `scale` places it in the `dims`-sized crop-space rectangle the
+/// viewport maps to screen.
+#[derive(Debug, Clone)]
+pub(super) struct VectorScene {
+    pub(super) dims: (u32, u32),
+    pub(super) scale: u32,
+    pub(super) layers: Vec<VectorLayer>,
+}
+
+/// One layer of a [`VectorScene`]: its color runs and the optional centered
+/// stroke drawn on every run, matching the SVG export.
+#[derive(Debug, Clone)]
+pub(super) struct VectorLayer {
+    pub(super) colors: Arc<LayerTrace>,
+    pub(super) stroke: Option<crate::output::Stroke>,
+}
+
+impl VectorScene {
+    /// A content stamp folding each run's `Arc` identity, the stroke, and the
+    /// placement scale and size. A recompute moves the `Arc` pointer, so this
+    /// shifts on a content change without hashing the path data.
+    fn stamp(&self) -> u64 {
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        let mut mix = |v: u64| {
+            h ^= v;
+            h = h.wrapping_mul(0x0000_0100_0000_01b3);
+        };
+        mix(self.scale as u64);
+        mix(self.dims.0 as u64);
+        mix(self.dims.1 as u64);
+        for l in &self.layers {
+            mix(Arc::as_ptr(&l.colors) as u64);
+            if let Some(st) = &l.stroke {
+                mix(st.width.to_bits() as u64);
+                st.hex.bytes().for_each(|b| mix(b as u64));
+            }
+        }
+        h
+    }
+}
+
+/// What the preview paints for the active view: raster pixels for the genuine
+/// image stages, or vector color runs for the trace-backed views. Both resolve
+/// to the same crop-space rectangle, so pan, zoom, and the overlays align
+/// regardless of which the active view draws.
+pub(super) enum Art<'a> {
+    Raster { img: &'a Img, factor: f32 },
+    Vector(VectorScene),
+}
+
+/// The identity of an [`Art`]'s content for the preview's geometry cache: the
+/// raster's image handle, or a vector content stamp.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(super) enum ArtKey {
+    Raster(core_image::Id),
+    Vector(u64),
+}
+
+impl Art<'_> {
+    /// The crop-space dimensions the art fills, the size the viewport places it
+    /// against.
+    pub(super) fn dims(&self) -> (f32, f32) {
+        match self {
+            Art::Raster { img, factor } => {
+                (img.size.0 as f32 / factor, img.size.1 as f32 / factor)
+            }
+            Art::Vector(s) => (s.dims.0 as f32, s.dims.1 as f32),
+        }
+    }
+
+    /// This art's cache identity, unchanged frame to frame unless the drawn
+    /// content changes.
+    pub(super) fn key(&self) -> ArtKey {
+        match self {
+            Art::Raster { img, .. } => ArtKey::Raster(img.handle.id()),
+            Art::Vector(s) => ArtKey::Vector(s.stamp()),
+        }
+    }
+}
+
 /// The layer, inputs, and per-stage keys the current stage images reflect, so
 /// the next spawn can tell whether the strip changed at all (the `cfg`/`pins`
 /// compare) and, when it did, which stage images went stale (the per-stage key
@@ -43,8 +127,6 @@ pub(super) struct Shown {
     pub(super) layer: super::ids::LayerId,
     pub(super) cfg: crate::config::Config,
     pub(super) pins: Vec<[u32; 2]>,
-    pub(super) stroke_bits: u32,
-    pub(super) stroke_color: crate::color::Srgb,
     /// Per-display-stage keys the shown images were built under. `None` for a
     /// stage never yet shown (the very first run for this layer), which reads as
     /// stale so the worker draws it.
@@ -64,15 +146,11 @@ impl Shown {
         layer: super::ids::LayerId,
         cfg: crate::config::Config,
         pins: Vec<[u32; 2]>,
-        stroke_bits: u32,
-        stroke_color: crate::color::Srgb,
     ) -> Self {
         Shown {
             layer,
             cfg,
             pins,
-            stroke_bits,
-            stroke_color,
             prep: None,
             remap: None,
             regions: None,
@@ -99,10 +177,6 @@ pub(super) struct StageImages {
     /// Per-region trace fates and floor for the regions hover readout,
     /// aligned with the cached regions.
     pub(super) region_report: Option<regions::RegionReport>,
-    /// Fitted render, pre-simplification.
-    pub(super) render: Option<Img>,
-    /// Final render, after the simplify pass.
-    pub(super) simplified: Option<Img>,
     pub(super) palette: Vec<Srgb>,
     pub(super) region_count: usize,
     pub(super) anchor_count: usize,
@@ -117,19 +191,12 @@ pub struct DocStats {
     pub anchors: usize,
 }
 
-/// A failed full render, holding the human-readable message. The staged chain
-/// does not fail, so the only failure is the final composite render.
-#[derive(Debug, Clone)]
-pub struct FullError {
-    pub msg: String,
-}
-
-/// Full-preview result: the composite image, totals, per-layer derived render
-/// outputs keyed by layer id, and each recomputed layer's filled stage slots to
-/// reinstall in the cache.
+/// Full-preview result: the composite vector scene, totals, per-layer derived
+/// render outputs keyed by layer id, and each recomputed layer's filled stage
+/// slots to reinstall in the cache.
 #[derive(Debug, Clone)]
 pub struct FullResult {
-    pub(super) img: Img,
+    pub(super) scene: VectorScene,
     pub(super) stats: DocStats,
     pub(super) outputs: rustc_hash::FxHashMap<super::ids::LayerId, super::doc::LayerOutputs>,
     pub(super) stages: rustc_hash::FxHashMap<super::ids::LayerId, LayerStages>,
@@ -149,10 +216,10 @@ pub enum StagePart {
     /// The fate tint (`None` when every region survives) and the region report,
     /// emitted whenever the merge plan changes, including on a pin edit.
     Fates(Option<Img>, regions::RegionReport),
-    /// Fitted render and its anchor count.
-    Fit(Option<Img>, usize),
-    /// Simplified render and its anchor count.
-    Simplify(Option<Img>, usize),
+    /// The fitted trace's anchor count; the fit view itself draws as vectors.
+    Fit(usize),
+    /// The simplified trace's anchor count; the simplify view draws as vectors.
+    Simplify(usize),
     /// A display stage whose inputs matched the shown ones: no redraw, just
     /// clear the pending flag.
     Unchanged(Stage),
@@ -195,8 +262,6 @@ impl App {
             .map(|i| i.pins.clone())
             .unwrap_or_default();
 
-        let stroke_bits = cfg.stroke_width.to_bits();
-        let stroke_color = cfg.stroke_color;
         let doc_dim = doc.size.0.max(doc.size.1);
 
         let shown = doc.session.preview.shown.clone();
@@ -204,14 +269,12 @@ impl App {
         // Nothing the strip reads changed against the shown images: leave them,
         // clear any stale pending flags, and let a queued full render proceed
         // without spawning (a flag flip re-composites without touching the
-        // strip's inputs), so the latch drains here.
-        if shown.as_ref().is_some_and(|s| {
-            s.layer == layer
-                && s.cfg == cfg
-                && s.pins == pins
-                && s.stroke_bits == stroke_bits
-                && s.stroke_color == stroke_color
-        }) {
+        // strip's inputs), so the latch drains here. The config carries the
+        // stroke, so its equality covers a stroke edit too.
+        if shown
+            .as_ref()
+            .is_some_and(|s| s.layer == layer && s.cfg == cfg && s.pins == pins)
+        {
             self.docs[pos].session.stage_pending = PerStage::from_fn(|_| false);
             return self.drain_full_queued();
         }
@@ -246,8 +309,6 @@ impl App {
             doc_dim,
             cfg,
             pins,
-            stroke_bits,
-            stroke_color,
             shown,
             slots,
             shape_cache,
@@ -316,15 +377,8 @@ impl App {
 
         Task::perform(
             async move {
-                let result = full::render_full(
-                    &layers,
-                    &inputs,
-                    size,
-                    &profiles,
-                    doc_dim,
-                    slots,
-                    shape_cache,
-                );
+                let result =
+                    full::render_full(&layers, &inputs, size, &profiles, doc_dim, slots, shape_cache);
                 (generation, result)
             },
             move |(generation, result)| {
@@ -370,13 +424,7 @@ mod tests {
         let s = &mut doc.session;
 
         s.selected_layer = lid;
-        s.preview.shown = Some(Shown::inputs(
-            lid,
-            s.cfg.clone(),
-            Vec::new(),
-            s.cfg.stroke_width.to_bits(),
-            s.cfg.stroke_color,
-        ));
+        s.preview.shown = Some(Shown::inputs(lid, s.cfg.clone(), Vec::new()));
         app.docs.push(doc);
         app.selected_doc = DocId::from_raw(0);
 

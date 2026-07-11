@@ -2,7 +2,7 @@
 //! enums naming what the preview shows and which tool is active.
 
 use crate::color::Srgb;
-use super::compute::{FullError, FullResult, StagePart};
+use super::compute::{FullResult, StagePart};
 use super::fields::Field;
 use super::ids::{DocId, LayerId};
 use super::phases::SubView;
@@ -196,5 +196,5 @@ pub enum CanvasMsg {
 #[derive(Debug, Clone)]
 pub enum ComputeMsg {
     StagePart(DocId, u64, StagePart),
-    FullReady(DocId, u64, Result<Box<FullResult>, FullError>),
+    FullReady(DocId, u64, Box<FullResult>),
 }

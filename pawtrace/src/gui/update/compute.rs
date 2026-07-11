@@ -4,7 +4,7 @@
 //! document's in-flight bookkeeping.
 
 use crate::gui::app::App;
-use crate::gui::compute::{FullError, FullResult, StagePart};
+use crate::gui::compute::{FullResult, StagePart};
 use crate::gui::ids::DocId;
 use crate::gui::msg::{ComputeMsg, Msg};
 use crate::gui::phases::Stage;
@@ -58,13 +58,11 @@ fn stage_part(app: &mut App, doc: DocId, generation: u64, part: StagePart) -> Ta
                     s.preview.fate_tint = tint;
                     s.preview.region_report = Some(report);
                 }
-                StagePart::Fit(img, anchors) => {
-                    s.preview.render = img;
+                StagePart::Fit(anchors) => {
                     s.preview.anchor_count = anchors;
                     s.stage_pending[Stage::Fit] = false;
                 }
-                StagePart::Simplify(img, anchors) => {
-                    s.preview.simplified = img;
+                StagePart::Simplify(anchors) => {
                     s.preview.simplify_anchor_count = anchors;
                     s.stage_pending[Stage::Simplify] = false;
                 }
@@ -112,13 +110,7 @@ fn stage_part(app: &mut App, doc: DocId, generation: u64, part: StagePart) -> Ta
     }
 }
 
-fn full_ready(
-    app: &mut App,
-    doc: DocId,
-    generation: u64,
-    result: Result<Box<FullResult>, FullError>,
-) -> Task<Msg> {
-    let mut err = None;
+fn full_ready(app: &mut App, doc: DocId, generation: u64, result: Box<FullResult>) -> Task<Msg> {
     let dirty;
     let selected = doc == app.selected_doc;
 
@@ -128,66 +120,37 @@ fn full_ready(
         return Task::none();
     };
 
-    {
-        let d = &mut app.docs[pos];
-        let s = &mut d.session;
+    let d = &mut app.docs[pos];
+    let s = &mut d.session;
 
-        if generation == s.full_gen {
-            match result {
-                Ok(r) => {
-                    let r = *r;
+    if generation == s.full_gen {
+        let r = *result;
 
-                    // Reinstall each layer's filled slots. A concurrent strip
-                    // worker may install its own set for the selected layer over
-                    // this one; both hold the same values for the same inputs.
-                    for (layer, slots) in r.stages {
-                        s.stages.install(layer, slots);
-                    }
-
-                    s.layer_outputs = r.outputs;
-                    s.full_preview = Some(r.img);
-                    s.full_stats = Some(r.stats);
-                    // A successful render clears any prior failure treatment.
-                    s.trace_error = None;
-                }
-                Err(e) => err = Some(e),
-            }
+        // Reinstall each layer's filled slots. A concurrent strip worker may
+        // install its own set for the selected layer over this one; both hold
+        // the same values for the same inputs.
+        for (layer, slots) in r.stages {
+            s.stages.install(layer, slots);
         }
 
-        s.full_busy = false;
-
-        // A background document keeps its dirty latch for select_doc to
-        // honor later.
-        if !selected {
-            dirty = false;
-        } else {
-            dirty = s.full_dirty;
-
-            if dirty {
-                s.full_dirty = false;
-            }
-        }
+        s.layer_outputs = r.outputs;
+        s.full_scene = Some(r.scene);
+        s.full_stats = Some(r.stats);
+        // A successful render clears any prior failure treatment.
+        s.trace_error = None;
     }
 
-    if let Some(e) = err {
-        // A composite render failure is not tied to a layer, so the selected
-        // layer takes the red treatment. The render does not report which stage
-        // failed, so the phase is the final one, Curves.
-        if selected {
-            if let Some(s) = app.session_mut() {
-                let layer = s.selected_layer;
+    s.full_busy = false;
 
-                s.trace_error = Some(crate::gui::app::LayerError {
-                    layer,
-                    phase: crate::gui::msg::Phase::Curves,
-                    human: "The document render could not be produced.".into(),
-                    raw: e.msg.clone(),
-                    fix: None,
-                });
-            }
+    // A background document keeps its dirty latch for select_doc to honor later.
+    if !selected {
+        dirty = false;
+    } else {
+        dirty = s.full_dirty;
+
+        if dirty {
+            s.full_dirty = false;
         }
-
-        app.status = e.msg;
     }
 
     if dirty {
@@ -200,7 +163,6 @@ fn full_ready(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::gui::compute::FullError;
     use crate::gui::doc::{Doc, Layer, LayerInputs};
     use crate::gui::ids::{DocId, LayerId};
     use image::RgbaImage;
@@ -249,10 +211,21 @@ mod tests {
         assert_eq!(app.doc_pos(survivor), Some(0));
 
         // `gone`'s final full result arrives after the close.
-        let err = FullError {
-            msg: "dead stream".into(),
-        };
-        let _ = update(&mut app, ComputeMsg::FullReady(gone, 1, Err(err)));
+        use crate::gui::compute::{DocStats, VectorScene};
+        let result = Box::new(FullResult {
+            scene: VectorScene {
+                dims: (4, 4),
+                scale: 1,
+                layers: vec![],
+            },
+            stats: DocStats {
+                shapes: 0,
+                anchors: 0,
+            },
+            outputs: Default::default(),
+            stages: Default::default(),
+        });
+        let _ = update(&mut app, ComputeMsg::FullReady(gone, 1, result));
 
         assert!(
             app.docs[0].session.full_busy,

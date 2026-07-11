@@ -20,12 +20,14 @@ pub fn overlay<'a>(ctx: &OverlayCtx<'a>) -> Option<Element<'a, Msg>> {
     if ctx.subview != Some(SubView::Regions) {
         return None;
     }
+
     let tint = FateTint {
         tint: ctx.fate_tint?.clone(),
         zoom: ctx.zoom,
         pan: ctx.pan,
-        factor: ctx.factor,
+        dims: ctx.dims?,
     };
+
     Some(
         iced::widget::canvas(tint)
             .width(Length::Fill)
@@ -38,9 +40,9 @@ struct FateTint {
     tint: Img,
     zoom: Option<f32>,
     pan: iced::Vector,
-    /// Screen-raster px per crop px, matching the preview so the tint lands on
-    /// the same rectangle as the segmentation it colors.
-    factor: f32,
+    /// The shown art's crop-space dimensions, matching the preview so the tint
+    /// lands on the same rectangle as the segmentation it colors.
+    dims: (f32, f32),
 }
 
 impl Program<Msg> for FateTint {
@@ -55,21 +57,28 @@ impl Program<Msg> for FateTint {
         _cursor: mouse::Cursor,
     ) -> Vec<Geometry> {
         let mut frame = Frame::new(renderer, bounds.size());
-        let (w, h) = self.tint.size;
-        let dims = (w as f32 / self.factor, h as f32 / self.factor);
-        let vp = Viewport::resolve(bounds.size(), dims, self.zoom, self.pan);
-        let rect = Rectangle::new(vp.origin, Size::new(dims.0 * vp.zoom, dims.1 * vp.zoom));
-        // Match the preview's filter so the tint's region edges align with the
-        // segmentation's.
-        let filter = if vp.zoom / self.factor >= 3.0 {
+        let vp = Viewport::resolve(bounds.size(), self.dims, self.zoom, self.pan);
+        let rect = Rectangle::new(
+            vp.origin,
+            Size::new(self.dims.0 * vp.zoom, self.dims.1 * vp.zoom),
+        );
+
+        // The tint raster spans the same crop rectangle as the segmentation, so
+        // its density is its pixel width over the crop width. Match the preview's
+        // filter at that density so the region edges align.
+        let factor = self.tint.size.0 as f32 / self.dims.0;
+
+        let filter = if vp.zoom / factor >= 3.0 {
             core_image::FilterMethod::Nearest
         } else {
             core_image::FilterMethod::Linear
         };
+
         frame.draw_image(
             rect,
             core_image::Image::new(self.tint.handle.clone()).filter_method(filter),
         );
+
         vec![frame.into_geometry()]
     }
 }

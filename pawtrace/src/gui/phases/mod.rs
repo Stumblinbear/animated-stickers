@@ -109,28 +109,28 @@ impl Stage {
     }
 
     /// Screen-raster px per source-crop px for this stage's raster. Source is
-    /// 1x, Flatten through Regions are the supersample `scale`, the Curves
-    /// renders are 2x.
+    /// 1x, Flatten through Regions are the supersample `scale`. The Curves
+    /// stages have no raster (they draw as vectors), so their density is unused.
     pub fn density(self, scale: u32) -> f32 {
         match self {
             Stage::Source => 1.0,
             Stage::Flatten | Stage::Remap | Stage::Regions => scale as f32,
-            Stage::Fit | Stage::Simplify => 2.0,
+            Stage::Fit | Stage::Simplify => 1.0,
         }
     }
 
-    /// This stage's rendered image, if it has been computed for the shown layer.
+    /// This stage's rendered raster, if one has been computed for the shown
+    /// layer. The Curves stages draw as vectors and have no raster, so they
+    /// yield `None`.
     pub fn image(self, stages: &StageImages) -> Option<&Img> {
         match self {
             Stage::Source => stages.source.as_ref(),
             Stage::Flatten => stages.flat.as_ref(),
             Stage::Remap => stages.remap.as_ref(),
             Stage::Regions => stages.regions.as_ref(),
-            Stage::Fit => stages.render.as_ref(),
-            Stage::Simplify => stages.simplified.as_ref(),
+            Stage::Fit | Stage::Simplify => None,
         }
     }
-
 }
 
 /// The phases in strip order.

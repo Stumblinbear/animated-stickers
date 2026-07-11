@@ -5,9 +5,8 @@
 //! time.
 
 use super::cache::ShapeCache;
-use super::render::render_svg;
 use super::stages::{LayerStages, PlanCtx};
-use super::{DocStats, FullError, FullResult, LayerTrace};
+use super::{DocStats, FullResult, LayerTrace, VectorLayer, VectorScene};
 use crate::config::Config;
 use crate::gui::doc::{Doc, Layer, LayerInputs, LayerOutputs};
 use crate::gui::ids::LayerId;
@@ -42,7 +41,7 @@ pub(super) fn render_full(
     doc_dim: u32,
     mut slots: FxHashMap<LayerId, LayerStages>,
     shape_cache: ShapeCache,
-) -> std::result::Result<Box<FullResult>, FullError> {
+) -> Box<FullResult> {
     use rayon::prelude::*;
 
     let doc_scale = profiles.resolve("").0.scale;
@@ -95,43 +94,36 @@ pub(super) fn render_full(
         anchors: total,
     };
 
-    let placed: Vec<(usize, LayerTrace, Option<output::Stroke>)> = done
+    // Only visible layers enter the composite, bottom-first in stack order (the
+    // enabled-layer order `done` preserves). Each layer's placed trace and
+    // stroke are the same the SVG export emits, so the preview and the export
+    // agree.
+    let scene_layers: Vec<VectorLayer> = done
         .iter()
-        .map(|(i, cfg, _, pre)| {
-            (
-                *i,
-                output::place(pre, cfg.scale, doc_scale, layers[*i].offset),
-                output::stroke_of(cfg),
-            )
+        .filter(|(i, _, _, _)| inputs[&layers[*i].id].visible)
+        .map(|(i, cfg, _, pre)| VectorLayer {
+            colors: Arc::new(output::place(pre, cfg.scale, doc_scale, layers[*i].offset)),
+            stroke: output::stroke_of(cfg),
         })
         .collect();
 
-    let svg_layers: Vec<output::SvgLayer> = placed
-        .iter()
-        .filter(|(i, _, _)| inputs[&layers[*i].id].visible)
-        .map(|(i, colors, stroke)| output::SvgLayer {
-            name: &layers[*i].name,
-            stroke: stroke.as_ref(),
-            colors,
-        })
-        .collect();
-
-    let svg = output::svg(size.0, size.1, doc_scale, 0.0, &svg_layers);
-    let img = render_svg(&svg, size.0, size.1).ok_or_else(|| FullError {
-        msg: "full preview render failed".into(),
-    })?;
+    let scene = VectorScene {
+        dims: size,
+        scale: doc_scale,
+        layers: scene_layers,
+    };
 
     let stages: FxHashMap<LayerId, LayerStages> = done
         .into_iter()
         .map(|(i, _, slot, _)| (layers[i].id, slot))
         .collect();
 
-    Ok(Box::new(FullResult {
-        img,
+    Box::new(FullResult {
+        scene,
         stats,
         outputs,
         stages,
-    }))
+    })
 }
 
 /// Batch export: Tailmovin JSON next to each document. Excluded layers are
@@ -168,4 +160,37 @@ pub(crate) fn export_doc(
     let path = doc.path.with_extension("json");
     std::fs::write(&path, serde_json::to_vec_pretty(&out)?)?;
     Ok(path)
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::output;
+    use crate::trace::TracedPath;
+
+    // The Document scene stores each layer placed by output::place at the doc
+    // scale, so dividing a placed coordinate by that scale yields the layer's
+    // position in document source px: its layer-local point over the layer scale,
+    // shifted by the layer offset. The preview's viewport, sized in doc source
+    // px, then maps it to screen exactly as the stage views map a layer trace.
+    #[test]
+    fn placed_scene_coordinate_is_document_source_px() {
+        let (layer_scale, doc_scale) = (2u32, 6u32);
+        let offset = (3u32, 4u32);
+        let colors = vec![(
+            "#000000".to_string(),
+            vec![TracedPath {
+                start: (2.0, 5.0),
+                cubics: vec![],
+            }],
+        )];
+
+        let placed = output::place(&colors, layer_scale, doc_scale, offset);
+        let p = &placed[0].1[0];
+        let s = doc_scale as f64;
+
+        let want_x = 2.0 / layer_scale as f64 + offset.0 as f64;
+        let want_y = 5.0 / layer_scale as f64 + offset.1 as f64;
+        assert!((p.start.0 / s - want_x).abs() < 1e-9);
+        assert!((p.start.1 / s - want_y).abs() < 1e-9);
+    }
 }

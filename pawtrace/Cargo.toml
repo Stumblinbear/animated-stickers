@@ -37,6 +37,10 @@ version = "0.15"
 [dependencies.iced_test]
 version = "0.14"
 
+# vecspike example only: direct fill tessellation timing, matching iced's lyon.
+[dev-dependencies.lyon]
+version = "1.0"
+
 # The full trace + rasterize pipeline is unusably slow at opt-level 0, so
 # optimize the crate under test and its dependencies for `cargo test`.
 [profile.test]

@@ -3163,6 +3163,7 @@ dependencies = [
  "iced_test",
  "image",
  "lru 0.12.5",
+ "lyon",
  "psd",
  "rayon",
  "resvg",

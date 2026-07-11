@@ -62,15 +62,14 @@ pub fn overlay<'a>(ctx: &OverlayCtx<'a>) -> Option<Element<'a, Msg>> {
     }
 
     let (trace, scale) = ctx.active_trace.clone()?;
-    let img = ctx.img?;
+    let dims = ctx.dims?;
 
     let overlay = AnchorOverlay {
         trace,
         scale,
-        img,
+        dims,
         zoom: ctx.zoom,
         pan: ctx.pan,
-        factor: ctx.factor,
         show_all: ctx.show_all_anchors,
     };
 
@@ -85,12 +84,11 @@ pub fn overlay<'a>(ctx: &OverlayCtx<'a>) -> Option<Element<'a, Msg>> {
 struct AnchorOverlay {
     trace: Arc<LayerTrace>,
     scale: u32,
-    img: (u32, u32),
+    /// The shown art's crop-space dimensions, matching the preview so the trace
+    /// lands on the same rectangle as the fill it outlines.
+    dims: (f32, f32),
     zoom: Option<f32>,
     pan: Vector,
-    /// Screen-raster px per crop px, matching the preview so the trace lands on
-    /// the same rectangle as the render it outlines.
-    factor: f32,
     show_all: bool,
 }
 
@@ -121,11 +119,7 @@ impl Program<Msg> for AnchorOverlay {
         cursor: mouse::Cursor,
     ) -> Vec<Geometry> {
         let mut frame = Frame::new(renderer, bounds.size());
-        let dims = (
-            self.img.0 as f32 / self.factor,
-            self.img.1 as f32 / self.factor,
-        );
-        let vp = Viewport::resolve(bounds.size(), dims, self.zoom, self.pan);
+        let vp = Viewport::resolve(bounds.size(), self.dims, self.zoom, self.pan);
         let scale = self.scale as f32;
 
         if self.show_all {

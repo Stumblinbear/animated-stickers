@@ -4,8 +4,8 @@
 
 use super::OverlayCtx;
 use crate::gui::msg::{Msg, StripView};
-use crate::gui::view::viewport::Viewport;
 use crate::gui::view::theme;
+use crate::gui::view::viewport::Viewport;
 use iced::mouse;
 use iced::widget::canvas::{Action, Event, Frame, Geometry, Path, Program, Stroke};
 use iced::{Color, Element, Length, Point, Rectangle};
@@ -20,19 +20,21 @@ const OUTER_HOVER_A: f32 = 0.55;
 /// The pin overlay for the selected layer, or nothing when it has no pins to
 /// draw or nothing is rendered to align them against.
 pub fn overlay<'a>(ctx: &OverlayCtx<'a>) -> Option<Element<'a, Msg>> {
-    let img = ctx.img?;
+    let dims = ctx.dims?;
+
     if ctx.pins.is_empty() {
         return None;
     }
+
     let overlay = PinOverlay {
-        img,
+        dims,
         zoom: ctx.zoom,
         pan: ctx.pan,
         pins: ctx.pins,
         offset: ctx.offset,
-        factor: ctx.factor,
         view: ctx.view,
     };
+
     Some(
         iced::widget::canvas(overlay)
             .width(Length::Fill)
@@ -42,12 +44,12 @@ pub fn overlay<'a>(ctx: &OverlayCtx<'a>) -> Option<Element<'a, Msg>> {
 }
 
 struct PinOverlay<'a> {
-    img: (u32, u32),
+    /// The shown art's crop-space dimensions, matching the preview's viewport.
+    dims: (f32, f32),
     zoom: Option<f32>,
     pan: iced::Vector,
     pins: &'a [[u32; 2]],
     offset: (u32, u32),
-    factor: f32,
     view: StripView,
 }
 
@@ -59,13 +61,16 @@ impl PinOverlay<'_> {
     fn screen(&self, pin: [u32; 2], vp: &Viewport, dims: (f32, f32)) -> Option<Point> {
         let (px, py) = (pin[0] as f32, pin[1] as f32);
         let (ox, oy) = (self.offset.0 as f32, self.offset.1 as f32);
+
         let (ix, iy) = match self.view {
             StripView::Document => (px, py),
             StripView::Phase(_) => (px - ox, py - oy),
         };
+
         if ix < 0.0 || iy < 0.0 || ix >= dims.0 || iy >= dims.1 {
             return None;
         }
+
         Some(vp.to_screen(ix, iy))
     }
 }
@@ -84,6 +89,7 @@ impl Program<Msg> for PinOverlay<'_> {
         // no message leaves the event uncaptured, so the preview beneath still
         // receives pan and zoom gestures.
         let moved = matches!(event, Event::Mouse(mouse::Event::CursorMoved { .. }));
+
         moved.then(Action::request_redraw)
     }
 
@@ -96,28 +102,37 @@ impl Program<Msg> for PinOverlay<'_> {
         cursor: mouse::Cursor,
     ) -> Vec<Geometry> {
         let mut frame = Frame::new(renderer, bounds.size());
-        let dims = (self.img.0 as f32 / self.factor, self.img.1 as f32 / self.factor);
-        let vp = Viewport::resolve(bounds.size(), dims, self.zoom, self.pan);
+        let vp = Viewport::resolve(bounds.size(), self.dims, self.zoom, self.pan);
         let cur = cursor.position_in(bounds);
+
         for &pin in self.pins {
-            let Some(c) = self.screen(pin, &vp, dims) else { continue };
+            let Some(c) = self.screen(pin, &vp, self.dims) else {
+                continue;
+            };
+
             // The protected neighborhood: brighter while the cursor is inside it.
             let hovered = cur.is_some_and(|cur| {
                 let (dx, dy) = (cur.x - c.x, cur.y - c.y);
                 dx * dx + dy * dy <= OUTER_R * OUTER_R
             });
+
             let a = if hovered { OUTER_HOVER_A } else { OUTER_A };
+
             frame.stroke(
                 &Path::circle(c, OUTER_R),
                 Stroke::default()
                     .with_color(Color { a, ..theme::ACCENT })
                     .with_width(OUTER_W),
             );
+
             frame.stroke(
                 &Path::circle(c, RING_R),
-                Stroke::default().with_color(theme::ACCENT).with_width(RING_W),
+                Stroke::default()
+                    .with_color(theme::ACCENT)
+                    .with_width(RING_W),
             );
         }
+
         vec![frame.into_geometry()]
     }
 }

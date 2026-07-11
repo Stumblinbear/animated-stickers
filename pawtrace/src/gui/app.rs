@@ -7,7 +7,7 @@
 //! global library plus one project tier per folder, both kept across tab
 //! switches so unsaved edits are not dropped.
 
-use super::compute::{DocStages, DocStats, Img, StageImages};
+use super::compute::{Art, DocStages, DocStats, StageImages, VectorLayer, VectorScene};
 use super::doc::{Doc, LayerOutputs};
 use super::fields::Field;
 use super::ids::{DocId, LayerId};
@@ -137,7 +137,9 @@ pub struct DocState {
     /// generation differs was superseded by a newer spawn and is discarded;
     /// documents run independently, so the check is per document.
     pub stage_gen: u64,
-    pub full_preview: Option<Img>,
+    /// The whole-document composite as a vector scene, drawn by the preview on
+    /// the Document view. `None` until the first full render lands.
+    pub full_scene: Option<VectorScene>,
     pub full_stats: Option<DocStats>,
     /// Per-layer derived render outputs from the last full render, keyed by
     /// layer id. The second per-layer map (the first, artist inputs, lives on
@@ -190,7 +192,7 @@ impl Default for DocState {
             stages_running: false,
             stages_dirty: false,
             stage_gen: 0,
-            full_preview: None,
+            full_scene: None,
             full_stats: None,
             layer_outputs: FxHashMap::default(),
             full_busy: false,
@@ -643,15 +645,51 @@ impl App {
         self.active_stage().map(|s| s.density(scale)).unwrap_or(1.0)
     }
 
-    /// The image the preview should show for the active view, if it has been
-    /// rendered yet.
-    pub fn active_image(&self) -> Option<&Img> {
+    /// What the preview should draw for the active view, if it has been rendered
+    /// yet: raster pixels for the genuine image stages, or vector color runs for
+    /// the trace-backed views (Fit, Simplify, and the Document composite). This
+    /// match is the one place the raster/vector split for each view is named.
+    pub fn active_art(&self) -> Option<Art<'_>> {
         let sess = self.session()?;
 
         match sess.view {
-            StripView::Document => sess.full_preview.as_ref(),
-            StripView::Phase(_) => self.active_stage()?.image(&sess.preview),
+            StripView::Document => Some(Art::Vector(sess.full_scene.clone()?)),
+            StripView::Phase(_) => match self.active_stage()? {
+                stage @ (Stage::Fit | Stage::Simplify) => {
+                    Some(Art::Vector(self.stage_scene(stage)?))
+                }
+                stage => Some(Art::Raster {
+                    img: stage.image(&sess.preview)?,
+                    factor: self.view_density(),
+                }),
+            },
         }
+    }
+
+    /// The vector scene for a trace-backed stage view: the selected layer's
+    /// finalized trace read from the stage memo, the layer's crop dimensions,
+    /// and the configured stroke. `None` off Fit and Simplify, or before that
+    /// stage has run for the selected layer.
+    fn stage_scene(&self, stage: Stage) -> Option<VectorScene> {
+        let sess = self.session()?;
+        let out = {
+            let stages = sess.stages.peek(sess.selected_layer)?;
+            match stage {
+                Stage::Fit => stages.fit.current()?,
+                Stage::Simplify => stages.simplify.current()?,
+                _ => return None,
+            }
+        };
+        let dims = self.doc()?.layer(sess.selected_layer)?.img.dimensions();
+
+        Some(VectorScene {
+            dims,
+            scale: out.scale,
+            layers: vec![VectorLayer {
+                colors: out.trace,
+                stroke: crate::output::stroke_of(&sess.cfg),
+            }],
+        })
     }
 
     /// Whether any document is still computing, across every open tab. Gates

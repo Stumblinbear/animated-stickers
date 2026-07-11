@@ -31,15 +31,14 @@ pub struct OverlayCtx<'a> {
     view: StripView,
     /// The active phase's sub-view, or `None` on the Document view.
     subview: Option<SubView>,
-    /// The shown image's pixel size, `None` when nothing is rendered yet.
-    img: Option<(u32, u32)>,
+    /// The shown art's crop-space dimensions, the size overlays resolve their
+    /// viewport against so they align with the preview. `None` when nothing is
+    /// rendered yet.
+    dims: Option<(f32, f32)>,
     /// The active view's zoom, `None` to fit.
     zoom: Option<f32>,
     /// The active view's pan, a screen-px offset from centered.
     pan: Vector,
-    /// Screen-raster px per source-crop px for the shown view, matching the
-    /// preview so overlays resolve against the same crop-space viewport.
-    factor: f32,
     /// The selected layer's source-px offset, for mapping pins on a stage view.
     offset: (u32, u32),
     /// The selected layer's pins in document source px, empty when nothing is
@@ -72,10 +71,9 @@ impl OverlayCtx<'_> {
         OverlayCtx {
             view: session.map(|s| s.view).unwrap_or_default(),
             subview,
-            img: app.active_image().map(|i| i.size),
+            dims: app.active_art().map(|a| a.dims()),
             zoom: session.and_then(|s| s.zoom()),
             pan: session.map(|s| s.pan()).unwrap_or(Vector::ZERO),
-            factor: app.view_density(),
             offset,
             pins: if has_selection {
                 session
