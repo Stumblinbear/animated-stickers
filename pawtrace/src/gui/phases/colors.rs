@@ -22,7 +22,7 @@ pub const DEFAULT_SUBVIEW: SubView = SubView::Palette;
 
 /// The status-line detail: the extracted palette's color count.
 pub fn status_detail(app: &App) -> Option<String> {
-    app.session().map(|s| format!("{} colors", s.preview.palette.len()))
+    app.session().map(|s| format!("{} colors", s.palette().len()))
 }
 
 pub fn inspector(app: &App) -> Element<'_, Msg> {
@@ -94,7 +94,7 @@ fn swatches(app: &App) -> Element<'_, Msg> {
         return row![].into();
     };
 
-    let pal = &sess.preview.palette;
+    let pal = sess.palette();
     let locked = &sess.cfg.locked;
     let nearest = |i: usize| -> f32 {
         pal.iter()

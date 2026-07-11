@@ -16,7 +16,7 @@ pub const DEFAULT_SUBVIEW: SubView = SubView::Simplify;
 
 /// The status-line detail: the simplified trace's anchor count.
 pub fn status_detail(app: &App) -> Option<String> {
-    app.session().map(|s| format!("{} anchors", s.preview.simplify_anchor_count))
+    app.session().map(|s| format!("{} anchors", s.simplify_anchor_count()))
 }
 
 pub fn inspector(app: &App) -> Element<'_, Msg> {
@@ -128,7 +128,7 @@ pub fn inspector(app: &App) -> Element<'_, Msg> {
         .align_y(Alignment::Center),
         widgets::mono(format!(
             "{} anchors ({} after simplify)",
-            sess.preview.anchor_count, sess.preview.simplify_anchor_count
+            sess.anchor_count(), sess.simplify_anchor_count()
         ))
         .size(11)
         .color(theme::MUTED),

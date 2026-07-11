@@ -37,7 +37,7 @@ pub fn press(app: &mut App, p: Point) -> Task<Msg> {
 
     let px = q.get_pixel(x, y).0;
     let c = crate::color::Srgb([px[0], px[1], px[2]]);
-    if px[3] != 0 && sess.preview.palette.contains(&c) {
+    if px[3] != 0 && sess.palette().contains(&c) {
         app.toggle_lock(c)
     } else {
         Task::none()

@@ -34,46 +34,55 @@ fn stage_part(app: &mut App, doc: DocId, generation: u64, part: StagePart) -> Ta
         let s = &mut d.session;
 
         if generation == s.stage_gen {
+            // A live generation's stream is fixed to this session's selected
+            // layer: any layer switch bumps the generation and orphans the run,
+            // so a part that passes the gate belongs to the selected layer.
+            let layer = s.selected_layer;
+
             match part {
                 StagePart::Source(img) => {
                     s.preview.source = Some(img);
                     s.stage_pending[Stage::Source] = false;
                 }
-                StagePart::Flat(img) => {
+                StagePart::Flat(img, key, prep) => {
                     s.preview.flat = Some(img);
+                    s.stages.stages_mut(layer).prep.install(key, prep);
                     s.stage_pending[Stage::Flatten] = false;
                 }
-                StagePart::Remap(img, px, palette) => {
+                StagePart::Detect(key, detect) => {
+                    s.stages.stages_mut(layer).detect.install(key, detect);
+                }
+                StagePart::Remap(img, px, key, out) => {
                     s.preview.remap = Some(img);
-                    s.preview.palette = palette;
                     s.preview.remap_px = Some(px);
+                    s.stages.stages_mut(layer).remap.install(key, out);
                     s.stage_pending[Stage::Remap] = false;
                 }
-                StagePart::Regions(img, count) => {
+                StagePart::Regions(img, key, regs) => {
                     s.preview.regions = Some(img);
-                    s.preview.region_count = count;
+                    s.stages.stages_mut(layer).regions.install(key, regs);
                     s.stage_pending[Stage::Regions] = false;
                 }
-                StagePart::Fates(tint, report) => {
+                StagePart::Fates(tint, report, key, plan) => {
                     s.preview.fate_tint = tint;
                     s.preview.region_report = Some(report);
+                    s.stages.stages_mut(layer).plan.install(key, plan);
                 }
-                StagePart::Fit(anchors) => {
-                    s.preview.anchor_count = anchors;
+                StagePart::Shapes(key, shapes) => {
+                    s.stages.stages_mut(layer).shapes.install(key, shapes);
+                }
+                StagePart::Fit(key, out) => {
+                    s.stages.stages_mut(layer).fit.install(key, out);
                     s.stage_pending[Stage::Fit] = false;
                 }
-                StagePart::Simplify(anchors) => {
-                    s.preview.simplify_anchor_count = anchors;
+                StagePart::Simplify(key, out) => {
+                    s.stages.stages_mut(layer).simplify.install(key, out);
                     s.stage_pending[Stage::Simplify] = false;
                 }
                 StagePart::Unchanged(stage) => {
                     s.stage_pending[stage] = false;
                 }
-                StagePart::Done(slots, shown) => {
-                    // The run computed against a clone of this layer's slots;
-                    // install the filled clone so later runs and the full render
-                    // read what it produced.
-                    s.stages.install(shown.layer, *slots);
+                StagePart::Done(shown) => {
                     s.preview.shown = Some(*shown);
                 }
             }
@@ -163,10 +172,83 @@ fn full_ready(app: &mut App, doc: DocId, generation: u64, result: Box<FullResult
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::Config;
+    use crate::gui::compute::{Artifact, FitInputs, TraceOutput};
     use crate::gui::doc::{Doc, Layer, LayerInputs};
     use crate::gui::ids::{DocId, LayerId};
+    use crate::trace::{ContourParams, FitParams};
     use image::RgbaImage;
     use std::sync::Arc;
+
+    /// A fit part whose trace carries the distinctive `scale`, so a reader can
+    /// tell whether this exact value reached the memo.
+    fn fit_part(scale: u32) -> StagePart {
+        let cfg = Config::default();
+        let key = FitInputs {
+            shapes: Artifact::new(Arc::new(Vec::new())),
+            contour: ContourParams::of(&cfg),
+            fit: FitParams::of(&cfg),
+        };
+        let out = TraceOutput {
+            trace: Arc::new(Vec::new()),
+            scale,
+        };
+        StagePart::Fit(key, out)
+    }
+
+    /// An app holding one document, its selected layer live under stage
+    /// generation `gen`, ready to receive that generation's stage parts.
+    fn app_streaming(doc: DocId, layer: LayerId, gen: u64) -> App {
+        let mut app = App::default();
+        let mut d = doc_with_id(doc);
+        d.session.selected_layer = layer;
+        d.session.stages_running = true;
+        d.session.stage_gen = gen;
+        app.docs.push(d);
+        app.selected_doc = doc;
+        app
+    }
+
+    // The core of the refactor: a fit part installs its memo value the moment it
+    // arrives, so the selected layer's fit memo (the value stage_scene and the
+    // anchors overlay read) reflects it before any Done part completes the run.
+    #[test]
+    fn a_fit_part_installs_its_memo_before_done() {
+        let doc = DocId::from_raw(0);
+        let layer = LayerId::from_raw(0);
+        let mut app = app_streaming(doc, layer, 5);
+
+        let _ = update(&mut app, ComputeMsg::StagePart(doc, 5, fit_part(7)));
+
+        let s = &app.docs[0].session;
+        assert!(s.stages_running, "the run is still live, no Done seen");
+        let out = s
+            .stages
+            .peek(layer)
+            .and_then(|st| st.fit.current())
+            .expect("the fit memo holds the installed value mid-stream");
+        assert_eq!(out.scale, 7, "the exact streamed trace is visible");
+    }
+
+    // A part from a superseded generation is discarded by the generation gate,
+    // so it must not install into the session memo.
+    #[test]
+    fn a_superseded_generation_part_does_not_install() {
+        let doc = DocId::from_raw(0);
+        let layer = LayerId::from_raw(0);
+        // The live generation is 6; a stray part from generation 5 arrives late.
+        let mut app = app_streaming(doc, layer, 6);
+
+        let _ = update(&mut app, ComputeMsg::StagePart(doc, 5, fit_part(7)));
+
+        let s = &app.docs[0].session;
+        assert!(
+            s.stages
+                .peek(layer)
+                .is_none_or(|st| st.fit.current().is_none()),
+            "a superseded part leaves the memo untouched"
+        );
+    }
 
     fn doc_with_id(id: DocId) -> Doc {
         let lid = LayerId::from_raw(0);

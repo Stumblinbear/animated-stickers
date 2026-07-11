@@ -7,7 +7,9 @@
 //! global library plus one project tier per folder, both kept across tab
 //! switches so unsaved edits are not dropped.
 
-use super::compute::{Art, DocStages, DocStats, StageImages, VectorLayer, VectorScene};
+use super::compute::{
+    Art, DocStages, DocStats, LayerStages, StageImages, VectorLayer, VectorScene,
+};
 use super::doc::{Doc, LayerOutputs};
 use super::fields::Field;
 use super::ids::{DocId, LayerId};
@@ -16,6 +18,7 @@ use super::phases::{PerPhase, PerStage, Stage, SubView};
 use super::recents::RecentEntry;
 use super::tools::{Tool, Tools};
 use super::undo::Command;
+use crate::color::Srgb;
 use crate::config::Config;
 use crate::profiles::{Profiles, Scope, StackRef};
 use iced::widget::pane_grid;
@@ -23,6 +26,7 @@ use iced::Task;
 use rustc_hash::FxHashMap;
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Instant;
 
 /// A layer whose trace failed, driving the coordinated red failure treatment
@@ -250,6 +254,38 @@ impl DocState {
         } else {
             self.stage_zoom = zoom;
         }
+    }
+
+    /// The selected layer's stage memos, or `None` when the layer is cold.
+    fn selected_stages(&self) -> Option<&LayerStages> {
+        self.stages.peek(self.selected_layer)
+    }
+
+    /// The selected layer's extracted palette, read from its remap memo. Empty
+    /// before the remap stage has run.
+    pub(in crate::gui) fn palette(&self) -> Arc<Vec<Srgb>> {
+        self.selected_stages()
+            .map(LayerStages::palette)
+            .unwrap_or_default()
+    }
+
+    /// The selected layer's segmented region count, 0 before the regions stage
+    /// has run.
+    pub(in crate::gui) fn region_count(&self) -> usize {
+        self.selected_stages().map_or(0, LayerStages::region_count)
+    }
+
+    /// The selected layer's pre-simplify anchor total, 0 before the fit stage
+    /// has run.
+    pub(in crate::gui) fn anchor_count(&self) -> usize {
+        self.selected_stages().map_or(0, LayerStages::fit_anchors)
+    }
+
+    /// The selected layer's final anchor total, 0 before the simplify stage has
+    /// run.
+    pub(in crate::gui) fn simplify_anchor_count(&self) -> usize {
+        self.selected_stages()
+            .map_or(0, LayerStages::simplify_anchors)
     }
 }
 

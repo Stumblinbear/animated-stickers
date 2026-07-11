@@ -1,10 +1,12 @@
-//! The stage-strip worker: runs the per-layer pipeline through its cache slots,
-//! streaming each display image the moment its stage finishes. A slot serves a
-//! cached value when its inputs are unchanged, so an unedited stage costs an
-//! `Arc` clone and no recompute; its image is re-emitted only when the stage's
-//! key differs from the shown one (or, for the stroked renders, the stroke
-//! changed), so an unchanged stage never flickers. The worker owns a clone of
-//! the layer's slots, fills it as it runs, and ships it home in the final part.
+//! The stage-strip worker: runs the per-layer pipeline through a clone of its
+//! cache slots, streaming each stage's result the moment it finishes. A slot
+//! serves a cached value when its inputs are unchanged, so an unedited stage
+//! costs an `Arc` clone and no recompute; its image is re-emitted only when the
+//! stage's key differs from the shown one (or, for the stroked renders, the
+//! stroke changed), so an unchanged stage never flickers. Each streamed part
+//! carries the stage's `(key, value)` memo update, which the handler installs
+//! into the session memo at once, so session-state readers see each fresh value
+//! mid-stream instead of at completion.
 //!
 //! Each stage is a submodule owning its `Inputs` struct, its `compute_*`
 //! function, and that function's content hashing. This driver names them all:
@@ -47,6 +49,7 @@ use crate::config::Config;
 use crate::gui::ids::{DocId, LayerId};
 use crate::gui::msg::{ComputeMsg, Msg};
 use crate::gui::phases::Stage;
+use crate::color::Srgb;
 use crate::palette::Partition;
 use crate::pipeline::Shape;
 use crate::raster::Prepared;
@@ -107,6 +110,16 @@ fn stale<K: PartialEq>(shown: Option<&K>, fresh: &K) -> bool {
     shown.is_none_or(|k| k != fresh)
 }
 
+/// Total anchors across a trace: the sum of every path's cubic count over all
+/// color runs.
+fn anchor_total(trace: &LayerTrace) -> usize {
+    trace
+        .iter()
+        .flat_map(|(_, ps)| ps.iter())
+        .map(|p| p.cubics.len())
+        .sum()
+}
+
 pub(super) fn stream(job: StageJob) -> Task<Msg> {
     Task::stream(iced::stream::channel(
         0,
@@ -154,15 +167,19 @@ pub(super) fn stream(job: StageJob) -> Task<Msg> {
             let prep_key = PrepInputs::of(&cfg);
             let prep = slots.prep.get_or(prep_key.clone(), &img, compute_prep);
             if stale(shown.as_ref().and_then(|s| s.prep.as_ref()), &prep_key) {
-                emit!(StagePart::Flat(rgba_img(&masked(&prep.flat, &prep.alpha))));
+                let flat = rgba_img(&masked(&prep.flat, &prep.alpha));
+                emit!(StagePart::Flat(flat, prep_key.clone(), prep.clone()));
             } else {
                 emit!(StagePart::Unchanged(Stage::Flatten));
             }
 
-            // Remap: detection then constrained remap, palette alongside.
-            let detect = slots
-                .detect
-                .get_or(DetectInputs::of(&cfg), &img, compute_detect);
+            // Detection feeds the remap key but paints nothing, so it rides its
+            // own part to seed the memo the remap keys against.
+            let detect_key = DetectInputs::of(&cfg);
+            let detect = slots.detect.get_or(detect_key.clone(), &img, compute_detect);
+            emit!(StagePart::Detect(detect_key, detect.clone()));
+
+            // Remap: constrained remap onto the detected palette.
             let remap_key = RemapInputs {
                 prep: prep.clone(),
                 detect,
@@ -173,7 +190,12 @@ pub(super) fn stream(job: StageJob) -> Task<Msg> {
             let (remap, palette) = slots.remap.get_or(remap_key.clone(), (), compute_remap);
             if stale(shown.as_ref().and_then(|s| s.remap.as_ref()), &remap_key) {
                 let px = masked(&remap, &prep.alpha);
-                emit!(StagePart::Remap(rgba_img(&px), px, (*palette).clone()));
+                emit!(StagePart::Remap(
+                    rgba_img(&px),
+                    px,
+                    remap_key.clone(),
+                    (remap.clone(), palette),
+                ));
             } else {
                 emit!(StagePart::Unchanged(Stage::Remap));
             }
@@ -193,7 +215,8 @@ pub(super) fn stream(job: StageJob) -> Task<Msg> {
             ) {
                 emit!(StagePart::Regions(
                     regions::regions_handle(&regs, remap.dimensions()),
-                    regs.len(),
+                    regions_key.clone(),
+                    regs.clone(),
                 ));
             } else {
                 emit!(StagePart::Unchanged(Stage::Regions));
@@ -217,7 +240,7 @@ pub(super) fn stream(job: StageJob) -> Task<Msg> {
             if stale(shown.as_ref().and_then(|s| s.plan.as_ref()), &plan_key) {
                 let report = crate::regions::report_of(&plan);
                 let tint = plan::fate_tint_handle(&regs, remap.dimensions(), &report.fates);
-                emit!(StagePart::Fates(tint, report));
+                emit!(StagePart::Fates(tint, report, plan_key.clone(), plan.clone()));
             }
 
             // One shape build feeds the fit stage, which walks each shape's
@@ -227,20 +250,13 @@ pub(super) fn stream(job: StageJob) -> Task<Msg> {
                 prep: prep.clone(),
                 params: pipeline::ShapeParams::of(&cfg),
             };
-            let shapes = slots.shapes.get_or(shapes_key, (), compute_shapes);
-
-            // The fit and simplify views draw the trace as vectors from the
-            // memo, so the worker ships only each trace's anchor count.
-            let anchor_count = |colors: &LayerTrace| -> usize {
-                colors
-                    .iter()
-                    .flat_map(|(_, ps)| ps.iter())
-                    .map(|p| p.cubics.len())
-                    .sum()
-            };
+            let shapes = slots.shapes.get_or(shapes_key.clone(), (), compute_shapes);
+            // Shape planning paints nothing; install it so the fit keys hit.
+            emit!(StagePart::Shapes(shapes_key, shapes.clone()));
 
             // Fit: the boundary walk and the cubic fit, keyed on the shapes
-            // artifact so the full render shares it.
+            // artifact so the full render shares it. The fit and simplify views
+            // draw the trace as vectors from the memo the part installs.
             let fit_key = FitInputs {
                 shapes: shapes.clone(),
                 contour: ContourParams::of(&cfg),
@@ -248,7 +264,7 @@ pub(super) fn stream(job: StageJob) -> Task<Msg> {
             };
             let fit = slots.fit.get_or(fit_key.clone(), shape_cache, compute_fit);
             if stale(shown.as_ref().and_then(|s| s.fit.as_ref()), &fit_key) {
-                emit!(StagePart::Fit(anchor_count(&fit.trace)));
+                emit!(StagePart::Fit(fit_key.clone(), fit.clone()));
             } else {
                 emit!(StagePart::Unchanged(Stage::Fit));
             }
@@ -262,7 +278,7 @@ pub(super) fn stream(job: StageJob) -> Task<Msg> {
                 .simplify
                 .get_or(simp_key.clone(), fit, compute_simplify);
             if stale(shown.as_ref().and_then(|s| s.simplify.as_ref()), &simp_key) {
-                emit!(StagePart::Simplify(anchor_count(&simpl.trace)));
+                emit!(StagePart::Simplify(simp_key.clone(), simpl.clone()));
             } else {
                 emit!(StagePart::Unchanged(Stage::Simplify));
             }
@@ -278,12 +294,36 @@ pub(super) fn stream(job: StageJob) -> Task<Msg> {
                 fit: Some(fit_key),
                 simplify: Some(simp_key),
             };
-            emit!(StagePart::Done(Box::new(slots), Box::new(now_shown)));
+            emit!(StagePart::Done(Box::new(now_shown)));
         },
     ))
 }
 
 impl LayerStages {
+    /// The extracted palette from the remap memo's current value, empty before
+    /// the remap stage has run for this layer.
+    pub(in crate::gui) fn palette(&self) -> Arc<Vec<Srgb>> {
+        self.remap.current().map(|(_, pal)| pal).unwrap_or_default()
+    }
+
+    /// The segmented region count from the regions memo's current value, 0
+    /// before the regions stage has run.
+    pub(in crate::gui) fn region_count(&self) -> usize {
+        self.regions.current().map_or(0, |r| r.len())
+    }
+
+    /// The pre-simplify anchor total from the fit memo's current trace, 0 before
+    /// the fit stage has run.
+    pub(in crate::gui) fn fit_anchors(&self) -> usize {
+        self.fit.current().map_or(0, |o| anchor_total(&o.trace))
+    }
+
+    /// The final anchor total from the simplify memo's current trace, 0 before
+    /// the simplify stage has run.
+    pub(in crate::gui) fn simplify_anchors(&self) -> usize {
+        self.simplify.current().map_or(0, |o| anchor_total(&o.trace))
+    }
+
     /// Runs the per-layer stage chain into these memo slots and returns the
     /// final trace, emitting no images and recording no shown keys. A slot hit
     /// reuses its cached value.

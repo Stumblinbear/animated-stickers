@@ -1,12 +1,12 @@
 //! Message types, one sub-enum per interaction domain, and the small shared
 //! enums naming what the preview shows and which tool is active.
 
-use crate::color::Srgb;
 use super::compute::{FullResult, StagePart};
 use super::fields::Field;
 use super::ids::{DocId, LayerId};
 use super::phases::SubView;
 use super::tools::{Tool, ToolMsg};
+use crate::color::Srgb;
 use crate::profiles::Scope;
 use iced::widget::pane_grid;
 use iced::{keyboard, Point, Vector};

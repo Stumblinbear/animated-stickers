@@ -10,13 +10,21 @@ mod memo;
 mod render;
 mod stages;
 
-use crate::color::Srgb;
 use super::app::App;
-use crate::regions;
+use crate::palette::Partition;
+use crate::pipeline::Shape;
+use crate::raster::Prepared;
+use crate::regions::{self, MergePlan, Region};
+pub(in crate::gui) use artifact::Artifact;
 use iced::advanced::image as core_image;
 use iced::widget::image as iced_image;
 use iced::Task;
 use image::RgbaImage;
+use stages::{
+    DetectInputs, PlanInputs, PrepInputs, RegionsInputs, RemapInputs, RemapOutput, ShapesInputs,
+    SimplifyInputs,
+};
+pub(in crate::gui) use stages::{FitInputs, TraceOutput};
 use std::sync::Arc;
 
 pub(in crate::gui) use cache::DocStages;
@@ -101,9 +109,7 @@ impl Art<'_> {
     /// against.
     pub(super) fn dims(&self) -> (f32, f32) {
         match self {
-            Art::Raster { img, factor } => {
-                (img.size.0 as f32 / factor, img.size.1 as f32 / factor)
-            }
+            Art::Raster { img, factor } => (img.size.0 as f32 / factor, img.size.1 as f32 / factor),
             Art::Vector(s) => (s.dims.0 as f32, s.dims.1 as f32),
         }
     }
@@ -161,7 +167,10 @@ impl Shown {
     }
 }
 
-/// Stage outputs for the selected layer, as display images.
+/// Worker-baked display rasters for the selected layer's stage strip. Only
+/// state that the worker paints and no memo holds lives here; the palette,
+/// region count, and anchor counts derive from the session stage memos at view
+/// time (see [`DocState`](crate::gui::app::DocState)).
 #[derive(Debug, Clone, Default)]
 pub(super) struct StageImages {
     pub(super) source: Option<Img>,
@@ -177,10 +186,6 @@ pub(super) struct StageImages {
     /// Per-region trace fates and floor for the regions hover readout,
     /// aligned with the cached regions.
     pub(super) region_report: Option<regions::RegionReport>,
-    pub(super) palette: Vec<Srgb>,
-    pub(super) region_count: usize,
-    pub(super) anchor_count: usize,
-    pub(super) simplify_anchor_count: usize,
     pub(super) shown: Option<Shown>,
 }
 
@@ -202,31 +207,46 @@ pub struct FullResult {
     pub(super) stages: rustc_hash::FxHashMap<super::ids::LayerId, LayerStages>,
 }
 
-/// One stage's display output, streamed the moment it finishes so the fast
-/// early stages appear without waiting for the trace. A part carries only what
-/// the display needs; the recomputed cache values ride home once, in
-/// [`StagePart::Done`]. A stage whose inputs are unchanged emits
-/// [`StagePart::Unchanged`] instead, clearing its busy flag without a redraw.
+/// One stage's streamed result: the display raster the view needs, plus the
+/// stage's `(key, value)` memo update, which the handler installs into the
+/// session memo the moment it arrives so session-state readers (the vector
+/// preview, the anchors overlay, the pin hit test) see the fresh value
+/// mid-stream rather than at completion. A display stage whose inputs match the
+/// shown ones emits [`StagePart::Unchanged`]: its session memo already holds
+/// the current value, so it only clears the pending flag. The internal `Detect`
+/// and `Shapes` memos have no display, so they ride dedicated payload-less
+/// parts that install unconditionally.
 #[derive(Debug, Clone)]
 pub enum StagePart {
     Source(Img),
-    Flat(Img),
-    Remap(Img, RgbaImage, Vec<Srgb>),
-    Regions(Img, usize),
-    /// The fate tint (`None` when every region survives) and the region report,
-    /// emitted whenever the merge plan changes, including on a pin edit.
-    Fates(Option<Img>, regions::RegionReport),
-    /// The fitted trace's anchor count; the fit view itself draws as vectors.
-    Fit(usize),
-    /// The simplified trace's anchor count; the simplify view draws as vectors.
-    Simplify(usize),
+    Flat(Img, PrepInputs, Artifact<Prepared>),
+    /// The detection memo update; detection has no display, so this part only
+    /// seeds the session memo the remap stage keys against.
+    Detect(DetectInputs, Artifact<Partition>),
+    Remap(Img, RgbaImage, RemapInputs, RemapOutput),
+    Regions(Img, RegionsInputs, Artifact<Vec<Region>>),
+    /// The fate tint (`None` when every region survives), the region report, and
+    /// the merge-plan memo update, emitted whenever the plan changes, including
+    /// on a pin edit. The plan's display is the tint, so it carries the update.
+    Fates(
+        Option<Img>,
+        regions::RegionReport,
+        PlanInputs,
+        Artifact<MergePlan>,
+    ),
+    /// The shapes memo update; shape planning has no display, so this part only
+    /// seeds the session memo the fit stage keys against.
+    Shapes(ShapesInputs, Artifact<Vec<Shape>>),
+    /// The fit memo update; the fit view draws as vectors from this memo.
+    Fit(FitInputs, TraceOutput),
+    /// The simplify memo update; the simplify view draws as vectors from it.
+    Simplify(SimplifyInputs, TraceOutput),
     /// A display stage whose inputs matched the shown ones: no redraw, just
     /// clear the pending flag.
     Unchanged(Stage),
-    /// Always the final part; completion is detected by it. Carries the worker's
-    /// completed slots to install in the memo and the keys the images now
-    /// reflect.
-    Done(Box<LayerStages>, Box<Shown>),
+    /// Always the final part; completion is detected by it. The memos are
+    /// already current, so it carries only the keys the images now reflect.
+    Done(Box<Shown>),
 }
 
 impl App {
@@ -377,8 +397,15 @@ impl App {
 
         Task::perform(
             async move {
-                let result =
-                    full::render_full(&layers, &inputs, size, &profiles, doc_dim, slots, shape_cache);
+                let result = full::render_full(
+                    &layers,
+                    &inputs,
+                    size,
+                    &profiles,
+                    doc_dim,
+                    slots,
+                    shape_cache,
+                );
                 (generation, result)
             },
             move |(generation, result)| {

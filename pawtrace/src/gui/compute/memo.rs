@@ -27,6 +27,13 @@ impl<K: PartialEq, V: Clone> Memo<K, V> {
         self.0.as_ref().map(|(_, v)| v.clone())
     }
 
+    /// Stores `(key, value)` as the sole entry, replacing whatever was held. A
+    /// later [`get`](Self::get) of an equal key serves this `value`, so a value
+    /// computed elsewhere can be published without rerunning the compute.
+    pub fn install(&mut self, key: K, value: V) {
+        self.0 = Some((key, value));
+    }
+
     /// The cached value for `key`, or `f(&key, ctx)` computed, stored, and
     /// returned on a miss. `ctx` carries the layer-fixed inputs a compute needs
     /// that are not part of the key.
