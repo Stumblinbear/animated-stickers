@@ -697,7 +697,8 @@ fn simplify_span(
         (end, &rev)
     };
 
-    let g = guard.map(|(field, keep)| ChainGuard::new(field, keep, cs, cc));
+    let g = guard
+        .map(|(field, keep)| crate::timing::GUARD.time(|| ChainGuard::new(field, keep, cs, cc)));
     let merged = simplify_open(cs, cc, simplify, corner_threshold, g.as_ref());
 
     if forward {
@@ -756,7 +757,7 @@ fn simplify_open(
     // merge would otherwise fold a third segment into the cubic just written,
     // and a run of them walks one surviving anchor's handle down the whole chain
     // in a single pass, spending far more than the tolerance was asked to buy.
-    loop {
+    crate::timing::SWEEP.time(|| loop {
         let mut merged_any = false;
         let mut deferred = usize::MAX;
         for j in 1..k {
@@ -794,7 +795,7 @@ fn simplify_open(
         if !merged_any {
             break;
         }
-    }
+    });
 
     let mut out = Vec::new();
     let mut i = 0;
@@ -1262,7 +1263,8 @@ fn merge_ring(
         return (path.clone(), (0..n).collect());
     }
 
-    let veto = (floor_frac > 0.0).then(|| WidthGuard::new(path, floor_frac, cross));
+    let veto = (floor_frac > 0.0)
+        .then(|| crate::timing::GUARD.time(|| WidthGuard::new(path, floor_frac, cross)));
 
     // Anchor positions with their incoming and outgoing control handles.
     // Segment i runs a[i] -> a[i+1] with controls out_h[i] and in_h[i+1].
@@ -1294,7 +1296,7 @@ fn merge_ring(
     // merge would otherwise fold a third segment into the cubic just written,
     // and a run of them walks one surviving anchor's handle down the whole side
     // in a single pass, spending far more than the tolerance was asked to buy.
-    loop {
+    crate::timing::SWEEP.time(|| loop {
         let mut merged_any = false;
         let mut deferred = usize::MAX;
 
@@ -1348,7 +1350,7 @@ fn merge_ring(
         if !merged_any {
             break;
         }
-    }
+    });
 
     let start = (0..n).find(|&i| alive[i]).unwrap();
     let mut cubics = Vec::with_capacity(count);

@@ -143,69 +143,71 @@ pub fn simplify_paths(
         return (colors, seams.clone());
     }
 
-    let corner_threshold = crate::config::corner_threshold(cfg.alphamax);
-    static NONE: &[AnchorSpan] = &[];
+    crate::timing::SIMPLIFY.time(move || {
+        let corner_threshold = crate::config::corner_threshold(cfg.alphamax);
+        static NONE: &[AnchorSpan] = &[];
 
-    // The layer's original geometry for the cross-path width veto: a thin band
-    // of base color left visible between two overpainted shapes exists only
-    // between their paths, so no single ring's self-clearance can see it. The
-    // field owns its samples, so mutating the paths below cannot disturb it,
-    // and every path measures against the same original bytes regardless of
-    // the parallel completion order. The sidecar rides along so each span's
-    // segments register under the span's canonical key.
-    let cross = (cfg.width_keep > 0.0).then(|| {
-        let flat: Vec<(&TracedPath, &[AnchorSpan])> = colors
-            .iter()
-            .enumerate()
-            .flat_map(|(ci, (_, ps))| {
-                ps.iter().enumerate().map(move |(pi, p)| {
-                    let spans = seams
-                        .get(ci)
-                        .and_then(|c| c.get(pi))
-                        .map_or(NONE, |s| s.as_slice());
-                    (p, spans)
+        // The layer's original geometry for the cross-path width veto: a thin band
+        // of base color left visible between two overpainted shapes exists only
+        // between their paths, so no single ring's self-clearance can see it. The
+        // field owns its samples, so mutating the paths below cannot disturb it,
+        // and every path measures against the same original bytes regardless of
+        // the parallel completion order. The sidecar rides along so each span's
+        // segments register under the span's canonical key.
+        let cross = (cfg.width_keep > 0.0).then(|| {
+            let flat: Vec<(&TracedPath, &[AnchorSpan])> = colors
+                .iter()
+                .enumerate()
+                .flat_map(|(ci, (_, ps))| {
+                    ps.iter().enumerate().map(move |(pi, p)| {
+                        let spans = seams
+                            .get(ci)
+                            .and_then(|c| c.get(pi))
+                            .map_or(NONE, |s| s.as_slice());
+                        (p, spans)
+                    })
                 })
+                .collect();
+            crate::timing::FIELD.time(|| crate::fit::CrossField::new(&flat))
+        });
+
+        let mut offsets = Vec::with_capacity(colors.len());
+        let mut total = 0;
+
+        for (_, ps) in &colors {
+            offsets.push(total);
+            total += ps.len();
+        }
+
+        let remapped: TraceSeams = colors
+            .par_iter_mut()
+            .enumerate()
+            .map(|(ci, (_, paths))| {
+                paths
+                    .iter_mut()
+                    .enumerate()
+                    .map(|(pi, p)| {
+                        let spans = seams
+                            .get(ci)
+                            .and_then(|c| c.get(pi))
+                            .map_or(NONE, |s| s.as_slice());
+                        let (simplified, spans) = crate::fit::simplify_closed_seamed(
+                            p,
+                            cfg.simplify,
+                            corner_threshold,
+                            spans,
+                            cfg.width_keep,
+                            cross.as_ref().map(|f| (f, offsets[ci] + pi)),
+                        );
+                        *p = simplified;
+                        spans
+                    })
+                    .collect()
             })
             .collect();
-        crate::fit::CrossField::new(&flat)
-    });
 
-    let mut offsets = Vec::with_capacity(colors.len());
-    let mut total = 0;
-
-    for (_, ps) in &colors {
-        offsets.push(total);
-        total += ps.len();
-    }
-
-    let remapped: TraceSeams = colors
-        .par_iter_mut()
-        .enumerate()
-        .map(|(ci, (_, paths))| {
-            paths
-                .iter_mut()
-                .enumerate()
-                .map(|(pi, p)| {
-                    let spans = seams
-                        .get(ci)
-                        .and_then(|c| c.get(pi))
-                        .map_or(NONE, |s| s.as_slice());
-                    let (simplified, spans) = crate::fit::simplify_closed_seamed(
-                        p,
-                        cfg.simplify,
-                        corner_threshold,
-                        spans,
-                        cfg.width_keep,
-                        cross.as_ref().map(|f| (f, offsets[ci] + pi)),
-                    );
-                    *p = simplified;
-                    spans
-                })
-                .collect()
-        })
-        .collect();
-
-    (colors, remapped)
+        (colors, remapped)
+    })
 }
 
 /// Converts document-space pin points into the scaled space of a crop at

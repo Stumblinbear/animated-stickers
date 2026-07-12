@@ -4,7 +4,9 @@
 //!
 //! Run: `cargo run --release --example perf`
 
+use std::alloc::{GlobalAlloc, Layout, System};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::time::Instant;
 
 use image::{GrayImage, RgbaImage};
@@ -16,6 +18,90 @@ use pawtrace::{palette, pipeline, psd_import, raster, regions};
 
 const FIXTURES: &[&str] = &["seff_deer_a.psd", "seff_deer_b.psd"];
 const ITERS: usize = 4;
+
+static ALLOCS: AtomicU64 = AtomicU64::new(0);
+static BYTES: AtomicU64 = AtomicU64::new(0);
+// Signed: blocks the runtime allocated before the gate opened are freed while
+// counting is on, so LIVE takes subtractions whose additions it never saw and
+// dips below zero. An unsigned counter would wrap and latch a garbage PEAK.
+static LIVE: AtomicI64 = AtomicI64::new(0);
+static PEAK: AtomicI64 = AtomicI64::new(0);
+
+// perf.rs's own timing pass reads wall clock, and counting every alloc adds
+// enough overhead to move those numbers. The gate keeps the memory pass
+// opt-in (PAWTRACE_MEM) and separate from the timing pass.
+static ENABLED: AtomicBool = AtomicBool::new(false);
+
+struct Counting<A>(A);
+
+impl<A> Counting<A> {
+    fn took(&self, size: usize) {
+        ALLOCS.fetch_add(1, Ordering::Relaxed);
+        BYTES.fetch_add(size as u64, Ordering::Relaxed);
+        Self::grew(size as i64);
+    }
+
+    fn grew(delta: i64) {
+        let live = LIVE.fetch_add(delta, Ordering::Relaxed) + delta;
+        PEAK.fetch_max(live, Ordering::Relaxed);
+    }
+}
+
+unsafe impl<A: GlobalAlloc> GlobalAlloc for Counting<A> {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        let p = unsafe { self.0.alloc(layout) };
+        if ENABLED.load(Ordering::Relaxed) && !p.is_null() {
+            self.took(layout.size());
+        }
+        p
+    }
+
+    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+        let p = unsafe { self.0.alloc_zeroed(layout) };
+        if ENABLED.load(Ordering::Relaxed) && !p.is_null() {
+            self.took(layout.size());
+        }
+        p
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        if ENABLED.load(Ordering::Relaxed) {
+            Self::grew(-(layout.size() as i64));
+        }
+        unsafe { self.0.dealloc(ptr, layout) }
+    }
+
+    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        let p = unsafe { self.0.realloc(ptr, layout, new_size) };
+        if ENABLED.load(Ordering::Relaxed) && !p.is_null() {
+            ALLOCS.fetch_add(1, Ordering::Relaxed);
+            BYTES.fetch_add(new_size.saturating_sub(layout.size()) as u64, Ordering::Relaxed);
+            Self::grew(new_size as i64 - layout.size() as i64);
+        }
+        p
+    }
+}
+
+#[global_allocator]
+static ALLOC: Counting<System> = Counting(System);
+
+/// Prints the run's allocation count, total bytes allocated, and peak live
+/// bytes to stderr.
+fn report_allocs() {
+    let mib = |b: i64| b.max(0) as f64 / (1024.0 * 1024.0);
+    eprintln!("--- allocations (whole run, since enable)");
+    eprintln!("  {:32} {:9}", "allocations", ALLOCS.load(Ordering::Relaxed));
+    eprintln!(
+        "  {:32} {:9.1} MiB",
+        "bytes allocated",
+        mib(BYTES.load(Ordering::Relaxed) as i64)
+    );
+    eprintln!(
+        "  {:32} {:9.1} MiB",
+        "peak live bytes",
+        mib(PEAK.load(Ordering::Relaxed))
+    );
+}
 
 const STAGES: &[&str] = &[
     "crop to alpha",
@@ -129,10 +215,20 @@ fn run_layer(
 }
 
 fn main() {
+    if std::env::var_os("PAWTRACE_MEM").is_some() {
+        ENABLED.store(true, Ordering::Relaxed);
+    }
+
     let fixtures_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures");
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let fixtures: Vec<String> = if args.is_empty() {
+        FIXTURES.iter().map(|&s| s.to_string()).collect()
+    } else {
+        args
+    };
     let mut grand_total = 0.0;
 
-    for &fixture in FIXTURES {
+    for fixture in &fixtures {
         let psd_path = fixtures_dir.join(fixture);
         let profiles = ProfileStack::load_near(&psd_path);
         let bytes = std::fs::read(&psd_path).expect("fixture readable");
@@ -222,4 +318,7 @@ fn main() {
     // Splits shapes/trace and segment/absorb, summed over every run above
     // (warmup and identity checks included), so only the ratios matter.
     pawtrace::timing::report();
+    if ENABLED.load(Ordering::Relaxed) {
+        report_allocs();
+    }
 }

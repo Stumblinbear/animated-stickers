@@ -558,11 +558,6 @@ pub(crate) fn stitched_contours(
             .collect();
     }
 
-    let walked: Vec<Vec<Vec<(f64, f64)>>> = shapes
-        .par_iter()
-        .map(|(_, mask, _, _)| trace::walk_rings(mask))
-        .collect();
-
     let anchor = shapes.iter().fold((i64::MAX, i64::MAX), |a, s| {
         let t = translation(s.3);
         (a.0.min(t.0), a.1.min(t.1))
@@ -573,114 +568,130 @@ pub(crate) fn stitched_contours(
         (t.0 - anchor.0, t.1 - anchor.1)
     };
 
-    let mut dense: Vec<DenseRing> = Vec::new();
-    let mut gids_by_shape: Vec<Vec<usize>> = vec![Vec::new(); shapes.len()];
-    for (si, rings) in walked.iter().enumerate() {
-        let t = frame(shapes[si].3);
-        for (ri, ring) in rings.iter().enumerate() {
-            gids_by_shape[si].push(dense.len());
-            dense.push(densify(si, ri, ring, t));
-        }
-    }
+    let (walked, dense, gids_by_shape) = crate::timing::SEAM_WALK.time(|| {
+        let walked: Vec<Vec<Vec<(f64, f64)>>> = shapes
+            .par_iter()
+            .map(|(_, mask, _, _)| trace::walk_rings(mask))
+            .collect();
 
-    // A unit segment borders exactly two pixels, so it lies on a shape's
-    // boundary exactly when the shape's mask holds one side: interior
-    // parent-child seams are covered by the parent and never match, sibling
-    // seams match, and a subtree-union boundary along a descendant's
-    // silhouette matches too (which also pins the stacked outlines
-    // together). No containment-tree knowledge enters here.
-    let mut occ: HashMap<UnitSeg, Vec<(u32, u32)>> = HashMap::new();
-    for (gid, d) in dense.iter().enumerate() {
-        let p = d.pts.len();
-        for k in 0..p {
-            occ.entry(UnitSeg::of(d.pts[k], d.pts[(k + 1) % p]))
-                .or_default()
-                .push((gid as u32, k as u32));
+        let mut dense: Vec<DenseRing> = Vec::new();
+        let mut gids_by_shape: Vec<Vec<usize>> = vec![Vec::new(); shapes.len()];
+        for (si, rings) in walked.iter().enumerate() {
+            let t = frame(shapes[si].3);
+            for (ri, ring) in rings.iter().enumerate() {
+                gids_by_shape[si].push(dense.len());
+                dense.push(densify(si, ri, ring, t));
+            }
         }
-    }
+        (walked, dense, gids_by_shape)
+    });
 
-    let mut partners: Vec<Vec<Vec<RingId>>> = dense
-        .iter()
-        .map(|d| vec![Vec::new(); d.pts.len()])
-        .collect();
-    for group in occ.into_values() {
-        if group.len() < 2 {
-            continue;
+    let partners: Vec<Vec<Vec<RingId>>> = crate::timing::SEAM_MATCH.time(|| {
+        // A unit segment borders exactly two pixels, so it lies on a shape's
+        // boundary exactly when the shape's mask holds one side: interior
+        // parent-child seams are covered by the parent and never match, sibling
+        // seams match, and a subtree-union boundary along a descendant's
+        // silhouette matches too (which also pins the stacked outlines
+        // together). No containment-tree knowledge enters here.
+        let mut occ: HashMap<UnitSeg, Vec<(u32, u32)>> = HashMap::new();
+        for (gid, d) in dense.iter().enumerate() {
+            let p = d.pts.len();
+            for k in 0..p {
+                occ.entry(UnitSeg::of(d.pts[k], d.pts[(k + 1) % p]))
+                    .or_default()
+                    .push((gid as u32, k as u32));
+            }
         }
-        for &(g, k) in &group {
-            let mut others: Vec<RingId> = group
-                .iter()
-                .filter(|&&(og, _)| og != g)
-                .map(|&(og, _)| RingId(og))
-                .collect();
-            others.sort_unstable();
-            others.dedup();
-            partners[g as usize][k as usize] = others;
-        }
-    }
 
-    let runs: Vec<Vec<Run>> = partners.par_iter().map(|p| shared_runs(p)).collect();
+        let mut partners: Vec<Vec<Vec<RingId>>> = dense
+            .iter()
+            .map(|d| vec![Vec::new(); d.pts.len()])
+            .collect();
+        for group in occ.into_values() {
+            if group.len() < 2 {
+                continue;
+            }
+            for &(g, k) in &group {
+                let mut others: Vec<RingId> = group
+                    .iter()
+                    .filter(|&&(og, _)| og != g)
+                    .map(|&(og, _)| RingId(og))
+                    .collect();
+                others.sort_unstable();
+                others.dedup();
+                partners[g as usize][k as usize] = others;
+            }
+        }
+        partners
+    });
+
+    let runs: Vec<Vec<Run>> =
+        crate::timing::SEAM_RUNS.time(|| partners.par_iter().map(|p| shared_runs(p)).collect());
 
     let gate = stitch.seam_slack > 1.0 && stitch.stroke_merge_dist > 0.0;
     let thresh = 2.0 * stitch.stroke_merge_dist;
 
-    shapes
-        .par_iter()
-        .enumerate()
-        .map(|(si, (color, mask, slack, origin))| {
-            if gids_by_shape[si].iter().all(|&g| runs[g].is_empty()) {
-                return plain(mask, slack.as_ref(), *origin);
-            }
+    crate::timing::SEAM_ASM.time(|| {
+        shapes
+            .par_iter()
+            .enumerate()
+            .map(|(si, (color, mask, slack, origin))| {
+                if gids_by_shape[si].iter().all(|&g| runs[g].is_empty()) {
+                    return plain(mask, slack.as_ref(), *origin);
+                }
 
-            let t = frame(*origin);
-            let contours = gids_by_shape[si]
-                .iter()
-                .filter_map(|&gid| {
-                    let d = &dense[gid];
-                    if runs[gid].is_empty() {
-                        return Some(scaled_free_ring(
-                            &walked[si][d.ring],
-                            t,
-                            slack.as_ref(),
-                            contour,
-                        ));
-                    }
+                let t = frame(*origin);
+                let contours = gids_by_shape[si]
+                    .iter()
+                    .filter_map(|&gid| {
+                        let d = &dense[gid];
+                        if runs[gid].is_empty() {
+                            return Some(scaled_free_ring(
+                                &walked[si][d.ring],
+                                t,
+                                slack.as_ref(),
+                                contour,
+                            ));
+                        }
 
-                    let stretches: Vec<(bool, Stretch)> = runs[gid]
-                        .iter()
-                        .map(|r| {
-                            let full = r.len == d.pts.len();
-                            let (canon, forward) = if full {
-                                canonical_cycle(&cycle_vertices(&d.pts))
-                            } else {
-                                canonical_open(run_chain(&d.pts, r.start, r.len))
-                            };
-                            let mut colors = vec![*color];
-                            colors.extend(
-                                partners[gid][r.start]
-                                    .iter()
-                                    .map(|&RingId(og)| shapes[dense[og as usize].shape].0),
-                            );
-                            let sl = run_slack(&colors, gate, thresh);
-                            (full, stretch_of(&canon, forward, sl, contour))
-                        })
-                        .collect();
+                        let stretches: Vec<(bool, Stretch)> = runs[gid]
+                            .iter()
+                            .map(|r| {
+                                let full = r.len == d.pts.len();
+                                let (canon, forward) = if full {
+                                    canonical_cycle(&cycle_vertices(&d.pts))
+                                } else {
+                                    canonical_open(run_chain(&d.pts, r.start, r.len))
+                                };
+                                let mut colors = vec![*color];
+                                colors.extend(
+                                    partners[gid][r.start]
+                                        .iter()
+                                        .map(|&RingId(og)| shapes[dense[og as usize].shape].0),
+                                );
+                                let sl = run_slack(&colors, gate, thresh);
+                                (full, stretch_of(&canon, forward, sl, contour))
+                            })
+                            .collect();
 
-                    if let Some((true, st)) = stretches.first().filter(|_| stretches.len() == 1) {
-                        return full_ring(st);
-                    }
-                    let paired: Vec<(Run, Stretch)> = runs[gid]
-                        .iter()
-                        .zip(stretches)
-                        .map(|(r, (_, st))| (Run { start: r.start, len: r.len }, st))
-                        .collect();
-                    assemble_ring(d, &paired, slack.as_ref(), t, contour)
-                })
-                .collect();
+                        if let Some((true, st)) =
+                            stretches.first().filter(|_| stretches.len() == 1)
+                        {
+                            return full_ring(st);
+                        }
+                        let paired: Vec<(Run, Stretch)> = runs[gid]
+                            .iter()
+                            .zip(stretches)
+                            .map(|(r, (_, st))| (Run { start: r.start, len: r.len }, st))
+                            .collect();
+                        assemble_ring(d, &paired, slack.as_ref(), t, contour)
+                    })
+                    .collect();
 
-            (contours, (anchor.0 as f64, anchor.1 as f64))
-        })
-        .collect()
+                (contours, (anchor.0 as f64, anchor.1 as f64))
+            })
+            .collect()
+    })
 }
 
 #[cfg(test)]
