@@ -554,18 +554,9 @@ pub fn simplify_closed_seamed(
         .map(|(f, _)| (f, floor_frac))
         .filter(|_| floor_frac > 0.0);
 
-    let anchor = |i: usize| {
-        if i == 0 {
-            path.start
-        } else {
-            path.cubics[i - 1].2
-        }
-    };
-
     if spans.len() == 1 && spans[0].start == spans[0].end {
         let s = spans[0];
-        let start = anchor(s.start);
-        let chain: Vec<(V, V, V)> = (0..n).map(|j| path.cubics[(s.start + j) % n]).collect();
+        let (start, chain) = span_chain(path, &s);
         let cubics = simplify_span(
             start,
             &chain,
@@ -599,13 +590,10 @@ pub fn simplify_closed_seamed(
         match span_at[j] {
             Some(si) => {
                 let s = &spans[si];
-
-                let count = (s.end + n - s.start) % n;
-                let chain: Vec<(V, V, V)> =
-                    (0..count).map(|t| path.cubics[(s.start + t) % n]).collect();
+                let (start, chain) = span_chain(path, s);
 
                 let run = simplify_span(
-                    anchor(s.start),
+                    start,
                     &chain,
                     simplify,
                     corner_threshold,
@@ -616,7 +604,7 @@ pub fn simplify_closed_seamed(
                 runs.push((cubics.len(), run.len(), s.forward));
                 cubics.extend(run);
 
-                j += count;
+                j += chain.len();
             }
             None => {
                 cubics.push(path.cubics[j]);
@@ -725,11 +713,7 @@ fn simplify_open(
         return cubics.to_vec();
     }
 
-    let mut a: Vec<V> = Vec::with_capacity(k + 1);
-    a.push(start);
-    for c in cubics {
-        a.push(c.2);
-    }
+    let a = anchors(start, cubics);
 
     let mut out_h = vec![(0.0, 0.0); k + 1];
     let mut in_h = vec![(0.0, 0.0); k + 1];
@@ -807,18 +791,27 @@ fn simplify_open(
     out
 }
 
-/// The anchor positions of a closed path in index order: `start`, then each
-/// segment's endpoint (the last segment closes back onto `start`).
-fn anchors(path: &TracedPath) -> Vec<V> {
-    let n = path.cubics.len();
+/// The anchor positions of a cubic run from `start` in index order: `start`,
+/// then each segment's endpoint.
+fn anchors(start: V, cubics: &[(V, V, V)]) -> Vec<V> {
+    let mut a = Vec::with_capacity(cubics.len() + 1);
 
-    let mut a = Vec::with_capacity(n);
+    a.push(start);
 
-    a.push(path.start);
-
-    for k in 0..n.saturating_sub(1) {
-        a.push(path.cubics[k].2);
+    for c in cubics {
+        a.push(c.2);
     }
+
+    a
+}
+
+/// The anchor positions of a closed path in index order, one per segment: the
+/// last segment closes back onto `start`, so its endpoint is not an anchor of
+/// its own.
+fn ring_anchors(path: &TracedPath) -> Vec<V> {
+    let mut a = anchors(path.start, &path.cubics);
+
+    a.pop();
 
     a
 }
@@ -875,11 +868,9 @@ fn span_key(start: V, cubics: &[(V, V, V)]) -> u64 {
     h.finish()
 }
 
-/// A span's cubic run in its canonical direction: the run's start anchor and
-/// cubics, reversed when the path traverses the stretch backwards. The
-/// reversal reuses every coordinate exactly, so both siblings produce
-/// identical bytes.
-fn canonical_span(path: &TracedPath, s: &AnchorSpan) -> (V, Vec<(V, V, V)>) {
+/// The cubics a span covers, in ring order, and the anchor they run from. A
+/// span whose start and end anchors coincide covers the whole ring.
+fn span_chain(path: &TracedPath, s: &AnchorSpan) -> (V, Vec<(V, V, V)>) {
     let n = path.cubics.len();
 
     let count = if s.start == s.end {
@@ -895,6 +886,16 @@ fn canonical_span(path: &TracedPath, s: &AnchorSpan) -> (V, Vec<(V, V, V)>) {
     };
 
     let chain: Vec<(V, V, V)> = (0..count).map(|t| path.cubics[(s.start + t) % n]).collect();
+
+    (start, chain)
+}
+
+/// A span's cubic run in its canonical direction: the run's start anchor and
+/// cubics, reversed when the path traverses the stretch backwards. The
+/// reversal reuses every coordinate exactly, so both siblings produce
+/// identical bytes.
+fn canonical_span(path: &TracedPath, s: &AnchorSpan) -> (V, Vec<(V, V, V)>) {
+    let (start, chain) = span_chain(path, s);
 
     if s.forward {
         (start, chain)
@@ -1117,7 +1118,7 @@ struct WidthGuard<'a> {
 
 impl<'a> WidthGuard<'a> {
     fn new(path: &TracedPath, keep: f64, cross: Option<(&'a CrossField, usize)>) -> Self {
-        let a = anchors(path);
+        let a = ring_anchors(path);
         let n = a.len();
 
         let mut cur = path.start;
@@ -1266,13 +1267,8 @@ fn merge_ring(
     let veto = (floor_frac > 0.0)
         .then(|| crate::timing::GUARD.time(|| WidthGuard::new(path, floor_frac, cross)));
 
-    // Anchor positions with their incoming and outgoing control handles.
     // Segment i runs a[i] -> a[i+1] with controls out_h[i] and in_h[i+1].
-    let mut a: Vec<V> = Vec::with_capacity(n);
-    a.push(path.start);
-    for k in 0..n - 1 {
-        a.push(path.cubics[k].2);
-    }
+    let a = ring_anchors(path);
     let mut out_h: Vec<V> = (0..n).map(|k| path.cubics[k].0).collect();
     let mut in_h: Vec<V> = (0..n).map(|k| path.cubics[(k + n - 1) % n].1).collect();
 
@@ -2007,7 +2003,7 @@ mod tests {
         let vetoed = simplify_closed(&path, 100.0, PI, 0.6, None);
         let unvetoed = simplify_closed(&path, 100.0, PI, 0.0, None);
 
-        let max_y = |p: &TracedPath| anchors(p).iter().map(|a| a.1).fold(f64::MIN, f64::max);
+        let max_y = |p: &TracedPath| ring_anchors(p).iter().map(|a| a.1).fold(f64::MIN, f64::max);
         assert!(max_y(&vetoed) >= 24.0, "the thin spike survives the veto");
         assert!(
             narrowest(&vetoed) <= 3.0,
@@ -2064,7 +2060,7 @@ mod tests {
     fn floor_frac_zero_disables_the_veto() {
         // floor_frac = 0 is the unguarded merge: the finger is swallowed exactly
         // as it was before the veto existed, so the knob truly turns off.
-        let max_y = |p: &TracedPath| anchors(p).iter().map(|a| a.1).fold(f64::MIN, f64::max);
+        let max_y = |p: &TracedPath| ring_anchors(p).iter().map(|a| a.1).fold(f64::MIN, f64::max);
         assert!(
             max_y(&simplify_closed(&spike_on_fill(), 100.0, PI, 0.0, None)) < 12.0,
             "floor_frac = 0 leaves the spike free to be swallowed"
