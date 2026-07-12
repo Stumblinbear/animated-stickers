@@ -795,9 +795,184 @@ mod tests {
         assert_eq!(canonical_run(pa, &sa[0]), canonical_run(pb, &sb[0]));
 
         let ct = crate::config::corner_threshold(Config::default().alphamax);
-        let (qa, ta) = fit::simplify_closed_seamed(pa, 1.0, ct, sa);
-        let (qb, tb) = fit::simplify_closed_seamed(pb, 1.0, ct, sb);
+        let keep = Config::default().simplify_width_keep;
+        let (qa, ta) = fit::simplify_closed_seamed(pa, 1.0, ct, sa, keep, None);
+        let (qb, tb) = fit::simplify_closed_seamed(pb, 1.0, ct, sb, keep, None);
         assert_eq!(canonical_run(&qa, &ta[0]), canonical_run(&qb, &tb[0]));
+    }
+
+    /// The number of anchors a span's run covers in its path.
+    fn span_len(path: &TracedPath, s: &AnchorSpan) -> usize {
+        let n = path.cubics.len();
+        if s.start == s.end {
+            n
+        } else {
+            (s.end + n - s.start) % n
+        }
+    }
+
+    /// Stitches and fits two siblings meeting on a long zigzag seam, with
+    /// boundary smoothing off so the shared span carries a dense anchor run.
+    fn zigzag_siblings() -> Vec<(TracedPath, Vec<AnchorSpan>)> {
+        let left = |px: u32, py: u32| px < 8 + 2 * ((py / 2) % 2);
+        let shapes = vec![
+            shape_from(Srgb([200, 30, 30]), (1, 1), 16, 24, left),
+            shape_from(Srgb([30, 30, 200]), (1, 1), 16, 24, |px, py| !left(px, py)),
+        ];
+        let cfg = Config { scale: 1, smoothing: 0.0, ..Default::default() };
+        let (cp, fp, sp) = (ContourParams::of(&cfg), FitParams::of(&cfg), StitchParams::of(&cfg));
+        stitched_contours(&shapes, &cp, &sp)
+            .iter()
+            .map(|(c, _)| {
+                let mut fits = trace::fit_contours(c, &fp);
+                assert_eq!(fits.len(), 1);
+                fits.pop().unwrap()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn guarded_seam_sheds_anchors_and_stays_bitwise_equal() {
+        // The regression the field-based span veto fixes: the old min-width
+        // clamp froze a zigzag seam dense. At the full tolerance the span must
+        // shed most of its run, and with the guard active on both siblings
+        // (each passing its own path id) the two canonical runs still compare
+        // exactly equal: the span code path reads no per-side quantity.
+        let fitted = zigzag_siblings();
+        let (pa, sa) = &fitted[0];
+        let (pb, sb) = &fitted[1];
+        assert!(!sa.is_empty() && !sb.is_empty(), "the siblings share a span");
+        let dense = span_len(pa, &sa[0]);
+        assert!(dense >= 8, "the zigzag seam carries a dense run, got {dense}");
+
+        let field = fit::CrossField::new(&[(pa, sa.as_slice()), (pb, sb.as_slice())]);
+        let ct = crate::config::corner_threshold(Config::default().alphamax);
+        let keep = Config::default().simplify_width_keep;
+        let (qa, ta) = fit::simplify_closed_seamed(pa, 5.0, ct, sa, keep, Some((&field, 0)));
+        let (qb, tb) = fit::simplify_closed_seamed(pb, 5.0, ct, sb, keep, Some((&field, 1)));
+
+        assert_eq!(canonical_run(&qa, &ta[0]), canonical_run(&qb, &tb[0]));
+        let shed = span_len(&qa, &ta[0]);
+        assert!(
+            shed * 2 <= dense,
+            "the guarded span sheds most of its anchors ({shed} of {dense})"
+        );
+    }
+
+    #[test]
+    fn unguarded_spans_at_zero_keep_stay_bitwise_equal() {
+        // keep = 0 builds no field, so spans simplify unguarded at the full
+        // tolerance: the merges still run over the same canonical bytes on
+        // both siblings and stay bitwise equal.
+        let fitted = zigzag_siblings();
+        let (pa, sa) = &fitted[0];
+        let (pb, sb) = &fitted[1];
+
+        let ct = crate::config::corner_threshold(Config::default().alphamax);
+        let (qa, ta) = fit::simplify_closed_seamed(pa, 5.0, ct, sa, 0.0, None);
+        let (qb, tb) = fit::simplify_closed_seamed(pb, 5.0, ct, sb, 0.0, None);
+
+        assert!(
+            span_len(&qa, &ta[0]) < span_len(pa, &sa[0]),
+            "the unguarded span simplifies at the full tolerance"
+        );
+        assert_eq!(canonical_run(&qa, &ta[0]), canonical_run(&qb, &tb[0]));
+    }
+
+    /// The narrowest cross-width of a closed path: the smallest distance
+    /// between dense samples over a quarter perimeter apart, i.e. across the
+    /// shape rather than along it.
+    fn narrowest(path: &TracedPath) -> f64 {
+        let bez = |b: &[V; 4], t: f64| {
+            let u = 1.0 - t;
+            (
+                b[0].0 * u * u * u + 3.0 * b[1].0 * u * u * t + 3.0 * b[2].0 * u * t * t + b[3].0 * t * t * t,
+                b[0].1 * u * u * u + 3.0 * b[1].1 * u * u * t + 3.0 * b[2].1 * u * t * t + b[3].1 * t * t * t,
+            )
+        };
+        let mut pts: Vec<V> = Vec::new();
+        let mut cur = path.start;
+        for &(c1, c2, e) in &path.cubics {
+            for k in 0..8 {
+                pts.push(bez(&[cur, c1, c2, e], k as f64 / 8.0));
+            }
+            cur = e;
+        }
+        let m = pts.len();
+        let mut best = f64::INFINITY;
+        for i in 0..m {
+            for d in (m / 4)..=(m - m / 4) {
+                let (a, b) = (pts[i], pts[(i + d) % m]);
+                best = best.min(((a.0 - b.0).powi(2) + (a.1 - b.1).powi(2)).sqrt());
+            }
+        }
+        best
+    }
+
+    #[test]
+    fn field_guard_keeps_a_stitched_ink_band_thick() {
+        // A 3px lightning-bolt ink band stitched between two wide fills: both
+        // of the ink's boundaries are seams, so its width answers to nothing
+        // but the field (each seam's veto sees the opposite seam's original
+        // bytes; its own copies on either sibling are excluded by canonical
+        // key). Simplify moves the seams, and the band must keep the kept
+        // fraction of its original width while every seam stays bitwise-equal
+        // between the ink and its fill sibling.
+        let off = |py: u32| 4 * ((py as i64) / 8 % 2);
+        let shapes = vec![
+            shape_from(Srgb([200, 30, 30]), (1, 1), 24, 24, |px, py| {
+                (px as i64 - off(py)) < 8
+            }),
+            shape_from(Srgb([250, 250, 40]), (1, 1), 24, 24, |px, py| {
+                (8..11).contains(&(px as i64 - off(py)))
+            }),
+            shape_from(Srgb([30, 30, 200]), (1, 1), 24, 24, |px, py| {
+                (px as i64 - off(py)) >= 11
+            }),
+        ];
+        let cfg = Config { scale: 1, smoothing: 0.0, ..Default::default() };
+        let (cp, fp, sp) = (ContourParams::of(&cfg), FitParams::of(&cfg), StitchParams::of(&cfg));
+        let fitted: Vec<(TracedPath, Vec<AnchorSpan>)> = stitched_contours(&shapes, &cp, &sp)
+            .iter()
+            .map(|(c, _)| {
+                let mut fits = trace::fit_contours(c, &fp);
+                assert_eq!(fits.len(), 1);
+                fits.pop().unwrap()
+            })
+            .collect();
+        let (pi, si) = &fitted[1];
+        assert!(si.len() >= 2, "the ink's two boundaries are both seams");
+        let orig = narrowest(pi);
+        assert!(orig > 2.0, "the band starts thick, orig {orig}");
+
+        let refs: Vec<(&TracedPath, &[AnchorSpan])> =
+            fitted.iter().map(|(p, s)| (p, s.as_slice())).collect();
+        let field = fit::CrossField::new(&refs);
+        let ct = crate::config::corner_threshold(cfg.alphamax);
+        let keep = 0.6;
+
+        let simplified: Vec<(TracedPath, Vec<AnchorSpan>)> = fitted
+            .iter()
+            .enumerate()
+            .map(|(i, (p, s))| fit::simplify_closed_seamed(p, 5.0, ct, s, keep, Some((&field, i))))
+            .collect();
+
+        let (qi, ti) = &simplified[1];
+        assert!(
+            narrowest(qi) >= keep * orig - 0.05,
+            "the guarded band keeps its width ({} of {orig})",
+            narrowest(qi)
+        );
+
+        // Each of the ink's seams must still match its fill sibling's copy
+        // exactly: the guard changes which merges land, never the agreement.
+        for t in ti {
+            let matched = [0usize, 2]
+                .iter()
+                .flat_map(|&i| simplified[i].1.iter().map(move |s| (i, s)))
+                .any(|(i, s)| canonical_run(&simplified[i].0, s) == canonical_run(qi, t));
+            assert!(matched, "an ink seam stays bitwise-equal to a sibling copy");
+        }
     }
 
     #[test]

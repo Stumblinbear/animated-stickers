@@ -21,6 +21,7 @@ pub enum Field {
     SeamSlack,
     SeamStitch,
     Simplify,
+    SimplifyWidthKeep,
     StrokeWidth,
 }
 
@@ -41,6 +42,7 @@ pub fn apply(cfg: &mut Config, field: Field, v: f64) {
         Field::SeamSlack => cfg.seam_slack = v,
         Field::SeamStitch => cfg.seam_stitch = v >= 0.5,
         Field::Simplify => cfg.simplify = v,
+        Field::SimplifyWidthKeep => cfg.simplify_width_keep = v,
         Field::StrokeWidth => cfg.stroke_width = v as f32,
     }
 }
@@ -62,6 +64,7 @@ pub fn set(ov: &mut Overrides, field: Field, cfg: &Config) {
         Field::SeamSlack => ov.seam_slack = Some(cfg.seam_slack),
         Field::SeamStitch => ov.seam_stitch = Some(cfg.seam_stitch),
         Field::Simplify => ov.simplify = Some(cfg.simplify),
+        Field::SimplifyWidthKeep => ov.simplify_width_keep = Some(cfg.simplify_width_keep),
         Field::StrokeWidth => ov.stroke_width = Some(cfg.stroke_width),
     }
 }
@@ -83,6 +86,7 @@ pub fn clear(ov: &mut Overrides, field: Field) {
         Field::SeamSlack => ov.seam_slack = None,
         Field::SeamStitch => ov.seam_stitch = None,
         Field::Simplify => ov.simplify = None,
+        Field::SimplifyWidthKeep => ov.simplify_width_keep = None,
         Field::StrokeWidth => ov.stroke_width = None,
     }
 }
@@ -104,12 +108,13 @@ pub fn is_set(ov: &Overrides, field: Field) -> bool {
         Field::SeamSlack => ov.seam_slack.is_some(),
         Field::SeamStitch => ov.seam_stitch.is_some(),
         Field::Simplify => ov.simplify.is_some(),
+        Field::SimplifyWidthKeep => ov.simplify_width_keep.is_some(),
         Field::StrokeWidth => ov.stroke_width.is_some(),
     }
 }
 
 /// Every field, grouped by stage in strip order.
-pub const ALL: [Field; 15] = [
+pub const ALL: [Field; 16] = [
     Field::Scale,
     Field::AlphaThreshold,
     Field::Detail,
@@ -124,5 +129,6 @@ pub const ALL: [Field; 15] = [
     Field::SeamSlack,
     Field::SeamStitch,
     Field::Simplify,
+    Field::SimplifyWidthKeep,
     Field::StrokeWidth,
 ];

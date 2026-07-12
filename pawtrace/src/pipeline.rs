@@ -38,6 +38,7 @@ impl ShapeParams {
 pub struct SimplifyParams {
     pub simplify: f64,
     pub alphamax: f64,
+    pub width_keep: f64,
 }
 
 impl SimplifyParams {
@@ -45,6 +46,7 @@ impl SimplifyParams {
         Self {
             simplify: cfg.simplify,
             alphamax: cfg.alphamax,
+            width_keep: cfg.simplify_width_keep,
         }
     }
 }
@@ -144,6 +146,38 @@ pub fn simplify_paths(
     let corner_threshold = crate::config::corner_threshold(cfg.alphamax);
     static NONE: &[AnchorSpan] = &[];
 
+    // The layer's original geometry for the cross-path width veto: a thin band
+    // of base color left visible between two overpainted shapes exists only
+    // between their paths, so no single ring's self-clearance can see it. The
+    // field owns its samples, so mutating the paths below cannot disturb it,
+    // and every path measures against the same original bytes regardless of
+    // the parallel completion order. The sidecar rides along so each span's
+    // segments register under the span's canonical key.
+    let cross = (cfg.width_keep > 0.0).then(|| {
+        let flat: Vec<(&TracedPath, &[AnchorSpan])> = colors
+            .iter()
+            .enumerate()
+            .flat_map(|(ci, (_, ps))| {
+                ps.iter().enumerate().map(move |(pi, p)| {
+                    let spans = seams
+                        .get(ci)
+                        .and_then(|c| c.get(pi))
+                        .map_or(NONE, |s| s.as_slice());
+                    (p, spans)
+                })
+            })
+            .collect();
+        crate::fit::CrossField::new(&flat)
+    });
+
+    let mut offsets = Vec::with_capacity(colors.len());
+    let mut total = 0;
+
+    for (_, ps) in &colors {
+        offsets.push(total);
+        total += ps.len();
+    }
+
     let remapped: TraceSeams = colors
         .par_iter_mut()
         .enumerate()
@@ -156,8 +190,14 @@ pub fn simplify_paths(
                         .get(ci)
                         .and_then(|c| c.get(pi))
                         .map_or(NONE, |s| s.as_slice());
-                    let (simplified, spans) =
-                        crate::fit::simplify_closed_seamed(p, cfg.simplify, corner_threshold, spans);
+                    let (simplified, spans) = crate::fit::simplify_closed_seamed(
+                        p,
+                        cfg.simplify,
+                        corner_threshold,
+                        spans,
+                        cfg.width_keep,
+                        cross.as_ref().map(|f| (f, offsets[ci] + pi)),
+                    );
                     *p = simplified;
                     spans
                 })
@@ -807,7 +847,10 @@ mod tests {
         assert_eq!(shapes.len(), 2);
 
         let ring = shapes.iter().find(|s| s.0 == Srgb([20, 20, 20])).unwrap();
-        let block = shapes.iter().find(|s| s.0 == Srgb([200, 200, 200])).unwrap();
+        let block = shapes
+            .iter()
+            .find(|s| s.0 == Srgb([200, 200, 200]))
+            .unwrap();
         // The leaf covers_survivor rebuild reopens the hole over the block:
         // the field paints its own 512 pixels, not the 576 its plan mask holds.
         assert_eq!(on(&ring.1), 512);
@@ -946,7 +989,11 @@ mod tests {
         // 12x12, three vertical bands, light to dark left to right. Every
         // band touches the canvas edge (depth 0 for all), so luminance
         // orders the stack.
-        let colors = [Srgb([240, 240, 240]), Srgb([128, 128, 128]), Srgb([16, 16, 16])];
+        let colors = [
+            Srgb([240, 240, 240]),
+            Srgb([128, 128, 128]),
+            Srgb([16, 16, 16]),
+        ];
         let quant = image::RgbImage::from_fn(12, 12, |x, _| colors[(x / 4) as usize].into());
         let alpha = GrayImage::from_pixel(12, 12, image::Luma([255]));
         let cfg = Config {
@@ -1112,5 +1159,210 @@ mod tests {
         let scaled = scale_pins(&pins, (8, 16), 3, (8, 8));
 
         assert_eq!(scaled, vec![(2 * 3 + 1, 4 * 3 + 1)]);
+    }
+
+    /// A closed cubic path straight through the polygon `pts`: every segment is
+    /// a chord with its controls on the line, so the path traces `pts` exactly.
+    fn poly_path(pts: &[(f64, f64)]) -> TracedPath {
+        let n = pts.len();
+        let lerp =
+            |a: (f64, f64), b: (f64, f64), t: f64| (a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t);
+        let cubics = (0..n)
+            .map(|i| {
+                let (a, b) = (pts[i], pts[(i + 1) % n]);
+                (lerp(a, b, 1.0 / 3.0), lerp(a, b, 2.0 / 3.0), b)
+            })
+            .collect();
+        TracedPath {
+            start: pts[0],
+            cubics,
+        }
+    }
+
+    /// A dense 1px-step ring around the rectangle `[x0, x1] x [y0, y1]`.
+    fn dense_rect(x0: f64, y0: f64, x1: f64, y1: f64) -> TracedPath {
+        let mut pts = Vec::new();
+        let mut x = x0;
+        while x < x1 {
+            pts.push((x, y0));
+            x += 1.0;
+        }
+        let mut y = y0;
+        while y < y1 {
+            pts.push((x1, y));
+            y += 1.0;
+        }
+        x = x1;
+        while x > x0 {
+            pts.push((x, y1));
+            x -= 1.0;
+        }
+        y = y1;
+        while y > y0 {
+            pts.push((x0, y));
+            y -= 1.0;
+        }
+        poly_path(&pts)
+    }
+
+    /// The minimum distance between dense samples of two paths' curves.
+    fn path_gap(a: &TracedPath, b: &TracedPath) -> f64 {
+        let sample = |p: &TracedPath| -> Vec<(f64, f64)> {
+            let mut out = Vec::new();
+            let mut cur = p.start;
+            for &(c1, c2, e) in &p.cubics {
+                for k in 0..32 {
+                    let t = k as f64 / 32.0;
+                    let u = 1.0 - t;
+                    let bl = |i: f64, j: f64, k2: f64, l: f64| {
+                        i * u * u * u + 3.0 * j * u * u * t + 3.0 * k2 * u * t * t + l * t * t * t
+                    };
+                    out.push((bl(cur.0, c1.0, c2.0, e.0), bl(cur.1, c1.1, c2.1, e.1)));
+                }
+                cur = e;
+            }
+            out
+        };
+        let (sa, sb) = (sample(a), sample(b));
+        let mut best = f64::INFINITY;
+        for &(x, y) in &sa {
+            for &(u, v) in &sb {
+                best = best.min(((x - u).powi(2) + (y - v).powi(2)).sqrt());
+            }
+        }
+        best
+    }
+
+    /// A dense 1px-step ring through the axis-aligned polygon `corners`.
+    fn dense_poly(corners: &[(f64, f64)]) -> TracedPath {
+        let mut pts = Vec::new();
+        for (i, &(x0, y0)) in corners.iter().enumerate() {
+            let (x1, y1) = corners[(i + 1) % corners.len()];
+            let steps = ((x1 - x0).abs() + (y1 - y0).abs()) as usize;
+            for k in 0..steps {
+                let t = k as f64 / steps as f64;
+                pts.push((x0 + (x1 - x0) * t, y0 + (y1 - y0) * t));
+            }
+        }
+        poly_path(&pts)
+    }
+
+    /// A base shape under two children whose facing edges are 45-degree pixel
+    /// staircases a thin band of base color apart: the band is negative space
+    /// between the children's paths, unseen by either ring's self-clearance.
+    /// Chording a staircase puts the merged curve on its outer corners, half a
+    /// px outside the edge's mean line, so an unguarded simplify fattens both
+    /// children into the band.
+    fn banded_layer() -> Vec<(String, Vec<TracedPath>)> {
+        let steps = 28;
+        let stair: Vec<(f64, f64)> = (0..steps)
+            .flat_map(|k| {
+                let (x, y) = (20.0 + k as f64, 2.0 + k as f64);
+                [(x + 1.0, y), (x + 1.0, y + 1.0)]
+            })
+            .collect();
+        let band = 2.0;
+
+        let mut a = vec![(2.0, 2.0), (20.0, 2.0)];
+        a.extend(&stair);
+        a.push((2.0, 30.0));
+
+        let mut b = vec![(60.0, 2.0), (60.0, 30.0)];
+        b.extend(stair.iter().rev().map(|&(x, y)| (x + band, y)));
+        b.push((20.0 + band, 2.0));
+
+        vec![
+            ("base".into(), vec![dense_rect(0.0, 0.0, 62.0, 32.0)]),
+            ("children".into(), vec![dense_poly(&a), dense_poly(&b)]),
+        ]
+    }
+
+    #[test]
+    fn cross_guard_keeps_the_band_between_children_open() {
+        let keep = 0.6;
+        let params = SimplifyParams {
+            simplify: 3.0,
+            alphamax: 2.0,
+            width_keep: keep,
+        };
+        let layer = banded_layer();
+        let before: Vec<usize> = layer[1].1.iter().map(|p| p.cubics.len()).collect();
+        let orig_gap = path_gap(&layer[1].1[0], &layer[1].1[1]);
+
+        let (out, _) = simplify_paths(layer, &Vec::new(), &params);
+        let children = &out[1].1;
+
+        assert!(
+            path_gap(&children[0], &children[1]) >= keep * orig_gap - 0.05,
+            "the simplified children keep the kept fraction of the {orig_gap}px band, gap {}",
+            path_gap(&children[0], &children[1])
+        );
+        for (p, &b) in children.iter().zip(&before) {
+            assert!(
+                p.cubics.len() < b,
+                "each child still sheds anchors ({} of {b})",
+                p.cubics.len()
+            );
+        }
+    }
+
+    #[test]
+    fn cross_guard_off_at_zero_keep_matches_the_unguarded_pass() {
+        // keep = 0 disables the cross-guard with the self-guard: the band is
+        // free to close below the guarded bound, and the output is
+        // byte-identical to the per-path unguarded simplify.
+        let params = SimplifyParams {
+            simplify: 3.0,
+            alphamax: 2.0,
+            width_keep: 0.0,
+        };
+        let layer = banded_layer();
+        let orig_gap = path_gap(&layer[1].1[0], &layer[1].1[1]);
+        let (out, _) = simplify_paths(layer, &Vec::new(), &params);
+        let children = &out[1].1;
+
+        assert!(
+            path_gap(&children[0], &children[1]) < 0.6 * orig_gap - 0.05,
+            "with the guard off the band closes, gap {} of {orig_gap}",
+            path_gap(&children[0], &children[1])
+        );
+
+        let ct = crate::config::corner_threshold(params.alphamax);
+        for ((_, paths), (_, plain)) in out.iter().zip(banded_layer().iter()) {
+            for (p, orig) in paths.iter().zip(plain) {
+                let (want, _) = crate::fit::simplify_closed_seamed(orig, 3.0, ct, &[], 0.0, None);
+                assert_eq!(p.start, want.start);
+                assert_eq!(p.cubics, want.cubics);
+            }
+        }
+    }
+
+    #[test]
+    fn cross_guard_never_binds_between_far_apart_paths() {
+        // Two rings 500px apart: the cross floor sits at hundreds of px and no
+        // merge comes near it, so the output is byte-identical to simplifying
+        // each path without a cross field.
+        let keep = 0.6;
+        let params = SimplifyParams {
+            simplify: 8.0,
+            alphamax: 2.0,
+            width_keep: keep,
+        };
+        let layer = vec![(
+            "far".into(),
+            vec![
+                dense_rect(0.0, 0.0, 30.0, 20.0),
+                dense_rect(500.0, 0.0, 530.0, 20.0),
+            ],
+        )];
+
+        let (out, _) = simplify_paths(layer.clone(), &Vec::new(), &params);
+
+        let ct = crate::config::corner_threshold(params.alphamax);
+        for (p, orig) in out[0].1.iter().zip(&layer[0].1) {
+            let (want, _) = crate::fit::simplify_closed_seamed(orig, 8.0, ct, &[], keep, None);
+            assert_eq!(p.start, want.start);
+            assert_eq!(p.cubics, want.cubics);
+        }
     }
 }

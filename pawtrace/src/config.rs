@@ -78,6 +78,11 @@ pub struct Config {
     /// one cubic. Corners survive. Independent of opttolerance, which sets
     /// the initial fit density. 0 = off.
     pub simplify: f64, // default 0
+    /// Fraction of a thin feature's original width a simplify merge must leave
+    /// intact: a merge that would sweep a boundary past this fraction of the
+    /// way toward its opposite side is vetoed, so simplify never thins ink to a
+    /// hairline. 0 disables the veto (simplify merges on tolerance alone).
+    pub simplify_width_keep: f64, // default 0.6
     /// Centered stroke on every traced path of the layer, in source px.
     /// 0 = none. The sticker outline hosted by Fill layers: a "* Fill"
     /// profile sets it once for every matte.
@@ -105,6 +110,7 @@ impl Default for Config {
             seam_slack: 1.0,
             seam_stitch: true,
             simplify: 0.0,
+            simplify_width_keep: 0.6,
             stroke_width: 0.0,
             stroke_color: Srgb([255, 255, 255]),
         }

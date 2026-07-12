@@ -117,6 +117,21 @@ pub fn inspector(app: &App) -> Element<'_, Msg> {
         ),
         setting(
             app,
+            "Simplify width keep",
+            format!("{:.0}%", cfg.simplify_width_keep * 100.0),
+            "Protects thin features from the simplify pass: a merge that would \
+             sweep a boundary past this fraction of the way toward its opposite \
+             side is rejected, so a stroke or fill never thins to a hairline. \
+             Higher preserves more width but removes fewer anchors. 0 turns the \
+             protection off.",
+            Field::SimplifyWidthKeep,
+            slider(0.0..=0.95, cfg.simplify_width_keep, |v| {
+                Msg::Edit(EditMsg::Set(Field::SimplifyWidthKeep, v))
+            })
+            .step(0.05),
+        ),
+        setting(
+            app,
             "Sticker stroke",
             format!("{:.1} px", cfg.stroke_width),
             "Centered stroke on every path of the layer, in source \

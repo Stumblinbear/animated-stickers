@@ -77,7 +77,15 @@ pub fn fit_closed(
         } else {
             norm(sub(seg[seg.len() - 2], seg[seg.len() - 1]))
         };
-        fit_cubic(&seg, t1, t2, tol * tol, seg_slack.as_deref(), &mut cubics, 0);
+        fit_cubic(
+            &seg,
+            t1,
+            t2,
+            tol * tol,
+            seg_slack.as_deref(),
+            &mut cubics,
+            0,
+        );
     }
     Some(TracedPath { start, cubics })
 }
@@ -140,8 +148,15 @@ pub fn fit_closed_seamed(
             return None;
         }
         return Some((
-            TracedPath { start: pts[s.start], cubics },
-            vec![AnchorSpan { start: 0, end: 0, forward: s.forward }],
+            TracedPath {
+                start: pts[s.start],
+                cubics,
+            },
+            vec![AnchorSpan {
+                start: 0,
+                end: 0,
+                forward: s.forward,
+            }],
         ));
     }
 
@@ -215,7 +230,15 @@ pub fn fit_closed_seamed(
                 let seg_slack = slack.map(|sl| circular_slice(sl, a, b));
                 let t1 = norm(sub(seg[1], seg[0]));
                 let t2 = norm(sub(seg[seg.len() - 2], seg[seg.len() - 1]));
-                fit_cubic(&seg, t1, t2, tol * tol, seg_slack.as_deref(), &mut cubics, 0);
+                fit_cubic(
+                    &seg,
+                    t1,
+                    t2,
+                    tol * tol,
+                    seg_slack.as_deref(),
+                    &mut cubics,
+                    0,
+                );
                 i += 1;
             }
         }
@@ -268,7 +291,13 @@ pub fn fit_open(pts: &[V], corners: &[usize], tol: f64, slack: Option<&[f64]>) -
 /// non-`forward` span reverses its inputs before the fit and the resulting
 /// run after it, by index order and control-point swap alone, so both
 /// siblings emit bitwise-equal coordinates.
-fn fit_span(pts: &[V], corners: &[usize], tol: f64, slack: Option<&[f64]>, forward: bool) -> Vec<(V, V, V)> {
+fn fit_span(
+    pts: &[V],
+    corners: &[usize],
+    tol: f64,
+    slack: Option<&[f64]>,
+    forward: bool,
+) -> Vec<(V, V, V)> {
     if pts.len() < 2 {
         return Vec::new();
     }
@@ -404,11 +433,19 @@ pub fn smooth_pinned(pts: &[V], corners: &[usize], radius: usize) -> Vec<V> {
         let mut bwd = vec![f64::INFINITY; n];
         for _ in 0..2 {
             for k in (0..n).rev() {
-                fwd[k] = if is_corner[k] { 0.0 } else { fwd[k].min(edge[k] + fwd[(k + 1) % n]) };
+                fwd[k] = if is_corner[k] {
+                    0.0
+                } else {
+                    fwd[k].min(edge[k] + fwd[(k + 1) % n])
+                };
             }
             for k in 0..n {
                 let pv = (k + n - 1) % n;
-                bwd[k] = if is_corner[k] { 0.0 } else { bwd[k].min(edge[pv] + bwd[pv]) };
+                bwd[k] = if is_corner[k] {
+                    0.0
+                } else {
+                    bwd[k].min(edge[pv] + bwd[pv])
+                };
             }
         }
         for i in 0..n {
@@ -461,43 +498,92 @@ pub fn smooth_pinned(pts: &[V], corners: &[usize], radius: usize) -> Vec<V> {
 }
 
 /// Greedily removes anchors from a closed cubic path whose deletion keeps
-/// the curve within `tol` px, merging the two incident segments into one
+/// the curve within `simplify` px, merging the two incident segments into one
 /// least-squares cubic that preserves the surviving endpoints' tangents.
 /// An anchor whose tangents turn by `corner_threshold` or more is kept, so
 /// corners survive. Never drops below three anchors.
-pub fn simplify_closed(path: &TracedPath, tol: f64, corner_threshold: f64) -> TracedPath {
-    merge_ring(path, tol, corner_threshold, None).0
+///
+/// `floor_frac` is the width-preservation floor: a merge that sweeps the curve
+/// toward the ring's opposite side, leaving less than `floor_frac` of the
+/// original clearance there, is vetoed (see [`merge_ring`]). `cross`, when
+/// given, extends the veto to the other paths of the path's layer: the merged
+/// curve must also keep the cross-path floor from every other path's original
+/// geometry, so a band of negative space between two paths survives.
+/// `floor_frac == 0` disables both vetoes, reproducing an unguarded merge
+/// exactly.
+pub fn simplify_closed(
+    path: &TracedPath,
+    simplify: f64,
+    corner_threshold: f64,
+    floor_frac: f64,
+    cross: Option<(&CrossField, usize)>,
+) -> TracedPath {
+    merge_ring(path, simplify, corner_threshold, None, floor_frac, cross).0
 }
 
 /// [`simplify_closed`] with shared-stretch awareness: anchors inside a span
 /// merge by an open-chain pass over the span's cubics in canonical
 /// direction, junction anchors never merge away, and free anchors merge as
-/// usual without crossing a junction. Returns the simplified path and the
-/// spans' anchor runs within it. With no spans this is exactly
-/// [`simplify_closed`].
+/// usual without crossing a junction. Spans merge at the full `simplify`,
+/// floored against `cross` when given (see [`simplify_span`]). Returns the
+/// simplified path and the spans' anchor runs within it. With no spans this
+/// is exactly [`simplify_closed`].
 pub fn simplify_closed_seamed(
     path: &TracedPath,
-    tol: f64,
+    simplify: f64,
     corner_threshold: f64,
     spans: &[AnchorSpan],
+    floor_frac: f64,
+    cross: Option<(&CrossField, usize)>,
 ) -> (TracedPath, Vec<AnchorSpan>) {
     if spans.is_empty() {
-        return (simplify_closed(path, tol, corner_threshold), Vec::new());
+        return (
+            simplify_closed(path, simplify, corner_threshold, floor_frac, cross),
+            Vec::new(),
+        );
     }
+
     let n = path.cubics.len();
-    if tol <= 0.0 || n == 0 {
+
+    if simplify <= 0.0 || n == 0 {
         return (path.clone(), spans.to_vec());
     }
-    let anchor = |i: usize| if i == 0 { path.start } else { path.cubics[i - 1].2 };
+
+    // A span's guard drops the per-side path id on purpose: the veto may read
+    // only bytes both siblings share, so nothing is skipped by identity; the
+    // span's own copies are excluded by canonical key inside simplify_span.
+    let span_guard = cross
+        .map(|(f, _)| (f, floor_frac))
+        .filter(|_| floor_frac > 0.0);
+
+    let anchor = |i: usize| {
+        if i == 0 {
+            path.start
+        } else {
+            path.cubics[i - 1].2
+        }
+    };
 
     if spans.len() == 1 && spans[0].start == spans[0].end {
         let s = spans[0];
         let start = anchor(s.start);
         let chain: Vec<(V, V, V)> = (0..n).map(|j| path.cubics[(s.start + j) % n]).collect();
-        let cubics = simplify_span(start, &chain, tol, corner_threshold, s.forward);
+        let cubics = simplify_span(
+            start,
+            &chain,
+            simplify,
+            corner_threshold,
+            s.forward,
+            span_guard,
+        );
+
         return (
             TracedPath { start, cubics },
-            vec![AnchorSpan { start: 0, end: 0, forward: s.forward }],
+            vec![AnchorSpan {
+                start: 0,
+                end: 0,
+                forward: s.forward,
+            }],
         );
     }
 
@@ -515,12 +601,23 @@ pub fn simplify_closed_seamed(
         match span_at[j] {
             Some(si) => {
                 let s = &spans[si];
+
                 let count = (s.end + n - s.start) % n;
                 let chain: Vec<(V, V, V)> =
                     (0..count).map(|t| path.cubics[(s.start + t) % n]).collect();
-                let run = simplify_span(anchor(s.start), &chain, tol, corner_threshold, s.forward);
+
+                let run = simplify_span(
+                    anchor(s.start),
+                    &chain,
+                    simplify,
+                    corner_threshold,
+                    s.forward,
+                    span_guard,
+                );
+
                 runs.push((cubics.len(), run.len(), s.forward));
                 cubics.extend(run);
+
                 j += count;
             }
             None => {
@@ -530,7 +627,11 @@ pub fn simplify_closed_seamed(
         }
     }
 
-    let mid = TracedPath { start: path.start, cubics };
+    let mid = TracedPath {
+        start: path.start,
+        cubics,
+    };
+
     let m = mid.cubics.len();
     let mut locked = vec![false; m];
     for &(off, cnt, _) in &runs {
@@ -539,11 +640,22 @@ pub fn simplify_closed_seamed(
         }
     }
 
-    let (out, order) = merge_ring(&mid, tol, corner_threshold, Some(&locked));
+    // Span anchors are locked, so only free anchors merge here; they take the
+    // full `simplify` under the opposite-side veto, measured against the ring
+    // as the span passes left it.
+    let (out, order) = merge_ring(
+        &mid,
+        simplify,
+        corner_threshold,
+        Some(&locked),
+        floor_frac,
+        cross,
+    );
     let mut new_idx = vec![usize::MAX; m];
     for (ni, &oi) in order.iter().enumerate() {
         new_idx[oi] = ni;
     }
+
     let spans_out = runs
         .into_iter()
         .map(|(off, cnt, fw)| AnchorSpan {
@@ -552,49 +664,81 @@ pub fn simplify_closed_seamed(
             forward: fw,
         })
         .collect();
+
     (out, spans_out)
 }
 
 /// Simplifies one span's cubic run in the stretch's canonical direction and
 /// splices it back in ring order, mirroring `fit_span`'s reversal discipline.
+/// The merge runs at the full `simplify`; with a `guard` (the layer's field
+/// and the keep fraction) each merge is floored against the layer's original
+/// paths, the span's own copies excluded by canonical key, so a stitched seam
+/// simplifies freely without erasing the negative space around it.
 fn simplify_span(
     start: V,
     cubics: &[(V, V, V)],
-    tol: f64,
+    simplify: f64,
     corner_threshold: f64,
     forward: bool,
+    guard: Option<(&CrossField, f64)>,
 ) -> Vec<(V, V, V)> {
-    if forward {
-        return simplify_open(start, cubics, tol, corner_threshold);
-    }
     if cubics.is_empty() {
         return Vec::new();
     }
+
+    // Canonicalize first: both siblings merge the same chain bytes with the
+    // same tolerance, guard, and floors, so the merges emit bitwise-equal
+    // coordinates; the non-forward side converts by index order and
+    // control-point swap alone.
     let end = cubics[cubics.len() - 1].2;
-    let rev = reverse_cubics(start, cubics);
-    let simplified = simplify_open(end, &rev, tol, corner_threshold);
-    reverse_cubics(end, &simplified)
+    let rev;
+    let (cs, cc): (V, &[(V, V, V)]) = if forward {
+        (start, cubics)
+    } else {
+        rev = reverse_cubics(start, cubics);
+        (end, &rev)
+    };
+
+    let g = guard.map(|(field, keep)| ChainGuard::new(field, keep, cs, cc));
+    let merged = simplify_open(cs, cc, simplify, corner_threshold, g.as_ref());
+
+    if forward {
+        merged
+    } else {
+        reverse_cubics(cs, &merged)
+    }
 }
 
 /// Greedy anchor removal on an open cubic chain, the open-chain counterpart
 /// of [`simplify_closed`]: the two chain endpoints always survive, interior
-/// non-corner anchors whose merge stays within `tol` px merge away.
-fn simplify_open(start: V, cubics: &[(V, V, V)], tol: f64, corner_threshold: f64) -> Vec<(V, V, V)> {
+/// non-corner anchors whose merge stays within `tol` px (and past the
+/// `guard`'s floor, when given) merge away.
+fn simplify_open(
+    start: V,
+    cubics: &[(V, V, V)],
+    tol: f64,
+    corner_threshold: f64,
+    guard: Option<&ChainGuard>,
+) -> Vec<(V, V, V)> {
     let k = cubics.len();
+
     if k < 2 || tol <= 0.0 {
         return cubics.to_vec();
     }
+
     let mut a: Vec<V> = Vec::with_capacity(k + 1);
     a.push(start);
     for c in cubics {
         a.push(c.2);
     }
+
     let mut out_h = vec![(0.0, 0.0); k + 1];
     let mut in_h = vec![(0.0, 0.0); k + 1];
     for i in 0..k {
         out_h[i] = cubics[i].0;
         in_h[i + 1] = cubics[i].1;
     }
+
     let mut prev: Vec<usize> = (0..=k).map(|i| i.saturating_sub(1)).collect();
     let mut next: Vec<usize> = (0..=k).map(|i| (i + 1).min(k)).collect();
     let mut alive = vec![true; k + 1];
@@ -631,7 +775,10 @@ fn simplify_open(start: V, cubics: &[(V, V, V)], tol: f64, corner_threshold: f64
             let bez = generate_bezier(&pts, &u, t1, t2);
             let (err2, _) = max_error(&pts, &bez, &u, None);
             let err = err2.sqrt();
-            if err <= tol && best.is_none_or(|(_, be, _)| err < be) {
+            if err <= tol
+                && guard.is_none_or(|g| g.allows(j, p, q, &bez))
+                && best.is_none_or(|(_, be, _)| err < be)
+            {
                 best = Some((j, err, bez));
             }
         }
@@ -654,19 +801,495 @@ fn simplify_open(start: V, cubics: &[(V, V, V)], tol: f64, corner_threshold: f64
     out
 }
 
+/// The anchor positions of a closed path in index order: `start`, then each
+/// segment's endpoint (the last segment closes back onto `start`).
+fn anchors(path: &TracedPath) -> Vec<V> {
+    let n = path.cubics.len();
+
+    let mut a = Vec::with_capacity(n);
+
+    a.push(path.start);
+
+    for k in 0..n.saturating_sub(1) {
+        a.push(path.cubics[k].2);
+    }
+
+    a
+}
+
+/// Multiple by which a segment must be farther along the boundary than across
+/// it to count as the ring's opposite side. It separates across-the-stroke
+/// proximity from along-the-boundary density: a smooth curve's near neighbors
+/// sit close both ways and never count, while a stroke's far side is a
+/// boundary half-perimeter away yet only a stroke-width off and does.
+const RATIO: f64 = 2.0;
+
+/// A layer's original path geometry, sampled once for the cross-path veto: a
+/// thin band of negative space between two paths is invisible to either ring's
+/// self-clearance (it lies between the paths, not across either one), so each
+/// path's merges are also floored against every other path's original curve.
+/// Built before the layer's paths simplify. A free anchor's query excludes its
+/// own path by index; a span's query instead excludes every segment registered
+/// under the span's canonical key, which covers both siblings' copies.
+pub struct CrossField {
+    paths: Vec<CrossPath>,
+}
+
+struct CrossPath {
+    lo: V,
+    hi: V,
+    segs: Vec<CrossSeg>,
+}
+
+struct CrossSeg {
+    lo: V,
+    hi: V,
+    pts: Vec<V>,
+    /// The canonical key of the span this segment belongs to, if any.
+    key: Option<u64>,
+}
+
+/// The identity of a span's canonical run: a hash of its canonical-direction
+/// start anchor and cubic bytes. Both siblings' copies hash the same bytes by
+/// the stitching invariant, so keying the field's exclusions on it removes
+/// exactly the span's own geometry, on either path, from the span's veto.
+fn span_key(start: V, cubics: &[(V, V, V)]) -> u64 {
+    use std::hash::Hasher;
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    let mut put = |v: V| {
+        h.write_u64(v.0.to_bits());
+        h.write_u64(v.1.to_bits());
+    };
+    put(start);
+    for &(c1, c2, e) in cubics {
+        put(c1);
+        put(c2);
+        put(e);
+    }
+    h.finish()
+}
+
+/// A span's cubic run in its canonical direction: the run's start anchor and
+/// cubics, reversed when the path traverses the stretch backwards. The
+/// reversal reuses every coordinate exactly, so both siblings produce
+/// identical bytes.
+fn canonical_span(path: &TracedPath, s: &AnchorSpan) -> (V, Vec<(V, V, V)>) {
+    let n = path.cubics.len();
+
+    let count = if s.start == s.end {
+        n
+    } else {
+        (s.end + n - s.start) % n
+    };
+
+    let start = if s.start == 0 {
+        path.start
+    } else {
+        path.cubics[s.start - 1].2
+    };
+
+    let chain: Vec<(V, V, V)> = (0..count).map(|t| path.cubics[(s.start + t) % n]).collect();
+
+    if s.forward {
+        (start, chain)
+    } else {
+        let end = chain.last().map_or(start, |c| c.2);
+        (end, reverse_cubics(start, &chain))
+    }
+}
+
+/// Squared distance from `p` to the axis-aligned box `[lo, hi]`; zero inside.
+fn bbox_dist2(p: V, lo: V, hi: V) -> f64 {
+    let dx = (lo.0 - p.0).max(p.0 - hi.0).max(0.0);
+    let dy = (lo.1 - p.1).max(p.1 - hi.1).max(0.0);
+    dx * dx + dy * dy
+}
+
+impl CrossField {
+    /// Samples every path's cubics, in the order given, with the path's spans
+    /// alongside. A path's index in `paths` is the identity a free-anchor
+    /// query passes back to skip itself; each span's segments are registered
+    /// under the span's canonical key for the key-based exclusion.
+    pub fn new(paths: &[(&TracedPath, &[AnchorSpan])]) -> Self {
+        let paths = paths
+            .iter()
+            .map(|&(path, spans)| {
+                let n = path.cubics.len();
+                let mut keys: Vec<Option<u64>> = vec![None; n];
+                for s in spans {
+                    let (cs, cc) = canonical_span(path, s);
+                    let key = span_key(cs, &cc);
+                    for t in 0..cc.len() {
+                        keys[(s.start + t) % n] = Some(key);
+                    }
+                }
+
+                let mut cur = path.start;
+                let (mut plo, mut phi) = (cur, cur);
+                let segs = path
+                    .cubics
+                    .iter()
+                    .zip(keys)
+                    .map(|(&(c1, c2, e), key)| {
+                        let pts = sample_cubic(&[cur, c1, c2, e]);
+                        let (mut lo, mut hi) = (cur, cur);
+                        for &(x, y) in &pts {
+                            lo = (lo.0.min(x), lo.1.min(y));
+                            hi = (hi.0.max(x), hi.1.max(y));
+                        }
+                        plo = (plo.0.min(lo.0), plo.1.min(lo.1));
+                        phi = (phi.0.max(hi.0), phi.1.max(hi.1));
+                        cur = e;
+                        CrossSeg { lo, hi, pts, key }
+                    })
+                    .collect();
+                CrossPath {
+                    lo: plo,
+                    hi: phi,
+                    segs,
+                }
+            })
+            .collect();
+
+        CrossField { paths }
+    }
+
+    /// The distance from `p` to the nearest sampled segment, skipping the
+    /// whole path `skip` and every segment keyed `excl`; `None` when nothing
+    /// remains. Whole paths and segments prune on their bounding box against
+    /// the best distance so far, so far-away paths cost one box test.
+    fn nearest(&self, p: V, skip: Option<usize>, excl: Option<u64>) -> Option<f64> {
+        let mut best = f64::INFINITY;
+
+        for (id, cp) in self.paths.iter().enumerate() {
+            if skip == Some(id) || bbox_dist2(p, cp.lo, cp.hi) >= best {
+                continue;
+            }
+
+            for seg in &cp.segs {
+                if (excl.is_some() && seg.key == excl) || bbox_dist2(p, seg.lo, seg.hi) >= best {
+                    continue;
+                }
+
+                for w in seg.pts.windows(2) {
+                    best = best.min(dist2_to_segment(p, w[0], w[1]));
+                }
+            }
+        }
+
+        best.is_finite().then(|| best.sqrt())
+    }
+
+    /// Whether any sampled segment outside the path `skip` and the key `excl`
+    /// lies within the squared distance `d2` of `p`. Bbox-pruned with an early
+    /// exit, so a query far from everything costs one box test per path.
+    fn within(&self, p: V, skip: Option<usize>, d2: f64, excl: Option<u64>) -> bool {
+        for (id, cp) in self.paths.iter().enumerate() {
+            if skip == Some(id) || bbox_dist2(p, cp.lo, cp.hi) >= d2 {
+                continue;
+            }
+
+            for seg in &cp.segs {
+                if (excl.is_some() && seg.key == excl) || bbox_dist2(p, seg.lo, seg.hi) >= d2 {
+                    continue;
+                }
+
+                for w in seg.pts.windows(2) {
+                    if dist2_to_segment(p, w[0], w[1]) < d2 {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        false
+    }
+}
+
+/// The cross-path veto for a stitched span's open-chain merge: the span
+/// simplifies at the full tolerance and each candidate merge is floored
+/// against the layer's original paths, with the span's own copies on both
+/// siblings excluded by canonical key. Every input is canonical or shared, so
+/// the two siblings veto (and merge) identically.
+struct ChainGuard<'a> {
+    field: &'a CrossField,
+    /// The span's canonical-run key; the field skips segments registered
+    /// under it.
+    key: u64,
+    /// Per canonical-chain anchor, the original distance to the nearest
+    /// non-excluded field segment, or infinity. Near a junction this is
+    /// naturally tiny (the adjacent free geometry meets the endpoint), which
+    /// only lowers the floor there; the endpoints themselves never merge.
+    clear: Vec<f64>,
+    /// `(1 + keep) / 2`: the same half-split floor as the free anchors' cross
+    /// guard, since everything else in the field may also move.
+    frac: f64,
+}
+
+impl<'a> ChainGuard<'a> {
+    fn new(field: &'a CrossField, keep: f64, start: V, cubics: &[(V, V, V)]) -> Self {
+        let key = span_key(start, cubics);
+        let mut clear = Vec::with_capacity(cubics.len() + 1);
+        clear.push(
+            field
+                .nearest(start, None, Some(key))
+                .unwrap_or(f64::INFINITY),
+        );
+
+        for c in cubics {
+            clear.push(field.nearest(c.2, None, Some(key)).unwrap_or(f64::INFINITY));
+        }
+
+        ChainGuard {
+            field,
+            key,
+            clear,
+            frac: (1.0 + keep) / 2.0,
+        }
+    }
+
+    /// Whether merging chain anchor `j` (live neighbors `p` and `q`, incident
+    /// segments merged into `bez`) keeps every sample of the merged cubic at
+    /// least `frac` of the local original clearance (min over the three
+    /// anchors) from the non-excluded field.
+    fn allows(&self, j: usize, p: usize, q: usize, bez: &[V; 4]) -> bool {
+        let local = self.clear[j].min(self.clear[p]).min(self.clear[q]);
+
+        if !local.is_finite() {
+            return true;
+        }
+
+        let floor2 = (self.frac * local).powi(2);
+
+        sample_cubic(bez)
+            .iter()
+            .all(|&pt| !self.field.within(pt, None, floor2, Some(self.key)))
+    }
+}
+
+/// The width-preservation veto for [`merge_ring`]: it rejects a candidate merge
+/// whose curve sweeps toward the ring's opposite side, closing the current gap
+/// there below `floor_frac` of the anchor's original clearance, and likewise a
+/// merge that closes the gap to another path's original curve below the
+/// cross-path floor.
+struct WidthGuard<'a> {
+    /// Per original anchor, its nearest opposite-side segment on the original
+    /// ring, or `None` where it faces none. "Opposite" is non-incident and
+    /// arc-far by [`RATIO`]; the nearest one is where the stroke is thinnest at
+    /// that anchor, so tracking it alone catches the caving direction.
+    near: Vec<Option<usize>>,
+    /// Per original anchor, the distance to `near`, or infinity. The floor is
+    /// anchored here, not to the shrinking current gap, so width is a shared
+    /// budget both sides draw from rather than one each can spend in full.
+    clear: Vec<f64>,
+    floor_frac: f64,
+    /// The layer's paths and this path's own index in them, when the caller
+    /// has them.
+    cross: Option<(&'a CrossField, usize)>,
+    /// Per original anchor, the distance to the nearest other path in the
+    /// field, or infinity.
+    cross_clear: Vec<f64>,
+    /// The cross-path floor fraction, `(1 + floor_frac) / 2`. Each path checks
+    /// only the others' original geometry: their evolving curves would make the
+    /// parallel per-path pass order-dependent, and a full `floor_frac` budget
+    /// against the original double-spends when both sides encroach (the band
+    /// lands at `2 * keep - 1`). Half the slack per side keeps the pass
+    /// parallel and deterministic, and two maximal encroachments still leave
+    /// `floor_frac` of the band.
+    cross_frac: f64,
+}
+
+impl<'a> WidthGuard<'a> {
+    fn new(path: &TracedPath, floor_frac: f64, cross: Option<(&'a CrossField, usize)>) -> Self {
+        let a = anchors(path);
+        let n = a.len();
+
+        // Chord-summed cumulative arclength; arc distance between two anchors
+        // is the shorter of the two ways around.
+        let mut arc = vec![0.0; n];
+        for i in 1..n {
+            arc[i] = arc[i - 1] + len(sub(a[i], a[i - 1]));
+        }
+
+        let peri = arc[n - 1] + len(sub(a[0], a[n - 1]));
+        let arc_between = |i: usize, k: usize| {
+            let d = (arc[i] - arc[k]).abs();
+            d.min(peri - d)
+        };
+
+        let mut near = vec![None; n];
+        let mut clear = vec![f64::INFINITY; n];
+        for i in 0..n {
+            for k in 0..n {
+                if k == i || k == (i + n - 1) % n {
+                    continue;
+                }
+                let euclid = dist2_to_segment(a[i], a[k], a[(k + 1) % n]).sqrt();
+                let arc_far = arc_between(i, k).min(arc_between(i, (k + 1) % n));
+                if arc_far > RATIO * euclid && euclid < clear[i] {
+                    clear[i] = euclid;
+                    near[i] = Some(k);
+                }
+            }
+        }
+
+        let mut cross_clear = vec![f64::INFINITY; n];
+        if let Some((field, own)) = cross {
+            for i in 0..n {
+                if let Some(d) = field.nearest(a[i], Some(own), None) {
+                    cross_clear[i] = d;
+                }
+            }
+        }
+
+        WidthGuard {
+            near,
+            clear,
+            floor_frac,
+            cross,
+            cross_clear,
+            cross_frac: (1.0 + floor_frac) / 2.0,
+        }
+    }
+
+    /// Whether removing anchor `j` (live neighbors `p` and `q`, its two incident
+    /// segments merged into cubic `bez`) keeps the merged cubic clear of both
+    /// floors: at least `floor_frac` of `j`'s original local clearance from the
+    /// ring's opposite side *as it stands now*, and at least `cross_frac` of the
+    /// original cross clearance from the other paths' original curves. Each
+    /// floor is the smallest original clearance over `j` and its two neighbors;
+    /// the self distance is measured to the opposite side's current cubic, so
+    /// two-sided straightening that keeps the gap passes while the gap itself
+    /// can never ratchet below the floor. The remaining arguments are
+    /// `merge_ring`'s live survivor state.
+    #[allow(clippy::too_many_arguments)]
+    fn allows(
+        &self,
+        j: usize,
+        p: usize,
+        q: usize,
+        bez: &[V; 4],
+        a: &[V],
+        out_h: &[V],
+        in_h: &[V],
+        alive: &[bool],
+        next: &[usize],
+    ) -> bool {
+        let samples = sample_cubic(bez);
+        self.self_ok(j, p, q, &samples, a, out_h, in_h, alive, next)
+            && self.cross_ok(j, p, q, &samples)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn self_ok(
+        &self,
+        j: usize,
+        p: usize,
+        q: usize,
+        samples: &[V],
+        a: &[V],
+        out_h: &[V],
+        in_h: &[V],
+        alive: &[bool],
+        next: &[usize],
+    ) -> bool {
+        let local = self.clear[j].min(self.clear[p]).min(self.clear[q]);
+
+        if !local.is_finite() {
+            return true;
+        }
+
+        let floor2 = (self.floor_frac * local).powi(2);
+        let n = a.len();
+
+        // The opposite side of the removed anchor and of both neighbors: a merge
+        // at a thin feature's tip, where the removed anchor itself faces nothing
+        // across, still answers to the near walls its neighbors face.
+        for s in [self.near[j], self.near[p], self.near[q]]
+            .into_iter()
+            .flatten()
+        {
+            // The opposite segment `s` may have merged away; the current segment
+            // covering it starts at the nearest still-alive anchor at or before
+            // `s` and runs to that anchor's current successor.
+            let mut o = s;
+
+            while !alive[o] {
+                o = (o + n - 1) % n;
+            }
+
+            // Skip the two segments the merge itself owns: the merged cubic sits
+            // on them, so measuring against them would veto every merge.
+            if o == p || o == j {
+                continue;
+            }
+
+            // Measure to the opposite side's current cubic, not the chord between
+            // its surviving anchors: a convex far side's chord cuts away from us
+            // and would understate the gap the merge is closing.
+            let far = sample_cubic(&[a[o], out_h[o], in_h[next[o]], a[next[o]]]);
+            for &pt in samples {
+                for w in far.windows(2) {
+                    if dist2_to_segment(pt, w[0], w[1]) < floor2 {
+                        return false;
+                    }
+                }
+            }
+        }
+
+        true
+    }
+
+    fn cross_ok(&self, j: usize, p: usize, q: usize, samples: &[V]) -> bool {
+        let Some((field, own)) = self.cross else {
+            return true;
+        };
+
+        let local = self.cross_clear[j]
+            .min(self.cross_clear[p])
+            .min(self.cross_clear[q]);
+
+        if !local.is_finite() {
+            return true;
+        }
+
+        // The whole field, not just the anchors' nearest segments: a merged
+        // cubic spanning a long stretch can swing toward a part of another path
+        // none of the three anchors is nearest to.
+        let floor2 = (self.cross_frac * local).powi(2);
+
+        samples
+            .iter()
+            .all(|&pt| !field.within(pt, Some(own), floor2, None))
+    }
+}
+
 /// The greedy closed-ring merge behind [`simplify_closed`]: `locked` anchors
-/// (when given) are never removal candidates. Returns the merged path and
-/// the surviving anchors' original indices in emission order.
+/// (when given) are never removal candidates. A free anchor's merge is also
+/// rejected when it would sweep the curve toward the ring's opposite side, or
+/// toward another `cross` path's original curve, past the `floor_frac` width
+/// floor; `floor_frac == 0` disables both vetoes and merges purely on
+/// tolerance. Returns the merged path and the surviving anchors' original
+/// indices in emission order.
 fn merge_ring(
     path: &TracedPath,
     tol: f64,
     corner_threshold: f64,
     locked: Option<&[bool]>,
+    floor_frac: f64,
+    cross: Option<(&CrossField, usize)>,
 ) -> (TracedPath, Vec<usize>) {
     let n = path.cubics.len();
     if n < 4 || tol <= 0.0 {
         return (path.clone(), (0..n).collect());
     }
+
+    // The veto classifies the opposite side and its clearances once, off the
+    // original ring; the per-merge distance check reads the live survivor state
+    // below, so a re-evaluated candidate is judged against the geometry as it
+    // stands then.
+    let veto = (floor_frac > 0.0).then(|| WidthGuard::new(path, floor_frac, cross));
+
     // Anchor positions with their incoming and outgoing control handles.
     // Segment i runs a[i] -> a[i+1] with controls out_h[i] and in_h[i+1].
     let mut a: Vec<V> = Vec::with_capacity(n);
@@ -694,34 +1317,42 @@ fn merge_ring(
     while count > 3 {
         // Removable anchor with the smallest merge error under tol.
         let mut best: Option<(usize, f64, [V; 4])> = None;
+
         for j in 0..n {
-            if !alive[j]
-                || locked.is_some_and(|l| l[j])
-                || is_corner(j, &a, &in_h, &out_h)
-            {
+            if !alive[j] || locked.is_some_and(|l| l[j]) || is_corner(j, &a, &in_h, &out_h) {
                 continue;
             }
+
             let (p, q) = (prev[j], next[j]);
             let pts = sample_pair(
                 &[a[p], out_h[p], in_h[j], a[j]],
                 &[a[j], out_h[j], in_h[q], a[q]],
             );
+
             if pts.len() < 3 {
                 continue;
             }
+
             let t1 = norm(sub(out_h[p], a[p]));
             let t2 = norm(sub(in_h[q], a[q]));
             if len(t1) < 1e-9 || len(t2) < 1e-9 {
                 continue;
             }
+
             let u = chord_length_param(&pts);
             let bez = generate_bezier(&pts, &u, t1, t2);
             let (err2, _) = max_error(&pts, &bez, &u, None);
             let err = err2.sqrt();
-            if err <= tol && best.is_none_or(|(_, be, _)| err < be) {
+            if err <= tol
+                && veto
+                    .as_ref()
+                    .is_none_or(|g| g.allows(j, p, q, &bez, &a, &out_h, &in_h, &alive, &next))
+                && best.is_none_or(|(_, be, _)| err < be)
+            {
                 best = Some((j, err, bez));
             }
         }
+
         let Some((j, _, bez)) = best else { break };
         let (p, q) = (prev[j], next[j]);
         out_h[p] = bez[1];
@@ -736,16 +1367,27 @@ fn merge_ring(
     let mut cubics = Vec::with_capacity(count);
     let mut order = Vec::with_capacity(count);
     let mut i = start;
+
     loop {
         order.push(i);
+
         let q = next[i];
         cubics.push((out_h[i], in_h[q], a[q]));
+
         i = q;
+
         if i == start {
             break;
         }
     }
-    (TracedPath { start: a[start], cubics }, order)
+
+    (
+        TracedPath {
+            start: a[start],
+            cubics,
+        },
+        order,
+    )
 }
 
 /// Samples two adjacent cubic segments into a single polyline, dropping the
@@ -760,7 +1402,9 @@ fn sample_pair(s1: &[V; 4], s2: &[V; 4]) -> Vec<V> {
 fn sample_cubic(b: &[V; 4]) -> Vec<V> {
     let hull = len(sub(b[1], b[0])) + len(sub(b[2], b[1])) + len(sub(b[3], b[2]));
     let k = (hull.ceil() as usize).clamp(4, 64);
-    (0..=k).map(|i| bezier_point(b, i as f64 / k as f64)).collect()
+    (0..=k)
+        .map(|i| bezier_point(b, i as f64 / k as f64))
+        .collect()
 }
 
 fn central_tangent(pts: &[V], i: usize) -> V {
@@ -791,10 +1435,7 @@ fn circular_slice<T: Copy>(pts: &[T], a: usize, b: usize) -> Vec<T> {
 fn bezier_point(b: &[V; 4], t: f64) -> V {
     let u = 1.0 - t;
     add(
-        add(
-            mul(b[0], u * u * u),
-            mul(b[1], 3.0 * u * u * t),
-        ),
+        add(mul(b[0], u * u * u), mul(b[1], 3.0 * u * u * t)),
         add(mul(b[2], 3.0 * u * t * t), mul(b[3], t * t * t)),
     )
 }
@@ -869,7 +1510,15 @@ fn fit_cubic(
         None => (None, None),
     };
     fit_cubic(&pts[..=split], t_hat1, center, tol2, s1, out, depth + 1);
-    fit_cubic(&pts[split..], mul(center, -1.0), t_hat2, tol2, s2, out, depth + 1);
+    fit_cubic(
+        &pts[split..],
+        mul(center, -1.0),
+        t_hat2,
+        tol2,
+        s2,
+        out,
+        depth + 1,
+    );
 }
 
 fn chord_length_param(pts: &[V]) -> Vec<f64> {
@@ -914,8 +1563,16 @@ fn generate_bezier(pts: &[V], u: &[f64], t_hat1: V, t_hat2: V) -> [V; 4] {
     let det_c = c[0][0] * c[1][1] - c[1][0] * c[0][1];
     let det_x1 = x[0] * c[1][1] - x[1] * c[0][1];
     let det_x2 = c[0][0] * x[1] - c[1][0] * x[0];
-    let mut alpha1 = if det_c.abs() > 1e-12 { det_x1 / det_c } else { 0.0 };
-    let mut alpha2 = if det_c.abs() > 1e-12 { det_x2 / det_c } else { 0.0 };
+    let mut alpha1 = if det_c.abs() > 1e-12 {
+        det_x1 / det_c
+    } else {
+        0.0
+    };
+    let mut alpha2 = if det_c.abs() > 1e-12 {
+        det_x2 / det_c
+    } else {
+        0.0
+    };
 
     // Degenerate, inverted, or exploded alphas (near-singular systems can
     // shoot control points across the canvas, rendering as hairline
@@ -924,9 +1581,12 @@ fn generate_bezier(pts: &[V], u: &[f64], t_hat1: V, t_hat2: V) -> [V; 4] {
     let seg_len = len(sub(last, first));
     let eps = 1e-6 * seg_len;
     let cap = 10.0 * seg_len;
-    if !alpha1.is_finite() || !alpha2.is_finite()
-        || alpha1 < eps || alpha2 < eps
-        || alpha1 > cap || alpha2 > cap
+    if !alpha1.is_finite()
+        || !alpha2.is_finite()
+        || alpha1 < eps
+        || alpha2 < eps
+        || alpha1 > cap
+        || alpha2 > cap
     {
         alpha1 = seg_len / 3.0;
         alpha2 = alpha1;
@@ -956,7 +1616,10 @@ fn newton_raphson(bez: &[V; 4], p: V, u: f64) -> f64 {
     let q2: [V; 2] = [mul(sub(q1[1], q1[0]), 2.0), mul(sub(q1[2], q1[1]), 2.0)];
     let qu = bezier_point(bez, u);
     let v = 1.0 - u;
-    let q1u = add(add(mul(q1[0], v * v), mul(q1[1], 2.0 * v * u)), mul(q1[2], u * u));
+    let q1u = add(
+        add(mul(q1[0], v * v), mul(q1[1], 2.0 * v * u)),
+        mul(q1[2], u * u),
+    );
     let q2u = add(mul(q2[0], v), mul(q2[1], u));
     let num = dot(sub(qu, p), q1u);
     let den = dot(q1u, q1u) + dot(sub(qu, p), q2u);
@@ -1040,7 +1703,10 @@ mod tests {
                 (add(p, mul(d, 1.0 / 3.0)), sub(q, mul(d, 1.0 / 3.0)), q)
             })
             .collect();
-        TracedPath { start: pts[0], cubics }
+        TracedPath {
+            start: pts[0],
+            cubics,
+        }
     }
 
     #[test]
@@ -1178,22 +1844,28 @@ mod tests {
     #[test]
     fn seamed_simplify_without_spans_is_simplify_closed() {
         let h = hexagon();
-        let (same, spans) = simplify_closed_seamed(&h, 1000.0, PI, &[]);
+        let (same, spans) = simplify_closed_seamed(&h, 1000.0, PI, &[], 0.0, None);
         assert!(spans.is_empty());
-        assert_eq!(simplify_closed(&h, 1000.0, PI).cubics, same.cubics);
+        assert_eq!(
+            simplify_closed(&h, 1000.0, PI, 0.0, None).cubics,
+            same.cubics
+        );
     }
 
     #[test]
     fn simplify_off_is_identity() {
         let h = hexagon();
-        assert_eq!(simplify_closed(&h, 0.0, PI).cubics.len(), h.cubics.len());
+        assert_eq!(
+            simplify_closed(&h, 0.0, PI, 0.0, None).cubics.len(),
+            h.cubics.len()
+        );
     }
 
     #[test]
     fn simplify_reduces_a_smooth_loop() {
         // corner_threshold = PI: no joint counts as a corner, so a generous
         // tolerance collapses toward the three-anchor floor.
-        let out = simplify_closed(&hexagon(), 1000.0, PI);
+        let out = simplify_closed(&hexagon(), 1000.0, PI, 0.0, None);
         assert!(out.cubics.len() < 6);
         assert!(out.cubics.len() >= 3);
     }
@@ -1202,7 +1874,249 @@ mod tests {
     fn simplify_keeps_corners() {
         // At a tiny threshold every 60-degree vertex is a corner, so none
         // can be removed however large the tolerance.
-        let out = simplify_closed(&hexagon(), 1000.0, 0.1);
+        let out = simplify_closed(&hexagon(), 1000.0, 0.1, 0.0, None);
         assert_eq!(out.cubics.len(), 6);
+    }
+
+    /// A closed cubic path straight through the polygon `pts`: every segment is
+    /// a chord with its controls on the line, so the path traces `pts` exactly.
+    fn poly_path(pts: &[V]) -> TracedPath {
+        let n = pts.len();
+        let cubics = (0..n)
+            .map(|i| {
+                let (a, b) = (pts[i], pts[(i + 1) % n]);
+                let d = sub(b, a);
+                (add(a, mul(d, 1.0 / 3.0)), add(a, mul(d, 2.0 / 3.0)), b)
+            })
+            .collect();
+        TracedPath {
+            start: pts[0],
+            cubics,
+        }
+    }
+
+    /// A faithful closed path around a `w`-wide, `h`-tall filled rectangle: one
+    /// anchor per pixel step along the boundary with the four corners cut.
+    fn rect_ring(w: i32, h: i32) -> TracedPath {
+        let mut pts: Vec<V> = Vec::new();
+        let mut corners = Vec::new();
+        corners.push(pts.len());
+        for x in 0..w {
+            pts.push((x as f64, 0.0));
+        }
+        corners.push(pts.len());
+        for y in 0..h {
+            pts.push((w as f64, y as f64));
+        }
+        corners.push(pts.len());
+        for x in (1..=w).rev() {
+            pts.push((x as f64, h as f64));
+        }
+        corners.push(pts.len());
+        for y in (1..=h).rev() {
+            pts.push((0.0, y as f64));
+        }
+        fit_closed(&pts, &corners, 0.25, None).unwrap()
+    }
+
+    /// A wide fill carrying a single 2px-wide finger reaching to y = 25.
+    fn spike_on_fill() -> TracedPath {
+        let mut p: Vec<V> = Vec::new();
+        for x in 0..40 {
+            p.push((x as f64, 0.0));
+        }
+        for y in 0..10 {
+            p.push((40.0, y as f64));
+        }
+        for x in (21..=40).rev() {
+            p.push((x as f64, 10.0));
+        }
+        for y in 10..25 {
+            p.push((21.0, y as f64));
+        }
+        p.push((20.0, 25.0));
+        for y in (10..=25).rev() {
+            p.push((19.0, y as f64));
+        }
+        for x in (0..=19).rev() {
+            p.push((x as f64, 10.0));
+        }
+        for y in (1..=10).rev() {
+            p.push((0.0, y as f64));
+        }
+        let corners: Vec<usize> = (0..p.len()).collect();
+        fit_closed(&p, &corners, 0.25, None).unwrap()
+    }
+
+    /// A straight band whose two long sides carry the same gentle in-phase
+    /// triangle wave (slope well under 1, as a real pixel edge wiggles), so the
+    /// cross-gap stays `g` everywhere. Straightening both sides together
+    /// preserves the width. Returns the ring and `g`.
+    fn coordinated_wiggle_band() -> (TracedPath, f64) {
+        let (w, g) = (48.0, 12.0);
+        // Period-8, amplitude-1 triangle: 0.5 px per px, no steeper than a
+        // 45-degree pixel staircase.
+        let wig = |x: f64| {
+            let phase = (x / 8.0).fract() * 8.0;
+            (2.0 - (phase - 2.0).abs()).clamp(-1.0, 1.0)
+        };
+        let mut pts: Vec<V> = Vec::new();
+        let mut x = 0.0;
+        while x <= w {
+            pts.push((x, wig(x)));
+            x += 1.0;
+        }
+        x = w;
+        while x >= 0.0 {
+            pts.push((x, g + wig(x)));
+            x -= 1.0;
+        }
+        (poly_path(&pts), g)
+    }
+
+    /// The narrowest cross-width of a closed path: the smallest distance between
+    /// two densely-sampled points that lie far apart along the boundary (over a
+    /// quarter perimeter each way), i.e. across the shape rather than along it.
+    /// A band that keeps its width reads near the gap; one that caves reads near
+    /// zero.
+    fn narrowest(path: &TracedPath) -> f64 {
+        let mut s: Vec<V> = Vec::new();
+        let mut cur = path.start;
+        for &(c1, c2, e) in &path.cubics {
+            let b = [cur, c1, c2, e];
+            for k in 0..8 {
+                s.push(bezier_point(&b, k as f64 / 8.0));
+            }
+            cur = e;
+        }
+        let m = s.len();
+        let mut best = f64::INFINITY;
+        for i in 0..m {
+            for d in (m / 4)..=(m - m / 4) {
+                best = best.min(len(sub(s[i], s[(i + d) % m])));
+            }
+        }
+        best
+    }
+
+    #[test]
+    fn veto_spares_a_thin_spike_while_the_fill_simplifies() {
+        // The wide fill's boundary clears its far side and simplifies away, but
+        // the 2px finger's sides clear each other by only 2px, so any merge that
+        // swallows it is vetoed and the finger keeps its height and width. The
+        // frozen-clamp regression this replaces would instead keep the whole
+        // fill boundary; here the fill still drops most anchors.
+        let path = spike_on_fill();
+        let vetoed = simplify_closed(&path, 100.0, PI, 0.6, None);
+        let unvetoed = simplify_closed(&path, 100.0, PI, 0.0, None);
+
+        let max_y = |p: &TracedPath| anchors(p).iter().map(|a| a.1).fold(f64::MIN, f64::max);
+        assert!(max_y(&vetoed) >= 24.0, "the thin spike survives the veto");
+        assert!(
+            narrowest(&vetoed) <= 3.0,
+            "the finger keeps its 2px width, not filled in"
+        );
+        assert!(
+            max_y(&unvetoed) < 12.0,
+            "an unvetoed simplify swallows the spike"
+        );
+        assert!(
+            vetoed.cubics.len() < path.cubics.len() / 4,
+            "the fill boundary still simplifies ({} of {})",
+            vetoed.cubics.len(),
+            path.cubics.len()
+        );
+    }
+
+    #[test]
+    fn veto_is_identity_on_a_wide_shape() {
+        // A fat square's anchors clear the far side by far more than the
+        // tolerance, so the veto never binds: byte-identical to the unvetoed
+        // merge.
+        let rect = rect_ring(30, 30);
+        let vetoed = simplify_closed(&rect, 5.0, PI, 0.6, None);
+        let plain = simplify_closed(&rect, 5.0, PI, 0.0, None);
+        assert_eq!(vetoed.start, plain.start);
+        assert_eq!(vetoed.cubics, plain.cubics);
+    }
+
+    #[test]
+    fn veto_passes_coordinated_two_sided_straightening() {
+        // Both sides wiggle in phase, so straightening them together keeps the
+        // gap constant. Measuring the floor against the current far side (not the
+        // original) lets this pass greedily: the band sheds most of its anchors
+        // and keeps its width. An original-reference floor would over-block this
+        // or let the two sides double-spend the budget and cave.
+        let (ring, g) = coordinated_wiggle_band();
+        let keep = 0.6;
+        let out = simplify_closed(&ring, 100.0, PI, keep, None);
+
+        assert!(
+            out.cubics.len() < ring.cubics.len() / 2,
+            "coordinated straightening sheds most anchors ({} of {})",
+            out.cubics.len(),
+            ring.cubics.len()
+        );
+        assert!(
+            narrowest(&out) >= keep * g,
+            "the band keeps at least the kept fraction of its width"
+        );
+    }
+
+    #[test]
+    fn floor_frac_zero_disables_the_veto() {
+        // floor_frac = 0 is the unguarded merge: the finger is swallowed exactly
+        // as it was before the veto existed, so the knob truly turns off.
+        let max_y = |p: &TracedPath| anchors(p).iter().map(|a| a.1).fold(f64::MIN, f64::max);
+        assert!(
+            max_y(&simplify_closed(&spike_on_fill(), 100.0, PI, 0.0, None)) < 12.0,
+            "floor_frac = 0 leaves the spike free to be swallowed"
+        );
+    }
+
+    #[test]
+    fn cross_field_excludes_both_span_copies_by_key() {
+        // Ring A carries a span over its top edge; ring B carries the same
+        // stretch reversed, coordinates reused exactly as the stitched fit
+        // emits them. Both copies must canonicalize to the same key, and a
+        // query under that key must skip them both, reading only the nearest
+        // genuine geometry; without the key the copies sit at distance zero.
+        let a = poly_path(&[(0.0, 0.0), (4.0, 0.0), (8.0, 0.0), (8.0, 4.0), (0.0, 4.0)]);
+        let sa = AnchorSpan {
+            start: 0,
+            end: 2,
+            forward: true,
+        };
+        let mut bc = reverse_cubics(a.start, &a.cubics[0..2]);
+        bc.extend_from_slice(
+            &poly_path(&[(0.0, 0.0), (0.0, -4.0), (8.0, -4.0), (8.0, 0.0)]).cubics[..3],
+        );
+        let b = TracedPath {
+            start: (8.0, 0.0),
+            cubics: bc,
+        };
+        let sb = AnchorSpan {
+            start: 0,
+            end: 2,
+            forward: false,
+        };
+
+        let (ca, aa) = canonical_span(&a, &sa);
+        let (cb, ab) = canonical_span(&b, &sb);
+        assert_eq!(ca, cb, "both copies canonicalize to the same start");
+        assert_eq!(aa, ab, "both copies canonicalize to the same cubics");
+        let key = span_key(ca, &aa);
+
+        let field = CrossField::new(&[(&a, &[sa][..]), (&b, &[sb][..])]);
+        let raw = field.nearest((4.0, 0.0), None, None).unwrap();
+        let excl = field.nearest((4.0, 0.0), None, Some(key)).unwrap();
+        assert!(
+            raw < 1e-9,
+            "without the key the span's own copies sit at zero, got {raw}"
+        );
+        assert!(
+            (excl - 4.0).abs() < 1e-9,
+            "the keyed query reads only genuine geometry, got {excl}"
+        );
     }
 }
