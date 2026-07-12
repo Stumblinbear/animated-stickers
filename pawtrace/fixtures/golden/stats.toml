@@ -1,43 +1,43 @@
 [bed]
 paths = 6
-cubics = 105
+cubics = 90
 
 [blushiboi]
 paths = 130
-cubics = 1521
+cubics = 1630
 
 [buck_bed]
 paths = 12
-cubics = 165
+cubics = 153
 
 [buck_deer_head]
-paths = 62
-cubics = 580
+paths = 64
+cubics = 667
 
 [buck_deer_leg]
-paths = 19
-cubics = 239
+paths = 20
+cubics = 273
 
 [fingagun]
 paths = 122
-cubics = 1293
+cubics = 1402
 
 [happy_king]
 paths = 98
-cubics = 1071
+cubics = 1130
 
 [mad_king]
 paths = 98
-cubics = 1053
+cubics = 1119
 
 [seff_arm]
 paths = 8
-cubics = 66
+cubics = 81
 
 [seff_face]
 paths = 63
-cubics = 571
+cubics = 764
 
 [seff_head]
-paths = 92
-cubics = 1111
+paths = 91
+cubics = 1302

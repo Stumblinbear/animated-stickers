@@ -497,20 +497,18 @@ pub fn smooth_pinned(pts: &[V], corners: &[usize], radius: usize) -> Vec<V> {
     out
 }
 
-/// Greedily removes anchors from a closed cubic path whose deletion keeps
-/// the curve within `simplify` px, merging the two incident segments into one
+/// Removes anchors from a closed cubic path whose deletion keeps the curve
+/// within `simplify` px, merging the two incident segments into one
 /// least-squares cubic that preserves the surviving endpoints' tangents.
 /// An anchor whose tangents turn by `corner_threshold` or more is kept, so
 /// corners survive. Never drops below three anchors.
 ///
-/// `floor_frac` is the width-preservation floor: a merge that sweeps the curve
-/// toward the ring's opposite side, leaving less than `floor_frac` of the
-/// original clearance there, is vetoed (see [`merge_ring`]). `cross`, when
-/// given, extends the veto to the other paths of the path's layer: the merged
-/// curve must also keep the cross-path floor from every other path's original
-/// geometry, so a band of negative space between two paths survives.
-/// `floor_frac == 0` disables both vetoes, reproducing an unguarded merge
-/// exactly.
+/// `floor_frac` is the width-preservation floor: `floor_frac` of the original
+/// clearance across a thin feature survives simplification, so a stroke deforms
+/// rather than caves (see [`merge_ring`]). `cross`, when given, extends the
+/// floor to the other paths of the path's layer, so a band of negative space
+/// between two paths survives as well. `floor_frac == 0` disables both vetoes,
+/// reproducing an unguarded merge exactly.
 pub fn simplify_closed(
     path: &TracedPath,
     simplify: f64,
@@ -709,8 +707,8 @@ fn simplify_span(
     }
 }
 
-/// Greedy anchor removal on an open cubic chain, the open-chain counterpart
-/// of [`simplify_closed`]: the two chain endpoints always survive, interior
+/// Anchor removal on an open cubic chain, the open-chain counterpart of
+/// [`simplify_closed`]: the two chain endpoints always survive, interior
 /// non-corner anchors whose merge stays within `tol` px (and past the
 /// `guard`'s floor, when given) merge away.
 fn simplify_open(
@@ -752,10 +750,17 @@ fn simplify_open(
         dot(incoming, outgoing).clamp(-1.0, 1.0).acos() >= corner_threshold
     };
 
+    // Passes in ascending index order, each taking every anchor that clears tol
+    // and the guard at the moment it is reached, until a pass takes nothing.
+    // Accepting `j` defers its successor to the next pass: that successor's own
+    // merge would otherwise fold a third segment into the cubic just written,
+    // and a run of them walks one surviving anchor's handle down the whole chain
+    // in a single pass, spending far more than the tolerance was asked to buy.
     loop {
-        let mut best: Option<(usize, f64, [V; 4])> = None;
+        let mut merged_any = false;
+        let mut deferred = usize::MAX;
         for j in 1..k {
-            if !alive[j] || is_corner(j, &a, &in_h, &out_h) {
+            if !alive[j] || j == deferred || is_corner(j, &a, &in_h, &out_h) {
                 continue;
             }
             let (p, q) = (prev[j], next[j]);
@@ -775,20 +780,20 @@ fn simplify_open(
             let bez = generate_bezier(&pts, &u, t1, t2);
             let (err2, _) = max_error(&pts, &bez, &u, None);
             let err = err2.sqrt();
-            if err <= tol
-                && guard.is_none_or(|g| g.allows(j, p, q, &bez))
-                && best.is_none_or(|(_, be, _)| err < be)
-            {
-                best = Some((j, err, bez));
+            if err > tol || !guard.is_none_or(|g| g.allows(j, p, q, &bez)) {
+                continue;
             }
+            out_h[p] = bez[1];
+            in_h[q] = bez[2];
+            alive[j] = false;
+            next[p] = q;
+            prev[q] = p;
+            merged_any = true;
+            deferred = q;
         }
-        let Some((j, _, bez)) = best else { break };
-        let (p, q) = (prev[j], next[j]);
-        out_h[p] = bez[1];
-        in_h[q] = bez[2];
-        alive[j] = false;
-        next[p] = q;
-        prev[q] = p;
+        if !merged_any {
+            break;
+        }
     }
 
     let mut out = Vec::new();
@@ -1006,6 +1011,40 @@ impl CrossField {
     }
 }
 
+/// The floor one body of protected geometry imposes on a merge: how far each
+/// anchor of a ring or chain originally stood from that geometry, and how much
+/// of that distance a merge may spend.
+struct Clearance {
+    /// Per anchor, the original distance to the geometry this floor protects,
+    /// or infinity where the anchor faces none.
+    clear: Vec<f64>,
+    /// The fraction of `clear` a merge must leave standing, in `0.5..=1.0`.
+    frac: f64,
+}
+
+impl Clearance {
+    fn new(clear: Vec<f64>, keep: f64) -> Self {
+        // Half the slack each. Both sides of a gap measure against the other's
+        // original, so each is free to encroach without seeing the other move.
+        // Two maximal encroachments of (1 - frac) still leave keep of the
+        // original gap. A full keep budget per side would let both spend it and
+        // land at 2 * keep - 1, which caves for any keep below 1.
+        Clearance {
+            clear,
+            frac: (1.0 + keep) / 2.0,
+        }
+    }
+
+    /// The squared distance a merge at anchor `j`, between live neighbors `p`
+    /// and `q`, must keep from the protected geometry. `None` when none of the
+    /// three anchors faces any: there is nothing to protect.
+    fn floor2(&self, j: usize, p: usize, q: usize) -> Option<f64> {
+        let local = self.clear[j].min(self.clear[p]).min(self.clear[q]);
+
+        local.is_finite().then(|| (self.frac * local).powi(2))
+    }
+}
+
 /// The cross-path veto for a stitched span's open-chain merge: the span
 /// simplifies at the full tolerance and each candidate merge is floored
 /// against the layer's original paths, with the span's own copies on both
@@ -1016,14 +1055,10 @@ struct ChainGuard<'a> {
     /// The span's canonical-run key; the field skips segments registered
     /// under it.
     key: u64,
-    /// Per canonical-chain anchor, the original distance to the nearest
-    /// non-excluded field segment, or infinity. Near a junction this is
-    /// naturally tiny (the adjacent free geometry meets the endpoint), which
-    /// only lowers the floor there; the endpoints themselves never merge.
-    clear: Vec<f64>,
-    /// `(1 + keep) / 2`: the same half-split floor as the free anchors' cross
-    /// guard, since everything else in the field may also move.
-    frac: f64,
+    /// Near a junction the clearance is naturally tiny (the adjacent free
+    /// geometry meets the endpoint), which only lowers the floor there; the
+    /// endpoints themselves never merge.
+    clear: Clearance,
 }
 
 impl<'a> ChainGuard<'a> {
@@ -1043,23 +1078,17 @@ impl<'a> ChainGuard<'a> {
         ChainGuard {
             field,
             key,
-            clear,
-            frac: (1.0 + keep) / 2.0,
+            clear: Clearance::new(clear, keep),
         }
     }
 
     /// Whether merging chain anchor `j` (live neighbors `p` and `q`, incident
-    /// segments merged into `bez`) keeps every sample of the merged cubic at
-    /// least `frac` of the local original clearance (min over the three
-    /// anchors) from the non-excluded field.
+    /// segments merged into `bez`) keeps every sample of the merged cubic past
+    /// the floor from the non-excluded field.
     fn allows(&self, j: usize, p: usize, q: usize, bez: &[V; 4]) -> bool {
-        let local = self.clear[j].min(self.clear[p]).min(self.clear[q]);
-
-        if !local.is_finite() {
+        let Some(floor2) = self.clear.floor2(j, p, q) else {
             return true;
-        }
-
-        let floor2 = (self.frac * local).powi(2);
+        };
 
         sample_cubic(bez)
             .iter()
@@ -1068,41 +1097,38 @@ impl<'a> ChainGuard<'a> {
 }
 
 /// The width-preservation veto for [`merge_ring`]: it rejects a candidate merge
-/// whose curve sweeps toward the ring's opposite side, closing the current gap
-/// there below `floor_frac` of the anchor's original clearance, and likewise a
-/// merge that closes the gap to another path's original curve below the
-/// cross-path floor.
+/// whose curve sweeps toward the ring's original opposite side, or toward
+/// another path's original curve, past the floor those clearances impose.
 struct WidthGuard<'a> {
     /// Per original anchor, its nearest opposite-side segment on the original
     /// ring, or `None` where it faces none. "Opposite" is non-incident and
     /// arc-far by [`RATIO`]; the nearest one is where the stroke is thinnest at
     /// that anchor, so tracking it alone catches the caving direction.
     near: Vec<Option<usize>>,
-    /// Per original anchor, the distance to `near`, or infinity. The floor is
-    /// anchored here, not to the shrinking current gap, so width is a shared
-    /// budget both sides draw from rather than one each can spend in full.
-    clear: Vec<f64>,
-    floor_frac: f64,
+    /// The original ring's cubics, sampled once; `near` indexes into it.
+    segs: Vec<Vec<V>>,
+    self_clear: Clearance,
     /// The layer's paths and this path's own index in them, when the caller
     /// has them.
     cross: Option<(&'a CrossField, usize)>,
-    /// Per original anchor, the distance to the nearest other path in the
-    /// field, or infinity.
-    cross_clear: Vec<f64>,
-    /// The cross-path floor fraction, `(1 + floor_frac) / 2`. Each path checks
-    /// only the others' original geometry: their evolving curves would make the
-    /// parallel per-path pass order-dependent, and a full `floor_frac` budget
-    /// against the original double-spends when both sides encroach (the band
-    /// lands at `2 * keep - 1`). Half the slack per side keeps the pass
-    /// parallel and deterministic, and two maximal encroachments still leave
-    /// `floor_frac` of the band.
-    cross_frac: f64,
+    cross_clear: Clearance,
 }
 
 impl<'a> WidthGuard<'a> {
-    fn new(path: &TracedPath, floor_frac: f64, cross: Option<(&'a CrossField, usize)>) -> Self {
+    fn new(path: &TracedPath, keep: f64, cross: Option<(&'a CrossField, usize)>) -> Self {
         let a = anchors(path);
         let n = a.len();
+
+        let mut cur = path.start;
+        let segs: Vec<Vec<V>> = path
+            .cubics
+            .iter()
+            .map(|&(c1, c2, e)| {
+                let pts = sample_cubic(&[cur, c1, c2, e]);
+                cur = e;
+                pts
+            })
+            .collect();
 
         // Chord-summed cumulative arclength; arc distance between two anchors
         // is the shorter of the two ways around.
@@ -1117,6 +1143,9 @@ impl<'a> WidthGuard<'a> {
             d.min(peri - d)
         };
 
+        // Classification runs on segment chords: it is the O(n^2) loop, and the
+        // ratio it thresholds is far too coarse for the chord-versus-curve
+        // difference to change which segment is picked.
         let mut near = vec![None; n];
         let mut clear = vec![f64::INFINITY; n];
         for i in 0..n {
@@ -1133,6 +1162,16 @@ impl<'a> WidthGuard<'a> {
             }
         }
 
+        // The floor must be a fraction of the distance the veto itself measures.
+        // Re-measuring the winner against its sampled cubic, which is what
+        // `self_ok` sweeps, keeps a merge from being vetoed at its own endpoint
+        // where a curve bulging inside its chord reads closer than `clear`.
+        for i in 0..n {
+            if let Some(k) = near[i] {
+                clear[i] = dist2_to_polyline(a[i], &segs[k]).sqrt();
+            }
+        }
+
         let mut cross_clear = vec![f64::INFINITY; n];
         if let Some((field, own)) = cross {
             for i in 0..n {
@@ -1144,63 +1183,28 @@ impl<'a> WidthGuard<'a> {
 
         WidthGuard {
             near,
-            clear,
-            floor_frac,
+            segs,
+            self_clear: Clearance::new(clear, keep),
             cross,
-            cross_clear,
-            cross_frac: (1.0 + floor_frac) / 2.0,
+            cross_clear: Clearance::new(cross_clear, keep),
         }
     }
 
     /// Whether removing anchor `j` (live neighbors `p` and `q`, its two incident
-    /// segments merged into cubic `bez`) keeps the merged cubic clear of both
-    /// floors: at least `floor_frac` of `j`'s original local clearance from the
-    /// ring's opposite side *as it stands now*, and at least `cross_frac` of the
-    /// original cross clearance from the other paths' original curves. Each
-    /// floor is the smallest original clearance over `j` and its two neighbors;
-    /// the self distance is measured to the opposite side's current cubic, so
-    /// two-sided straightening that keeps the gap passes while the gap itself
-    /// can never ratchet below the floor. The remaining arguments are
-    /// `merge_ring`'s live survivor state.
-    #[allow(clippy::too_many_arguments)]
-    fn allows(
-        &self,
-        j: usize,
-        p: usize,
-        q: usize,
-        bez: &[V; 4],
-        a: &[V],
-        out_h: &[V],
-        in_h: &[V],
-        alive: &[bool],
-        next: &[usize],
-    ) -> bool {
+    /// segments merged into cubic `bez`) keeps every sample of the merged cubic
+    /// past both floors: the ring's own opposite side, and the other paths in
+    /// the field. Both are measured against original geometry, so the verdict
+    /// depends only on `j`, `p`, `q` and `bez`, never on which merges came
+    /// before.
+    fn allows(&self, j: usize, p: usize, q: usize, bez: &[V; 4]) -> bool {
         let samples = sample_cubic(bez);
-        self.self_ok(j, p, q, &samples, a, out_h, in_h, alive, next)
-            && self.cross_ok(j, p, q, &samples)
+        self.self_ok(j, p, q, &samples) && self.cross_ok(j, p, q, &samples)
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn self_ok(
-        &self,
-        j: usize,
-        p: usize,
-        q: usize,
-        samples: &[V],
-        a: &[V],
-        out_h: &[V],
-        in_h: &[V],
-        alive: &[bool],
-        next: &[usize],
-    ) -> bool {
-        let local = self.clear[j].min(self.clear[p]).min(self.clear[q]);
-
-        if !local.is_finite() {
+    fn self_ok(&self, j: usize, p: usize, q: usize, samples: &[V]) -> bool {
+        let Some(floor2) = self.self_clear.floor2(j, p, q) else {
             return true;
-        }
-
-        let floor2 = (self.floor_frac * local).powi(2);
-        let n = a.len();
+        };
 
         // The opposite side of the removed anchor and of both neighbors: a merge
         // at a thin feature's tip, where the removed anchor itself faces nothing
@@ -1209,31 +1213,11 @@ impl<'a> WidthGuard<'a> {
             .into_iter()
             .flatten()
         {
-            // The opposite segment `s` may have merged away; the current segment
-            // covering it starts at the nearest still-alive anchor at or before
-            // `s` and runs to that anchor's current successor.
-            let mut o = s;
-
-            while !alive[o] {
-                o = (o + n - 1) % n;
-            }
-
-            // Skip the two segments the merge itself owns: the merged cubic sits
-            // on them, so measuring against them would veto every merge.
-            if o == p || o == j {
-                continue;
-            }
-
-            // Measure to the opposite side's current cubic, not the chord between
-            // its surviving anchors: a convex far side's chord cuts away from us
-            // and would understate the gap the merge is closing.
-            let far = sample_cubic(&[a[o], out_h[o], in_h[next[o]], a[next[o]]]);
-            for &pt in samples {
-                for w in far.windows(2) {
-                    if dist2_to_segment(pt, w[0], w[1]) < floor2 {
-                        return false;
-                    }
-                }
+            if samples
+                .iter()
+                .any(|&pt| dist2_to_polyline(pt, &self.segs[s]) < floor2)
+            {
+                return false;
             }
         }
 
@@ -1245,32 +1229,26 @@ impl<'a> WidthGuard<'a> {
             return true;
         };
 
-        let local = self.cross_clear[j]
-            .min(self.cross_clear[p])
-            .min(self.cross_clear[q]);
-
-        if !local.is_finite() {
+        let Some(floor2) = self.cross_clear.floor2(j, p, q) else {
             return true;
-        }
+        };
 
         // The whole field, not just the anchors' nearest segments: a merged
         // cubic spanning a long stretch can swing toward a part of another path
         // none of the three anchors is nearest to.
-        let floor2 = (self.cross_frac * local).powi(2);
-
         samples
             .iter()
             .all(|&pt| !field.within(pt, Some(own), floor2, None))
     }
 }
 
-/// The greedy closed-ring merge behind [`simplify_closed`]: `locked` anchors
+/// The closed-ring merge behind [`simplify_closed`]: `locked` anchors
 /// (when given) are never removal candidates. A free anchor's merge is also
-/// rejected when it would sweep the curve toward the ring's opposite side, or
-/// toward another `cross` path's original curve, past the `floor_frac` width
-/// floor; `floor_frac == 0` disables both vetoes and merges purely on
-/// tolerance. Returns the merged path and the surviving anchors' original
-/// indices in emission order.
+/// rejected when it would sweep the curve toward the ring's original opposite
+/// side, or toward another `cross` path's original curve, past the floor
+/// [`WidthGuard`] derives from `floor_frac`; `floor_frac == 0` disables both
+/// vetoes and merges purely on tolerance. Returns the merged path and the
+/// surviving anchors' original indices in emission order.
 fn merge_ring(
     path: &TracedPath,
     tol: f64,
@@ -1284,10 +1262,6 @@ fn merge_ring(
         return (path.clone(), (0..n).collect());
     }
 
-    // The veto classifies the opposite side and its clearances once, off the
-    // original ring; the per-merge distance check reads the live survivor state
-    // below, so a re-evaluated candidate is judged against the geometry as it
-    // stands then.
     let veto = (floor_frac > 0.0).then(|| WidthGuard::new(path, floor_frac, cross));
 
     // Anchor positions with their incoming and outgoing control handles.
@@ -1314,12 +1288,26 @@ fn merge_ring(
         dot(incoming, outgoing).clamp(-1.0, 1.0).acos() >= corner_threshold
     };
 
-    while count > 3 {
-        // Removable anchor with the smallest merge error under tol.
-        let mut best: Option<(usize, f64, [V; 4])> = None;
+    // Passes in ascending index order, each taking every anchor that clears tol
+    // and the veto at the moment it is reached, until a pass takes nothing.
+    // Accepting `j` defers its successor to the next pass: that successor's own
+    // merge would otherwise fold a third segment into the cubic just written,
+    // and a run of them walks one surviving anchor's handle down the whole side
+    // in a single pass, spending far more than the tolerance was asked to buy.
+    loop {
+        let mut merged_any = false;
+        let mut deferred = usize::MAX;
 
         for j in 0..n {
-            if !alive[j] || locked.is_some_and(|l| l[j]) || is_corner(j, &a, &in_h, &out_h) {
+            if count <= 3 {
+                break;
+            }
+
+            if !alive[j]
+                || j == deferred
+                || locked.is_some_and(|l| l[j])
+                || is_corner(j, &a, &in_h, &out_h)
+            {
                 continue;
             }
 
@@ -1343,24 +1331,23 @@ fn merge_ring(
             let bez = generate_bezier(&pts, &u, t1, t2);
             let (err2, _) = max_error(&pts, &bez, &u, None);
             let err = err2.sqrt();
-            if err <= tol
-                && veto
-                    .as_ref()
-                    .is_none_or(|g| g.allows(j, p, q, &bez, &a, &out_h, &in_h, &alive, &next))
-                && best.is_none_or(|(_, be, _)| err < be)
-            {
-                best = Some((j, err, bez));
+            if err > tol || !veto.as_ref().is_none_or(|g| g.allows(j, p, q, &bez)) {
+                continue;
             }
+
+            out_h[p] = bez[1];
+            in_h[q] = bez[2];
+            alive[j] = false;
+            next[p] = q;
+            prev[q] = p;
+            count -= 1;
+            merged_any = true;
+            deferred = q;
         }
 
-        let Some((j, _, bez)) = best else { break };
-        let (p, q) = (prev[j], next[j]);
-        out_h[p] = bez[1];
-        in_h[q] = bez[2];
-        alive[j] = false;
-        next[p] = q;
-        prev[q] = p;
-        count -= 1;
+        if !merged_any {
+            break;
+        }
     }
 
     let start = (0..n).find(|&i| alive[i]).unwrap();
@@ -1679,6 +1666,14 @@ fn dist2_to_segment(p: V, a: V, b: V) -> f64 {
     let t = (dot(sub(p, a), ab) / dot(ab, ab).max(1e-12)).clamp(0.0, 1.0);
     let d = sub(p, add(a, mul(ab, t)));
     dot(d, d)
+}
+
+/// Squared distance from `p` to the polyline through `pts`, or infinity when
+/// fewer than two points are given.
+fn dist2_to_polyline(p: V, pts: &[V]) -> f64 {
+    pts.windows(2)
+        .map(|w| dist2_to_segment(p, w[0], w[1]))
+        .fold(f64::INFINITY, f64::min)
 }
 
 #[cfg(test)]
